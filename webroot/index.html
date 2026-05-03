@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark light" />
+  <title data-i18n="app_title">TCP Optimiser</title>
+
+  <script>
+    (function () {
+      var mode = localStorage.getItem('tcp_themeMode') || 'dark';
+      var preset = localStorage.getItem('tcp_themePreset') || 'monet';
+      var resolved = mode === 'auto'
+        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : mode;
+      document.documentElement.setAttribute('data-theme', mode);
+      document.documentElement.setAttribute('data-theme-preset', preset);
+      document.documentElement.setAttribute('data-theme-resolved', resolved);
+      document.documentElement.style.colorScheme = resolved;
+    })();
+  </script>
+
+  <link rel="stylesheet" href="css/main.css">
+  <script type="module" src="js/kernelsu.js"></script>
+  <script type="module" src="js/i18n.js"></script>
+  <script type="module" src="js/common.js"></script>
+  <script type="module" src="js/router.js"></script>
+</head>
+<body>
+  <div class="app-layout">
+
+    <header class="app-top-bar">
+      <h1 class="app-title" data-i18n="app_title">TCP Optimiser</h1>
+      <div style="flex:1"></div>
+      <span id="status-chip" class="status-chip">
+        <span class="chip-dot"></span>
+        <span id="status-chip-label" data-i18n="status_loading">Loading</span>
+      </span>
+    </header>
+
+    <main>
+      <div id="pages">
+
+        <!-- ===== HOME PAGE ===== -->
+        <section id="home-page">
+
+          <div id="hero-status-card" class="hero-card">
+            <div class="hero-card__inner">
+              <span class="hero-card__icon">&#9889;</span>
+              <div class="hero-card__content">
+                <p class="hero-card__label" data-i18n="home_module_status">Module Status</p>
+                <p class="hero-card__value" id="module-status-value" data-i18n="label_loading">Loading...</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="info-grid">
+            <div id="iface-type-card" class="info-card">
+              <span class="info-card__icon">&#128246;</span>
+              <p class="info-card__label" data-i18n="home_iface_type">Interface Type</p>
+              <p class="info-card__value" id="iface-type-value" data-i18n="label_dash">—</p>
+            </div>
+            <div id="iface-name-card" class="info-card">
+              <span class="info-card__icon">&#127760;</span>
+              <p class="info-card__label" data-i18n="home_iface_name">Interface Name</p>
+              <p class="info-card__value" id="iface-name-value" data-i18n="label_dash">—</p>
+            </div>
+            <div id="tcp-algo-card" class="info-card accent">
+              <span class="info-card__icon">&#9881;</span>
+              <p class="info-card__label" data-i18n="home_algorithm">Algorithm</p>
+              <p class="info-card__value" id="tcp-algo-value" data-i18n="label_dash">—</p>
+            </div>
+            <div id="qdisc-card" class="info-card">
+              <span class="info-card__icon">&#9776;</span>
+              <p class="info-card__label" data-i18n="home_global_qdisc">Global Qdisc</p>
+              <p class="info-card__value" id="qdisc-value" data-i18n="label_dash">—</p>
+            </div>
+            <div id="proxy-card" class="info-card">
+              <span class="info-card__icon">&#128225;</span>
+              <p class="info-card__label" data-i18n="home_proxy">Proxy</p>
+              <p class="info-card__value" id="proxy-value">...</p>
+            </div>
+            <div id="hosts-card" class="info-card">
+              <span class="info-card__icon">&#128196;</span>
+              <p class="info-card__label" data-i18n="home_hosts">Hosts</p>
+              <p class="info-card__value" id="hosts-value">...</p>
+            </div>
+          </div>
+
+          <p class="section-pill" data-i18n="home_kernel_cc">Kernel Congestion Control</p>
+          <div id="home-algo-chips" class="algo-chips">
+            <span style="color:var(--md-sys-color-on-surface-variant);font-size:0.8rem;" data-i18n="label_loading">Loading...</span>
+          </div>
+
+          <div class="pull-indicator" id="pull-about">
+            <span>&#8964;</span>
+            <span data-i18n="home_pull_about">Pull for About</span>
+          </div>
+
+        </section>
+
+        <!-- ===== SETTINGS PAGE ===== -->
+        <section id="settings-page" hidden>
+
+          <p class="section-pill" data-i18n="settings_tcp_cc">TCP Congestion Control</p>
+          <div class="settings-card">
+
+            <p class="setting-label" data-i18n="settings_wifi_algo">Wi-Fi Algorithm</p>
+            <div id="wifi-algo-chips" class="algo-chips">
+              <span style="color:var(--md-sys-color-on-surface-variant);font-size:0.8rem;" data-i18n="label_loading">Loading...</span>
+            </div>
+
+            <hr class="settings-divider">
+
+            <p class="setting-label" data-i18n="settings_cell_algo">Cellular Algorithm</p>
+            <div id="cell-algo-chips" class="algo-chips">
+              <span style="color:var(--md-sys-color-on-surface-variant);font-size:0.8rem;" data-i18n="label_loading">Loading...</span>
+            </div>
+
+            <hr class="settings-divider">
+
+            <div class="toggle-container">
+              <label for="kill-connections" data-i18n="settings_kill_connections">Kill connections on change</label>
+              <label class="toggle">
+                <input type="checkbox" id="kill-connections">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="toggle-container">
+              <label for="initcwnd-initrwnd" data-i18n="settings_initcwnd_initrwnd">Set max initcwnd &amp; initrwnd</label>
+              <label class="toggle">
+                <input type="checkbox" id="initcwnd-initrwnd">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <button id="apply-btn" class="btn-primary" data-i18n="settings_apply_btn">Apply Settings</button>
+            <button id="force-apply-btn" class="btn-tonal" data-i18n="settings_force_apply">Force Apply</button>
+
+          </div>
+
+          <p class="section-pill" data-i18n="settings_presets">Presets</p>
+          <div class="settings-card">
+            <div id="preset-list" class="preset-list"></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+              <button id="preset-export-btn" class="btn-tonal" data-i18n="settings_export_preset">Export</button>
+              <button id="preset-import-btn" class="btn-tonal" data-i18n="settings_import_preset">Import</button>
+            </div>
+            <textarea id="preset-json-area" style="display:none;width:100%;height:80px;margin-top:8px;background:var(--md-sys-color-surface-container-low);color:var(--md-sys-color-on-surface);border:1px solid var(--md-sys-color-outline);border-radius:8px;padding:8px;font-family:monospace;font-size:0.7rem" placeholder='{"name":"MyPreset",...}'></textarea>
+          </div>
+
+          <p class="section-pill" data-i18n="settings_advanced">Advanced Kernel</p>
+          <div class="settings-card">
+            <div class="toggle-container">
+              <div>
+                <span style="display:block;color:var(--md-sys-color-on-surface);font-size:0.9rem;font-weight:500;margin-bottom:2px" data-i18n="settings_advanced_toggle">Enable Advanced Kernel Tuning</span>
+                <span style="color:var(--md-sys-color-on-surface-variant);font-size:0.7rem;display:block" data-i18n="settings_advanced_warn">Direct kernel parameter modification. Risk of instability.</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="adv-toggle">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <p class="section-pill" data-i18n="settings_global_qdisc">Global Queue Discipline</p>
+          <div class="settings-card">
+            <div id="qdisc-chips" class="algo-chips">
+              <span style="color:var(--md-sys-color-on-surface-variant);font-size:0.8rem;" data-i18n="label_loading">Loading...</span>
+            </div>
+          </div>
+
+          <p class="section-pill" data-i18n="settings_appearance">Appearance</p>
+          <div class="settings-card">
+
+            <p class="settings-sublabel" data-i18n="settings_lang">Language</p>
+            <div style="display:flex;gap:8px;">
+              <button class="preset-chip lang-btn selected" data-lang="en">English</button>
+              <button class="preset-chip lang-btn" data-lang="zh">中文</button>
+            </div>
+
+            <hr class="settings-divider">
+
+            <p class="settings-sublabel" data-i18n="settings_mode">Mode</p>
+            <div style="display:flex;gap:8px;">
+              <button class="preset-chip theme-mode-btn selected" data-mode="dark" data-i18n="theme_dark">Dark</button>
+              <button class="preset-chip theme-mode-btn" data-mode="light" data-i18n="theme_light">Light</button>
+              <button class="preset-chip theme-mode-btn" data-mode="auto" data-i18n="theme_auto">Auto</button>
+            </div>
+
+            <hr class="settings-divider">
+
+            <p class="settings-sublabel" data-i18n="settings_color">Color</p>
+            <div class="preset-chips">
+              <button class="preset-chip preset-btn selected" data-preset="monet">
+                <span class="preset-dot" style="background:linear-gradient(135deg,#bb86fc_25%,#f28b82_50%,#fbbc04_75%,#c4a8f4)"></span>
+                <span data-i18n="theme_monet">Monet</span>
+              </button>
+              <button class="preset-chip preset-btn" data-preset="ocean">
+                <span class="preset-dot" style="background:#8ab4f8"></span>
+                <span data-i18n="theme_ocean">Ocean</span>
+              </button>
+              <button class="preset-chip preset-btn" data-preset="rose">
+                <span class="preset-dot" style="background:#f28b82"></span>
+                <span data-i18n="theme_rose">Rose</span>
+              </button>
+              <button class="preset-chip preset-btn" data-preset="forest">
+                <span class="preset-dot" style="background:#81c995"></span>
+                <span data-i18n="theme_forest">Forest</span>
+              </button>
+              <button class="preset-chip preset-btn" data-preset="sunset">
+                <span class="preset-dot" style="background:#fbbc04"></span>
+                <span data-i18n="theme_sunset">Sunset</span>
+              </button>
+              <button class="preset-chip preset-btn" data-preset="violet">
+                <span class="preset-dot" style="background:#c4a8f4"></span>
+                <span data-i18n="theme_violet">Violet</span>
+              </button>
+            </div>
+
+          </div>
+
+        </section>
+
+        <!-- ===== LOGS PAGE ===== -->
+        <section id="logs-page" hidden>
+
+          <div class="log-card">
+            <div class="log-header">
+              <h3 id="logs-heading" data-i18n="logs_heading">Logs</h3>
+              <button id="clear-logs-btn" class="btn-outline" data-i18n="logs_clear">Clear</button>
+            </div>
+            <div id="log-content" class="log-content">
+              <div class="log-empty" data-i18n="logs_empty">No log entries</div>
+            </div>
+          </div>
+          <div class="settings-card" style="margin-top:12px">
+            <div class="knob-row">
+              <div class="knob" style="grid-column:1/-1">
+                <label data-i18n="logs_save_path">Save Log</label>
+                <div style="display:flex;gap:6px">
+                  <input type="text" id="log-path-input" style="flex:1;min-width:0" data-i18n-placeholder="logs_path_placeholder" placeholder="/sdcard/Download/tcp_optimiser.log">
+                  <button id="log-save-btn" class="btn-tonal" data-i18n="logs_save_btn">Save</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </section>
+
+        <!-- ===== STATS PAGE ===== -->
+        <section id="stats-page" hidden>
+
+          <p class="section-pill" data-i18n="stats_throughput">Throughput</p>
+          <div class="info-grid">
+            <div class="chart-card span-2" id="chart-tput-rx-container"><span class="stat-dim" data-i18n="label_loading">Loading...</span></div>
+            <p class="chart-label" id="chart-tput-rx-label"></p>
+            <div class="chart-card span-2" id="chart-tput-tx-container"><span class="stat-dim" data-i18n="label_loading">Loading...</span></div>
+            <p class="chart-label" id="chart-tput-tx-label"></p>
+          </div>
+
+          <p class="section-pill" data-i18n="stats_connection">TCP Connection</p>
+          <div class="info-grid">
+            <div class="info-card">
+              <span class="info-card__icon">&#128225;</span>
+              <span class="info-card__label" data-i18n="stats_active_conns">Established</span>
+              <span class="info-card__value" id="stats-tcp-conns">--</span>
+            </div>
+            <div class="info-card">
+              <span class="info-card__icon">&#9881;</span>
+              <span class="info-card__label" data-i18n="stats_tcp_inuse">Sockets in Use</span>
+              <span class="info-card__value" id="stats-tcp-inuse">--</span>
+            </div>
+            <div class="info-card">
+              <span class="info-card__icon">&#9202;</span>
+              <span class="info-card__label" data-i18n="stats_rtt_avg">Avg RTT</span>
+              <span class="info-card__value" id="stats-rtt-avg">--</span>
+            </div>
+            <div class="info-card">
+              <span class="info-card__icon">&#8679;&#8681;</span>
+              <span class="info-card__label" data-i18n="stats_cwnd_avg">Avg CWND</span>
+              <span class="info-card__value" id="stats-cwnd-avg">--</span>
+            </div>
+            <div class="info-card span-2">
+              <span class="info-card__icon">&#9888;</span>
+              <span class="info-card__label" data-i18n="stats_retrans_total">Total Retransmissions</span>
+              <span class="info-card__value" id="stats-retrans-total">--</span>
+            </div>
+          </div>
+
+          <p class="section-pill" data-i18n="stats_charts">Charts</p>
+          <div class="chart-row">
+            <div class="chart-card" id="chart-retrans-container"><span class="stat-dim" data-i18n="label_loading">Loading...</span></div>
+            <p class="chart-label" id="chart-retrans-label"></p>
+          </div>
+          <div class="chart-row">
+            <div class="chart-card" id="chart-cwnd-container"><span class="stat-dim" data-i18n="label_loading">Loading...</span></div>
+            <p class="chart-label" id="chart-cwnd-label"></p>
+          </div>
+          <div class="chart-row">
+            <div class="chart-card" id="chart-rtt-container"><span class="stat-dim" data-i18n="label_loading">Loading...</span></div>
+            <p class="chart-label" id="chart-rtt-label"></p>
+          </div>
+
+          <p class="section-pill" data-i18n="stats_dns">DNS Servers</p>
+          <div class="settings-card">
+            <div id="dns-list"><span class="stat-dim" data-i18n="label_loading">Loading...</span></div>
+          </div>
+
+        </section>
+
+        <!-- ===== ADVANCED PAGE ===== -->
+        <section id="adv-page" hidden>
+
+          <div class="warning-banner">
+            <span>&#9888;</span>
+            <span data-i18n="adv_warning_banner">Direct kernel parameter modification. Incorrect values may cause instability or data loss.</span>
+          </div>
+
+          <p class="section-pill" data-i18n="stealth_title">Stealth Mode</p>
+          <div class="settings-card">
+            <div class="toggle-container">
+              <div>
+                <span style="display:block;color:var(--md-sys-color-on-surface);font-size:0.9rem;font-weight:500;margin-bottom:2px" data-i18n="stealth_toggle">Enable Stealth Mode</span>
+                <span style="color:var(--md-sys-color-on-surface-variant);font-size:0.7rem;display:block" data-i18n="stealth_desc">Hide module traces: generic description, minimal logging, obfuscated identity. Prevents detection by banking / security apps.</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="stealth-toggle">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <p class="section-pill" data-i18n="settings_keepalive">TCP Keepalive</p>
+          <div class="settings-card">
+            <div class="knob-row">
+              <div class="knob">
+                <label data-i18n="settings_keepalive_time">Time (s)</label>
+                <input type="number" id="knob-keepalive-time" min="10" max="7200" step="10" value="7200">
+              </div>
+              <div class="knob">
+                <label data-i18n="settings_keepalive_intvl">Interval (s)</label>
+                <input type="number" id="knob-keepalive-intvl" min="1" max="300" step="1" value="75">
+              </div>
+              <div class="knob">
+                <label data-i18n="settings_keepalive_probes">Probes</label>
+                <input type="number" id="knob-keepalive-probes" min="1" max="30" step="1" value="9">
+              </div>
+            </div>
+          </div>
+
+          <p class="section-pill" data-i18n="settings_busy_poll">Low-Latency Polling</p>
+          <div class="settings-card">
+            <div class="knob-row">
+              <div class="knob">
+                <label data-i18n="settings_busy_poll_val">busy_poll (us)</label>
+                <input type="number" id="knob-busy-poll" min="0" max="100000" step="50" value="0">
+              </div>
+              <div class="knob">
+                <label data-i18n="settings_busy_read_val">busy_read (us)</label>
+                <input type="number" id="knob-busy-read" min="0" max="100000" step="50" value="0">
+              </div>
+            </div>
+          </div>
+
+          <p class="section-pill" data-i18n="settings_backlog">Socket Backlog</p>
+          <div class="settings-card">
+            <div class="knob-row">
+              <div class="knob">
+                <label data-i18n="settings_somaxconn">somaxconn</label>
+                <input type="number" id="knob-somaxconn" min="128" max="65535" step="128" value="4096">
+              </div>
+              <div class="knob">
+                <label data-i18n="settings_netdev_backlog">netdev_max_backlog</label>
+                <input type="number" id="knob-netdev-backlog" min="256" max="65535" step="256" value="1000">
+              </div>
+            </div>
+          </div>
+
+          <p class="section-pill" data-i18n="settings_tcp_tuning">TCP Fine-Tuning</p>
+          <div class="settings-card">
+            <div class="toggle-container">
+              <label for="knob-mtu-probing" data-i18n="settings_mtu_probing">MTU Probing</label>
+              <label class="toggle">
+                <input type="checkbox" id="knob-mtu-probing">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="toggle-container">
+              <label for="knob-slow-start" data-i18n="settings_slow_start">Slow Start After Idle</label>
+              <label class="toggle">
+                <input type="checkbox" id="knob-slow-start" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="toggle-container">
+              <label for="knob-tcp-fastopen" data-i18n="settings_tcp_fastopen">TCP Fast Open (3 = both)</label>
+              <label class="toggle">
+                <input type="checkbox" id="knob-tcp-fastopen" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <p class="section-pill" data-i18n="settings_conntrack">Connection Tracking</p>
+          <div class="settings-card">
+            <div class="knob-row">
+              <div class="knob">
+                <label data-i18n="settings_conntrack_max">conntrack_max</label>
+                <input type="number" id="knob-conntrack-max" min="1024" max="1048576" step="1024" value="65536">
+              </div>
+            </div>
+            <button id="apply-advanced-btn" class="btn-primary" data-i18n="settings_apply_advanced">Apply Advanced</button>
+          </div>
+
+          <p class="section-pill" data-i18n="bb_title">Baseband Backup</p>
+          <div class="settings-card">
+            <div id="bb-partition-list" class="bb-partition-list">
+              <span class="stat-dim" data-i18n="label_loading">Loading...</span>
+            </div>
+            <div class="knob-row">
+              <div class="knob" style="grid-column:1/-1">
+                <label data-i18n="bb_save_path">Save Path</label>
+                <div style="display:flex;gap:6px">
+                  <input type="text" id="bb-path-input" style="flex:1;min-width:0" data-i18n-placeholder="bb_path_placeholder" placeholder="/sdcard/Download/baseband_backup">
+                  <button id="bb-browse-btn" class="btn-outline" data-i18n="bb_browse">Browse</button>
+                </div>
+              </div>
+            </div>
+            <button id="bb-backup-btn" class="btn-primary" data-i18n="bb_backup_btn">Backup Selected Partitions</button>
+            <div id="bb-status" class="bb-status" hidden></div>
+          </div>
+
+        </section>
+
+      </div>
+    </main>
+
+    <nav class="bottom-nav" id="nav-bar" role="navigation" aria-label="Main navigation">
+      <button class="nav-item" data-page="stats" title="Stats">
+        <span class="nav-icon">&#9733;</span>
+      </button>
+      <button class="nav-item" data-page="settings" title="Settings">
+        <span class="nav-icon">&#9881;</span>
+      </button>
+      <button class="nav-item active" data-page="home" title="Home">
+        <span class="nav-icon">&#8962;</span>
+      </button>
+      <button class="nav-item" data-page="logs" title="Logs">
+        <span class="nav-icon">&#9776;</span>
+      </button>
+      <button class="nav-item hidden" data-page="adv" id="nav-adv" title="Advanced">
+        <span class="nav-icon">&#9888;</span>
+      </button>
+    </nav>
+
+    <!-- Warning Modal -->
+    <div id="adv-warning-overlay" hidden>
+      <div class="adv-warning-dialog">
+        <div class="adv-warning-icon">&#9888;</div>
+        <h3 data-i18n="adv_warning_title">Advanced Kernel Tuning</h3>
+        <p data-i18n="adv_warning_body">You are about to enable direct kernel parameter modification. Incorrect values can cause network instability, connection failures, or system crashes. Proceed only if you understand each parameter.</p>
+        <div class="adv-warning-timer">
+          <span data-i18n="adv_warning_countdown_label">Confirm in</span>
+          <span id="adv-countdown" class="adv-countdown">5</span>
+          <span data-i18n="adv_warning_countdown_unit">seconds</span>
+        </div>
+        <div class="adv-warning-btns">
+          <button id="adv-confirm-btn" class="btn-primary" disabled data-i18n="adv_confirm">I Understand (5s)</button>
+          <button id="adv-cancel-btn" class="btn-tonal" data-i18n="adv_cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- About Modal -->
+    <div id="about-overlay" hidden>
+      <div class="about-dialog">
+        <div class="about-dialog-icon">&#9889;</div>
+        <h2 data-i18n="app_title">TCP Optimiser</h2>
+        <p class="about-dialog-version" id="about-version-text"></p>
+        <p class="about-live-desc" id="about-live-desc"></p>
+        <p class="about-dialog-desc" data-i18n="home_about_desc"></p>
+        <div class="about-dialog-links">
+          <button class="link-chip" data-url="https://github.com/Zhanfg/TCP_Optimiser">
+            <span>&#9900;</span> <span data-i18n="home_github">GitHub</span>
+          </button>
+          <button class="link-chip" data-url="https://t.me/TCP_Optimiser">
+            <span>&#9993;</span> <span data-i18n="home_telegram">Telegram</span>
+          </button>
+        </div>
+        <p class="about-dialog-author" data-i18n="home_author">by fatalcoder524 & axymorrsen</p>
+        <button id="about-close-btn" class="btn-tonal" data-i18n="adv_cancel">Close</button>
+      </div>
+    </div>
+
+    <!-- Detail Popup -->
+    <div id="detail-overlay" hidden>
+      <div class="detail-popup">
+        <h3 id="detail-title"></h3>
+        <div id="detail-body"></div>
+        <button class="btn-outline" onclick="document.getElementById('detail-overlay').hidden=true" data-i18n="adv_cancel">Close</button>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>
