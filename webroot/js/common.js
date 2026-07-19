@@ -337,7 +337,7 @@ export async function getQdiscCapabilities(force = false) {
 
 	const names = ALL_QDISCS.map(shellQuote).join(' ');
 	const command = `# qdisc-capability-probe
-current=$(cat /proc/sys/net/core/default_qdisc 2>/dev/null); for q in ${names}; do state=unknown; if [ "$q" = "$current" ]; then state=supported; elif command -v tc >/dev/null 2>&1; then probe=$(tc qdisc add dev lo root "$q" help 2>&1); rc=$?; if printf '%s' "$probe" | grep -qiE 'unknown qdisc|qdisc kind is unknown|specified qdisc.*unknown'; then state=unsupported; elif [ -n "$probe" ] || [ "$rc" -eq 0 ]; then state=supported; fi; fi; printf '%s:%s\n' "$q" "$state"; done`;
+current=$(cat /proc/sys/net/core/default_qdisc 2>/dev/null); for q in ${names}; do state=unknown; if [ "$q" = "$current" ]; then state=supported; elif command -v tc >/dev/null 2>&1; then probe=$(tc qdisc add dev lo root "$q" help 2>&1); rc=$?; if printf '%s' "$probe" | grep -qiE 'unknown qdisc|qdisc kind is unknown|specified qdisc.*unknown|operation not supported|not supported'; then state=unsupported; elif [ -n "$probe" ] || [ "$rc" -eq 0 ]; then state=supported; fi; fi; printf '%s:%s\n' "$q" "$state"; done`;
 	try {
 		const { stdout } = await exec(command);
 		const byName = new Map(stdout.split('\n')

@@ -385,6 +385,10 @@ function setAdvancedNavVisible(v) {
 	reorderNav(v);
 }
 
+export function syncAdvancedNavVisibility() {
+	setAdvancedNavVisible(isAdvancedEnabled());
+}
+
 function reorderNav(advEnabled) {
 	const bar = document.getElementById('nav-bar');
 	if (!bar) return;
@@ -399,7 +403,10 @@ function reorderNav(advEnabled) {
 	if (items.stats) bar.appendChild(items.stats);
 	if (items.settings) bar.appendChild(items.settings);
 	if (items.logs) bar.appendChild(items.logs);
-	if (advEnabled && items.adv) bar.appendChild(items.adv);
+	if (items.adv) {
+		items.adv.classList.toggle('hidden', !advEnabled);
+		bar.appendChild(items.adv);
+	}
 }
 
 function initAdvancedToggle() {
@@ -526,6 +533,16 @@ const ADVANCED_SYSCTLS = [
 	{ group: 'recovery', key: 'tcp_slow_start_after_idle', path: '/proc/sys/net/ipv4/tcp_slow_start_after_idle', min: 0, max: 1, step: 1, boolean: true },
 	{ group: 'recovery', key: 'tcp_fastopen', path: '/proc/sys/net/ipv4/tcp_fastopen', min: 0, max: 3, step: 1 },
 	{ group: 'recovery', key: 'tcp_tw_reuse', path: '/proc/sys/net/ipv4/tcp_tw_reuse', min: 0, max: 2, step: 1 },
+	{ group: 'recovery', key: 'tcp_autocorking', path: '/proc/sys/net/ipv4/tcp_autocorking', min: 0, max: 1, step: 1, boolean: true },
+	{ group: 'recovery', key: 'tcp_early_retrans', path: '/proc/sys/net/ipv4/tcp_early_retrans', min: 0, max: 4, step: 1 },
+	{ group: 'recovery', key: 'tcp_thin_linear_timeouts', path: '/proc/sys/net/ipv4/tcp_thin_linear_timeouts', min: 0, max: 1, step: 1, boolean: true },
+	{ group: 'recovery', key: 'tcp_thin_dupack', path: '/proc/sys/net/ipv4/tcp_thin_dupack', min: 0, max: 1, step: 1, boolean: true },
+	{ group: 'recovery', key: 'tcp_rto_max_ms', path: '/proc/sys/net/ipv4/tcp_rto_max_ms', min: 1000, max: 120000, step: 1000 },
+	{ group: 'plb', key: 'tcp_plb_enabled', path: '/proc/sys/net/ipv4/tcp_plb_enabled', min: 0, max: 1, step: 1, boolean: true },
+	{ group: 'plb', key: 'tcp_plb_idle_rehash_rounds', path: '/proc/sys/net/ipv4/tcp_plb_idle_rehash_rounds', min: 0, max: 31, step: 1 },
+	{ group: 'plb', key: 'tcp_plb_rehash_rounds', path: '/proc/sys/net/ipv4/tcp_plb_rehash_rounds', min: 0, max: 31, step: 1 },
+	{ group: 'plb', key: 'tcp_plb_suspend_rto_sec', path: '/proc/sys/net/ipv4/tcp_plb_suspend_rto_sec', min: 0, max: 255, step: 1 },
+	{ group: 'plb', key: 'tcp_plb_cong_thresh', path: '/proc/sys/net/ipv4/tcp_plb_cong_thresh', min: 0, max: 256, step: 1 },
 	{ group: 'latency', key: 'busy_poll', path: '/proc/sys/net/core/busy_poll', min: 0, max: 100000, step: 50 },
 	{ group: 'latency', key: 'busy_read', path: '/proc/sys/net/core/busy_read', min: 0, max: 100000, step: 50 },
 	{ group: 'conntrack', key: 'nf_conntrack_max', path: '/proc/sys/net/netfilter/nf_conntrack_max', min: 1024, max: 1048576, step: 1024 },
@@ -546,7 +563,7 @@ function renderAdvancedControls(values) {
 	const container = document.getElementById('advanced-sysctl-groups');
 	if (!container) return;
 	container.replaceChildren();
-	const groups = ['lifecycle', 'memory', 'queue', 'recovery', 'latency', 'conntrack'];
+	const groups = ['lifecycle', 'memory', 'queue', 'recovery', 'plb', 'latency', 'conntrack'];
 	let supported = 0;
 	for (const group of groups) {
 		const items = ADVANCED_SYSCTLS.filter(item => item.group === group);

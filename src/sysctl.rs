@@ -110,6 +110,66 @@ const ADVANCED_SYSCTLS: &[(&str, &str, u32, u32)] = &[
         1,
     ),
     ("tcp_tw_reuse", "/proc/sys/net/ipv4/tcp_tw_reuse", 0, 2),
+    (
+        "tcp_autocorking",
+        "/proc/sys/net/ipv4/tcp_autocorking",
+        0,
+        1,
+    ),
+    (
+        "tcp_early_retrans",
+        "/proc/sys/net/ipv4/tcp_early_retrans",
+        0,
+        4,
+    ),
+    (
+        "tcp_thin_linear_timeouts",
+        "/proc/sys/net/ipv4/tcp_thin_linear_timeouts",
+        0,
+        1,
+    ),
+    (
+        "tcp_thin_dupack",
+        "/proc/sys/net/ipv4/tcp_thin_dupack",
+        0,
+        1,
+    ),
+    (
+        "tcp_rto_max_ms",
+        "/proc/sys/net/ipv4/tcp_rto_max_ms",
+        1_000,
+        120_000,
+    ),
+    (
+        "tcp_plb_enabled",
+        "/proc/sys/net/ipv4/tcp_plb_enabled",
+        0,
+        1,
+    ),
+    (
+        "tcp_plb_idle_rehash_rounds",
+        "/proc/sys/net/ipv4/tcp_plb_idle_rehash_rounds",
+        0,
+        31,
+    ),
+    (
+        "tcp_plb_rehash_rounds",
+        "/proc/sys/net/ipv4/tcp_plb_rehash_rounds",
+        0,
+        31,
+    ),
+    (
+        "tcp_plb_suspend_rto_sec",
+        "/proc/sys/net/ipv4/tcp_plb_suspend_rto_sec",
+        0,
+        255,
+    ),
+    (
+        "tcp_plb_cong_thresh",
+        "/proc/sys/net/ipv4/tcp_plb_cong_thresh",
+        0,
+        256,
+    ),
     ("busy_poll", "/proc/sys/net/core/busy_poll", 0, 100_000),
     ("busy_read", "/proc/sys/net/core/busy_read", 0, 100_000),
     (
@@ -398,7 +458,7 @@ mod tests {
 
     #[test]
     fn advanced_config_survives_boot_parse_and_rejects_bad_entries() {
-        let content = "tcp_fin_timeout=30\ntcp_mtu_probing=2\nunknown_key=1\ntcp_sack=99\nbroken\n";
+        let content = "tcp_fin_timeout=30\ntcp_mtu_probing=2\ntcp_plb_idle_rehash_rounds=3\ntcp_plb_idle_retransmit_rounds=4\ntcp_sack=99\nbroken\n";
         let (overrides, failures) = parse_advanced_overrides(content);
 
         assert_eq!(
@@ -406,6 +466,7 @@ mod tests {
             vec![
                 ("/proc/sys/net/ipv4/tcp_fin_timeout", 30),
                 ("/proc/sys/net/ipv4/tcp_mtu_probing", 2),
+                ("/proc/sys/net/ipv4/tcp_plb_idle_rehash_rounds", 3),
             ]
         );
         assert_eq!(failures.len(), 2);

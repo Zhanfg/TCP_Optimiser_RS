@@ -51,11 +51,11 @@ TCP Optimiser detects the active Wi-Fi or cellular interface and applies a kerne
 ### Policy and advanced controls
 
 - Shows every known algorithm and qdisc with **supported**, **unsupported** or **unverified** state reported by the current kernel.
-- Seven qdiscs: `fq`, `fq_codel`, `cake`, `pfifo_fast`, `codel`, `fq_pie` and `pfifo`.
+- Nine qdiscs: `fq`, `fq_codel`, `cake`, `pfifo_fast`, `codel`, `fq_pie`, `pfifo`, `pie` and `pfifo_head_drop`; applications are read back and automatically reconciled after network or kernel resets.
 - Five built-in presets plus JSON import/export for custom presets.
-- 29 runtime-detected advanced kernel parameters covering lifecycle, buffers, queues, loss recovery, low-latency polling and conntrack.
+- 39 runtime-detected advanced kernel parameters covering lifecycle, buffers, queues, loss recovery, PLB, low-latency polling and conntrack. Nodes absent from the running kernel remain unavailable and are never written.
 - Baseband partition discovery and backup with an automatically generated restore script.
-- Simplified Chinese and English interfaces with 241 validated translation entries.
+- Simplified Chinese and English interfaces with 252 validated translation entries.
 
 ## Installation
 

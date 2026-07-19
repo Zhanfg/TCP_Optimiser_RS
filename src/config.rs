@@ -185,6 +185,8 @@ pub const KNOWN_QDISCS: &[&str] = &[
     "codel",
     "fq_pie",
     "pfifo",
+    "pie",
+    "pfifo_head_drop",
 ];
 
 /// Default description for module.prop

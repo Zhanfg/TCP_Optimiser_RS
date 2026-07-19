@@ -174,15 +174,89 @@ pub fn set_qdisc(iface: &str, qdisc: &str) -> io::Result<()> {
             format!("unsupported qdisc: {qdisc}"),
         ));
     }
-    let output = Command::new("tc")
-        .args(["qdisc", "replace", "dev", iface, "root", qdisc])
-        .output()?;
+    let options = qdisc_options(qdisc);
+    let mut args = vec!["qdisc", "replace", "dev", iface, "root", qdisc];
+    args.extend_from_slice(options);
+    let first = Command::new("tc").args(&args).output()?;
 
-    if output.status.success() {
+    if !first.status.success() {
+        if options.is_empty() {
+            return Err(command_error("tc qdisc replace", &first.stderr));
+        }
+
+        // Some Android tc builds expose a qdisc but not every optional
+        // parameter. Keep the qdisc usable by retrying its portable form.
+        let fallback = Command::new("tc")
+            .args(["qdisc", "replace", "dev", iface, "root", qdisc])
+            .output()?;
+        if !fallback.status.success() {
+            return Err(io::Error::other(format!(
+                "tc qdisc replace failed (tuned: {}; fallback: {})",
+                String::from_utf8_lossy(&first.stderr).trim(),
+                String::from_utf8_lossy(&fallback.stderr).trim()
+            )));
+        }
+    }
+
+    let actual = root_qdisc(iface)?;
+    if actual.as_deref() == Some(qdisc) {
         Ok(())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(io::Error::other(format!("tc failed: {stderr}")))
+        Err(io::Error::other(format!(
+            "qdisc readback mismatch on {iface}: requested {qdisc}, got {}",
+            actual.as_deref().unwrap_or("none")
+        )))
+    }
+}
+
+/// Read the root qdisc currently attached to an interface.
+pub fn root_qdisc(iface: &str) -> io::Result<Option<String>> {
+    let output = Command::new("tc")
+        .args(["qdisc", "show", "dev", iface])
+        .output()?;
+    if !output.status.success() {
+        return Err(command_error("tc qdisc show", &output.stderr));
+    }
+    Ok(parse_root_qdisc(&String::from_utf8_lossy(&output.stdout)).map(str::to_owned))
+}
+
+/// Restore the requested root qdisc only when the kernel has reset it.
+pub fn reconcile_qdisc(iface: &str, qdisc: &str) -> io::Result<bool> {
+    if root_qdisc(iface)?.as_deref() == Some(qdisc) {
+        return Ok(false);
+    }
+    set_qdisc(iface, qdisc)?;
+    Ok(true)
+}
+
+fn parse_root_qdisc(output: &str) -> Option<&str> {
+    output.lines().find_map(|line| {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        if words.first() != Some(&"qdisc") || !words.contains(&"root") {
+            return None;
+        }
+        words.get(1).copied()
+    })
+}
+
+fn qdisc_options(qdisc: &str) -> &'static [&'static str] {
+    match qdisc {
+        "fq" => &[
+            "pacing",
+            "limit",
+            "2000",
+            "flow_limit",
+            "40",
+            "buckets",
+            "1024",
+            "initial_quantum",
+            "15000",
+        ],
+        "fq_codel" | "codel" => &["limit", "1024", "target", "5ms", "interval", "100ms", "ecn"],
+        "cake" => &["besteffort", "triple-isolate", "wash"],
+        "pie" => &["target", "5ms", "ecn"],
+        "pfifo" | "pfifo_head_drop" => &["limit", "2000"],
+        _ => &[],
     }
 }
 
@@ -352,5 +426,23 @@ mod tests {
     fn route_matching_uses_exact_interface_token() {
         assert!(route_change_args("default dev wlan01", "wlan0", 10).is_none());
         assert!(route_change_args("default dev wlan0", "wlan0", 10).is_some());
+    }
+
+    #[test]
+    fn parses_only_the_root_qdisc() {
+        let output = "qdisc noqueue 0: dev lo root refcnt 2\nqdisc fq_codel 0: dev wlan0 root refcnt 2 limit 1024p\nqdisc ingress ffff: dev wlan0 parent ffff:fff1\n";
+        assert_eq!(parse_root_qdisc(output), Some("noqueue"));
+        assert_eq!(
+            parse_root_qdisc("qdisc ingress ffff: parent ffff:fff1"),
+            None
+        );
+    }
+
+    #[test]
+    fn tuned_qdisc_options_are_allowlisted() {
+        assert!(qdisc_options("fq_codel").contains(&"target"));
+        assert!(qdisc_options("pie").contains(&"ecn"));
+        assert_eq!(qdisc_options("pfifo_fast"), &[] as &[&str]);
+        assert_eq!(qdisc_options("unknown"), &[] as &[&str]);
     }
 }

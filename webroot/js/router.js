@@ -3,7 +3,7 @@ import I18N from './i18n.js';
 import { updateModuleInformation } from './common.js';
 import { updateModuleStatus, initHome, updateHomeUI } from './home.js';
 import { initLogs, read_log_file, updateLogsUI } from './logs.js';
-import { initSettings } from './settings.js';
+import { initSettings, syncAdvancedNavVisibility } from './settings.js';
 import { updateStats, initStatsUI } from './stats.js';
 import { initDynamicColorTheme } from './theme.js';
 import { initMotion } from './motion.js';
@@ -127,6 +127,7 @@ const startRealtimeUpdater = () => {
 
 document.addEventListener('DOMContentLoaded', async () => {
 	await I18N.init();
+	syncAdvancedNavVisibility();
 	initMotion();
 	await initDynamicColorTheme();
 	await updateModuleInformation();

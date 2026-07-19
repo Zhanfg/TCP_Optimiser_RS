@@ -5,7 +5,8 @@ export const ALL_ALGOS = [
 ];
 
 export const ALL_QDISCS = [
-	'fq', 'fq_codel', 'cake', 'pfifo_fast', 'codel', 'fq_pie', 'pfifo',
+	'fq', 'fq_codel', 'cake', 'pfifo_fast', 'codel', 'fq_pie', 'pfifo', 'pie',
+	'pfifo_head_drop',
 ];
 
 export const ALGO_DESC = {
@@ -60,6 +61,8 @@ export const QDISC_DESC = {
 	codel: 'CoDel — controls persistent queue delay',
 	fq_pie: 'Fair Queue + PIE — active queue management',
 	pfifo: 'Simple packet FIFO queue',
+	pie: 'PIE — latency-aware active queue management',
+	pfifo_head_drop: 'Head-drop FIFO — protects newer packets under pressure',
 };
 
 const QDISC_DESC_ZH = {
@@ -70,6 +73,8 @@ const QDISC_DESC_ZH = {
 	codel: 'CoDel — 控制持续排队延迟',
 	fq_pie: '公平队列 + PIE — 主动队列管理',
 	pfifo: '简单的先进先出数据包队列',
+	pie: 'PIE — 感知排队延迟的主动队列管理',
+	pfifo_head_drop: '头部丢弃 FIFO — 拥塞时优先保留较新的数据包',
 };
 
 export function getAlgorithmDescription(name, language = 'en') {

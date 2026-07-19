@@ -26,7 +26,7 @@ export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:$PATH"
 "$RUST_BIN" verify-module "$MODPATH" || abort "! Module signature or file hash verification failed"
 "$RUST_BIN" install || abort "! Rust installer failed"
 
-[ -s "$MODPATH/available_qdiscs" ] || printf '%s\n' "fq fq_codel cake pfifo_fast codel fq_pie pfifo" > "$MODPATH/available_qdiscs"
+[ -s "$MODPATH/available_qdiscs" ] || printf '%s\n' "fq fq_codel cake pfifo_fast codel fq_pie pfifo pie pfifo_head_drop" > "$MODPATH/available_qdiscs"
 
 set_perm "$MODPATH/service.sh" 0 0 0755
 set_perm "$MODPATH/post-fs-data.sh" 0 0 0755

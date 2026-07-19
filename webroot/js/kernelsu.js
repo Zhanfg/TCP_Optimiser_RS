@@ -59,7 +59,7 @@ function mockExec(cmd) {
 	if (cmd.includes('tcp_congestion_control'))
 		return { errno: 0, stdout: 'bbr', stderr: '' };
 	if (cmd.includes('qdisc-capability-probe'))
-		return { errno: 0, stdout: 'fq:supported\nfq_codel:supported\ncake:unsupported\npfifo_fast:unsupported\ncodel:supported\nfq_pie:unsupported\npfifo:supported\n', stderr: '' };
+		return { errno: 0, stdout: 'fq:supported\nfq_codel:supported\ncake:unsupported\npfifo_fast:unsupported\ncodel:supported\nfq_pie:unsupported\npfifo:supported\npie:supported\npfifo_head_drop:unsupported\n', stderr: '' };
 	if (cmd.includes('dynamic-color-palette-probe'))
 		return { errno: 0, stdout: [
 			'system_accent1_0=#ffffffff', 'system_accent1_100=#ff9ff2e7',
@@ -92,6 +92,10 @@ function mockExec(cmd) {
 			netdev_budget: 300, netdev_budget_usecs: 2000, tcp_mtu_probing: 1,
 			tcp_sack: 1, tcp_dsack: 1, tcp_ecn: 1, tcp_no_metrics_save: 0,
 			tcp_slow_start_after_idle: 1, tcp_fastopen: 3, tcp_tw_reuse: 1,
+			tcp_autocorking: 1, tcp_early_retrans: 3, tcp_thin_linear_timeouts: 0,
+			tcp_thin_dupack: 0, tcp_rto_max_ms: 120000, tcp_plb_enabled: 0,
+			tcp_plb_idle_rehash_rounds: 3, tcp_plb_rehash_rounds: 12,
+			tcp_plb_suspend_rto_sec: 60, tcp_plb_cong_thresh: 128,
 			busy_poll: 0, busy_read: 0, nf_conntrack_max: 65536,
 			nf_conntrack_tcp_timeout_established: 432000, nf_conntrack_tcp_timeout_time_wait: 120,
 		};

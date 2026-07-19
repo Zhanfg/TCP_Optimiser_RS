@@ -16,6 +16,8 @@ const VOWIFI_CONNECT_TIME: u64 = 10;
 const ADAPTIVE_FAST_CYCLES: u32 = 3;
 const SLEEP_FAST: u64 = 2;
 const SLEEP_NORMAL: u64 = 5;
+const QDISC_CHECK_WIFI: u64 = 30;
+const QDISC_CHECK_CELLULAR: u64 = 60;
 
 pub fn run() -> io::Result<()> {
     let _daemon_guard = DaemonGuard::acquire()?;
@@ -31,16 +33,36 @@ pub fn run() -> io::Result<()> {
     let mut wifi_pending_since: Option<Instant> = None;
     let mut wifi_applied = false;
     let mut adaptive_count: u32 = 0;
+    let mut last_qdisc_check: Option<Instant> = None;
+    let mut route_unavailable = false;
 
     loop {
         let iface = match network::active_iface() {
             Ok(i) => i,
             Err(e) => {
-                logging::log_print(&format!("[WARN] iface detect failed: {e}"));
+                if !route_unavailable {
+                    logging::log_print(&format!(
+                        "[WARN] Network route lost ({e}); policy will be reapplied when it returns"
+                    ));
+                    route_unavailable = true;
+                }
+                if last_mode != IfaceMode::Unknown || !last_iface.is_empty() {
+                    last_mode = IfaceMode::Unknown;
+                    last_iface.clear();
+                    last_change = None;
+                    wifi_pending_since = None;
+                    wifi_applied = false;
+                    last_qdisc_check = None;
+                }
                 thread::sleep(Duration::from_secs(SLEEP_NORMAL));
                 continue;
             }
         };
+
+        if route_unavailable {
+            logging::log_print(&format!("[INFO] Network route restored on {iface}"));
+            route_unavailable = false;
+        }
 
         let new_mode = network::iface_mode(&iface);
         let force_apply = config::module_dir().join("force_apply").exists();
@@ -61,18 +83,21 @@ pub fn run() -> io::Result<()> {
                 match new_mode {
                     IfaceMode::Cellular => {
                         apply_interface_settings(&iface, IfaceMode::Cellular);
+                        last_qdisc_check = Some(Instant::now());
                     }
                     IfaceMode::WiFi => {
                         if force_apply {
                             apply_interface_settings(&iface, IfaceMode::WiFi);
                             wifi_applied = true;
                             wifi_pending_since = None;
+                            last_qdisc_check = Some(Instant::now());
                         } else {
                             wifi_applied = false;
                             wifi_pending_since = Some(Instant::now());
+                            last_qdisc_check = None;
                         }
                     }
-                    IfaceMode::Unknown => {}
+                    IfaceMode::Unknown => last_qdisc_check = None,
                 }
                 last_mode = new_mode;
                 last_iface.clone_from(&iface);
@@ -96,10 +121,27 @@ pub fn run() -> io::Result<()> {
                 ));
                 apply_interface_settings(&iface, IfaceMode::WiFi);
                 wifi_applied = true;
+                last_qdisc_check = Some(Instant::now());
             }
         } else if new_mode != IfaceMode::WiFi {
             wifi_applied = false;
             wifi_pending_since = None;
+        }
+
+        let policy_active = match new_mode {
+            IfaceMode::WiFi => wifi_applied,
+            IfaceMode::Cellular => true,
+            IfaceMode::Unknown => false,
+        };
+        if policy_active
+            && last_qdisc_check
+                .map(|checked| checked.elapsed() >= qdisc_check_interval(new_mode))
+                .unwrap_or(false)
+        {
+            if let Err(error) = reconcile_interface_qdisc(&iface, new_mode) {
+                logging::log_print(&format!("[WARN] qdisc reconciliation failed: {error}"));
+            }
+            last_qdisc_check = Some(Instant::now());
         }
 
         // Adaptive polling
@@ -274,6 +316,31 @@ fn apply_interface_settings(iface: &str, mode: IfaceMode) {
     }
 }
 
+fn reconcile_interface_qdisc(iface: &str, mode: IfaceMode) -> io::Result<()> {
+    let available = sysctl::available_algorithms()?;
+    let algo = select_algorithm(mode.prefix(), &available);
+    let qdisc = qdisc_override().unwrap_or(config::get_algo_config(algo).qdisc);
+    if qdisc.is_empty() {
+        return Ok(());
+    }
+
+    if network::reconcile_qdisc(iface, qdisc)? {
+        logging::log_print(&format!(
+            "[INFO] Restored qdisc after kernel reset: {qdisc} ({iface})"
+        ));
+    }
+    sysctl::set_default_qdisc(qdisc)?;
+    Ok(())
+}
+
+fn qdisc_check_interval(mode: IfaceMode) -> Duration {
+    Duration::from_secs(match mode {
+        IfaceMode::WiFi => QDISC_CHECK_WIFI,
+        IfaceMode::Cellular => QDISC_CHECK_CELLULAR,
+        IfaceMode::Unknown => QDISC_CHECK_CELLULAR,
+    })
+}
+
 fn update_description(mode: IfaceMode, algo: &str) {
     let desc = format!(
         "TCP Optimisations & dynamic congestion control | iface: {} {} | algo: {algo}",
@@ -370,7 +437,8 @@ fn should_apply_wifi(already_applied: bool, vowifi_active: bool, elapsed: Durati
 
 #[cfg(test)]
 mod tests {
-    use super::should_apply_wifi;
+    use super::{qdisc_check_interval, should_apply_wifi};
+    use crate::network::IfaceMode;
     use std::time::Duration;
 
     #[test]
@@ -379,5 +447,17 @@ mod tests {
         assert!(!should_apply_wifi(false, false, Duration::from_secs(9)));
         assert!(should_apply_wifi(false, false, Duration::from_secs(10)));
         assert!(!should_apply_wifi(true, true, Duration::from_secs(20)));
+    }
+
+    #[test]
+    fn qdisc_watchdog_uses_interface_specific_intervals() {
+        assert_eq!(
+            qdisc_check_interval(IfaceMode::WiFi),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            qdisc_check_interval(IfaceMode::Cellular),
+            Duration::from_secs(60)
+        );
     }
 }
