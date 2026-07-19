@@ -51,9 +51,37 @@ const unavailableKsu = {
 // Mock device values are only legal in an explicit/local browser preview.
 // Production must report unavailable instead of presenting preset data.
 const bridge = window.ksu || (previewAllowed ? mockKsu : unavailableKsu);
+let mockLastRepair = null;
 
 function mockExec(cmd) {
 	// Simulate realistic return values for preview
+	if (cmd.includes('runtime-policy-repair')) {
+		mockLastRepair = { timestamp_epoch: Math.floor(Date.now() / 1000), success: true, reason: 'manual', errors: [] };
+		return { errno: 0, stdout: JSON.stringify(mockLastRepair), stderr: '' };
+	}
+	if (cmd.includes('runtime-status-snapshot')) {
+		const checks = [
+			['interface_mode', 'Wi-Fi or Cellular', 'Wi-Fi'],
+			['congestion_algorithm', 'bbr', 'bbr'],
+			['default_qdisc', 'fq_codel', 'fq_codel'],
+			['interface_qdisc', 'fq_codel', 'fq_codel'],
+			['tcp_pacing_ca_ratio', '120', '120'],
+			['tcp_pacing_ss_ratio', '240', '240'],
+		].map(([key, expected, actual]) => ({ key, expected, actual, state: 'match', repairable: key !== 'interface_mode' }));
+		return { errno: 0, stdout: JSON.stringify({
+			build: { version: '3.0.0', git_sha: 'preview', build_epoch: 0 },
+			active_iface: 'wlan0', module_active: true, algorithm: 'bbr', default_qdisc: 'fq_codel',
+			available_algorithms: ['bbr', 'bbr2', 'cubic', 'westwood', 'reno', 'htcp', 'vegas', 'yeah', 'illinois', 'dctcp', 'cdg', 'bic', 'highspeed', 'hybla', 'nv', 'scalable', 'lp'],
+			proxy: 'Mihomo · TPROXY', hosts: 'none', init_windows: [32, 32],
+			tcp: { retrans: 1234, in_segs: 15234567, out_segs: 12345678 },
+			iface: { rx_bytes: 1234567890, tx_bytes: 987654321 },
+			sock: { tcp_in_use: 89, tcp_orphan: 2, tcp_tw: 12, tcp_alloc: 256, tcp_mem: 5 },
+			established: 7,
+			dns: [{ iface: 'wlan0', ip: '1.1.1.1' }, { iface: 'system', ip: '8.8.8.8' }],
+			conn_info: { avg_rtt_ms: 43.14, max_rtt_ms: 72.8, avg_cwnd: 18, max_cwnd: 32, samples: 7 },
+			verification: { summary: { matched: checks.length, total: checks.length, drifted: 0, unavailable: 0 }, checks, errors: [], last_repair: mockLastRepair },
+		}), stderr: '' };
+	}
 	if (cmd.includes('tcp_available_congestion_control'))
 		return { errno: 0, stdout: 'bbr bbr2 cubic westwood reno htcp vegas yeah illinois dctcp cdg bic highspeed hybla nv scalable lp', stderr: '' };
 	if (cmd.includes('tcp_congestion_control'))

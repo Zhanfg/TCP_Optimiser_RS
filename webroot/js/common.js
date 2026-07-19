@@ -145,6 +145,54 @@ export async function getDefaultQdisc() {
 	}
 }
 
+const runtimeSnapshotCache = new Map();
+const runtimeSnapshotCheckedAt = new Map();
+
+function rustBinaryCommand(marker, subcommand) {
+	const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
+	return `# ${marker}
+moddir=${shellQuote(dir)}
+case "$(getprop ro.product.cpu.abi 2>/dev/null)" in
+	arm64-v8a) rust_abi=arm64-v8a ;;
+	armeabi-v7a|armeabi) rust_abi=armeabi-v7a ;;
+	x86_64) rust_abi=x86_64 ;;
+	*) exit 126 ;;
+esac
+rust_bin="$moddir/bin/$rust_abi/tcp_optimiser"
+[ -x "$rust_bin" ] || exit 127
+export TCP_OPTIMISER_MODULE_DIR="$moddir"
+export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:$PATH"
+exec "$rust_bin" ${subcommand}`;
+}
+
+export async function getRuntimeSnapshot(force = false, includeStats = false) {
+	const now = Date.now();
+	const cacheKey = includeStats ? 'full' : 'runtime';
+	if (!force && runtimeSnapshotCache.has(cacheKey) && now - (runtimeSnapshotCheckedAt.get(cacheKey) || 0) < 1500) {
+		return runtimeSnapshotCache.get(cacheKey);
+	}
+	const subcommand = includeStats ? 'status' : 'status --runtime-only';
+	const { stdout } = await exec(rustBinaryCommand('runtime-status-snapshot', subcommand));
+	const snapshot = JSON.parse(stdout.trim());
+	if (!snapshot || typeof snapshot !== 'object' || !snapshot.active_iface || !snapshot.verification) {
+		throw new Error('Invalid runtime status payload');
+	}
+	runtimeSnapshotCache.set(cacheKey, snapshot);
+	runtimeSnapshotCheckedAt.set(cacheKey, now);
+	return snapshot;
+}
+
+export async function repairRuntimePolicy() {
+	const { stdout } = await exec(rustBinaryCommand('runtime-policy-repair', 'repair'));
+	const record = JSON.parse(stdout.trim());
+	if (!record || typeof record.success !== 'boolean' || !Array.isArray(record.errors)) {
+		throw new Error('Invalid runtime repair payload');
+	}
+	runtimeSnapshotCache.clear();
+	runtimeSnapshotCheckedAt.clear();
+	return record;
+}
+
 let proxyStatusCache = null;
 let proxyStatusCheckedAt = 0;
 

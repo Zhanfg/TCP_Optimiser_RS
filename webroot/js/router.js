@@ -32,6 +32,8 @@ const router_state = {
 	logsList: [],
 	available_algorithms: [],
 	qdiscCapabilities: [],
+	runtimeSnapshot: null,
+	verification: null,
 	current_active_page: 'home',
 	statsParams: { tcpConns: null, sockStat: null, dnsServers: null, ssInfo: null, tcpCounters: null },
 };

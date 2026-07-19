@@ -2,7 +2,7 @@ import I18N from './i18n.js';
 import router_state from './router.js';
 import {
 	getTCPStatCounters, getIfaceBytes, getSockStat, getTCPConnsCount,
-	getDNSServers, getSSInfo,
+	getDNSServers, getSSInfo, getRuntimeSnapshot,
 } from './common.js';
 
 // History buffers: 60 points × 5s = 5 minutes
@@ -137,12 +137,44 @@ function renderDetailCharts() {
 }
 
 async function sampleStats() {
-	const activeIface = router_state.homePageParams.active_iface;
-	const [tcp, iface, sock, conns, dns, ssInfo] = await Promise.all([
-		getTCPStatCounters(),
-		activeIface && !/^(unknown|none|error)$/i.test(activeIface) ? getIfaceBytes(activeIface) : Promise.resolve(null),
-		getSockStat(), getTCPConnsCount(), getDNSServers(), getSSInfo(),
-	]);
+	let activeIface = router_state.homePageParams.active_iface;
+	let tcp, iface, sock, conns, dns, ssInfo;
+	try {
+		const snapshot = await getRuntimeSnapshot(true, true);
+		activeIface = snapshot.active_iface || activeIface;
+		tcp = snapshot.tcp ? {
+			retrans: snapshot.tcp.retrans,
+			inSegs: snapshot.tcp.in_segs,
+			outSegs: snapshot.tcp.out_segs,
+		} : null;
+		iface = snapshot.iface ? {
+			rxBytes: snapshot.iface.rx_bytes,
+			txBytes: snapshot.iface.tx_bytes,
+		} : null;
+		sock = snapshot.sock ? {
+			tcpInUse: snapshot.sock.tcp_in_use,
+			tcpOrphan: snapshot.sock.tcp_orphan,
+			tcpTW: snapshot.sock.tcp_tw,
+			tcpAlloc: snapshot.sock.tcp_alloc,
+			tcpMem: snapshot.sock.tcp_mem,
+		} : null;
+		conns = snapshot.established ?? null;
+		dns = snapshot.dns ?? null;
+		ssInfo = snapshot.conn_info ? {
+			avgRTT: snapshot.conn_info.avg_rtt_ms,
+			maxRTT: snapshot.conn_info.max_rtt_ms,
+			avgCWND: snapshot.conn_info.avg_cwnd,
+			maxCWND: snapshot.conn_info.max_cwnd,
+			count: snapshot.conn_info.samples,
+		} : null;
+	} catch (error) {
+		console.warn('Unified stats snapshot unavailable, using compatibility probes:', error);
+		[tcp, iface, sock, conns, dns, ssInfo] = await Promise.all([
+			getTCPStatCounters(),
+			activeIface && !/^(unknown|none|error)$/i.test(activeIface) ? getIfaceBytes(activeIface) : Promise.resolve(null),
+			getSockStat(), getTCPConnsCount(), getDNSServers(), getSSInfo(),
+		]);
+	}
 
 	const now = Date.now();
 	const countersAvailable = iface && tcp;

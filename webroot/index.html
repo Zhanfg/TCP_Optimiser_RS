@@ -121,6 +121,28 @@
             </div>
           </div>
 
+          <details class="capability-panel collapsible-panel verification-panel" id="verification-panel">
+            <summary class="panel-heading capability-heading collapsible-summary">
+              <div>
+                <p class="panel-kicker" data-i18n="verification_eyebrow">Policy verification</p>
+                <h3 data-i18n="verification_title">Actual-state check</h3>
+              </div>
+              <span class="collapsible-summary__actions">
+                <span id="verification-count" class="capability-count" data-i18n="label_loading">Loading...</span>
+                <span class="collapsible-chevron ui-icon icon-chevron-down" aria-hidden="true"></span>
+              </span>
+            </summary>
+            <div class="collapsible-panel__body">
+              <p class="capability-help" data-i18n="verification_desc">Compares the saved policy with live kernel and interface values.</p>
+              <div id="verification-list" class="verification-list" aria-live="polite"></div>
+              <p id="verification-last-repair" class="verification-last-repair" data-i18n="verification_never_repaired">No manual repair recorded</p>
+              <div class="verification-actions">
+                <button type="button" id="verification-refresh-btn" class="btn-outline" data-i18n="verification_recheck">Check again</button>
+                <button type="button" id="verification-repair-btn" class="btn-tonal" data-i18n="verification_repair">Repair policy</button>
+              </div>
+            </div>
+          </details>
+
           <details class="capability-panel collapsible-panel" id="home-capability-panel">
             <summary class="panel-heading capability-heading collapsible-summary">
               <div>

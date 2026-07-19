@@ -50,34 +50,56 @@ pub struct NetworkSnapshot {
     pub module_active: bool,
     pub algorithm: String,
     pub default_qdisc: String,
+    pub available_algorithms: Vec<String>,
     pub proxy: String,
     pub hosts: String,
     pub init_windows: Vec<u32>,
-    pub tcp: TcpCounters,
-    pub iface: IfaceBytes,
-    pub sock: SockStat,
-    pub established: u32,
-    pub dns: Vec<DnsServer>,
+    pub tcp: Option<TcpCounters>,
+    pub iface: Option<IfaceBytes>,
+    pub sock: Option<SockStat>,
+    pub established: Option<u32>,
+    pub dns: Option<Vec<DnsServer>>,
     pub conn_info: Option<TcpConnInfo>,
+    pub verification: crate::policy::VerificationSnapshot,
 }
 
 /// Take a full network snapshot with minimal syscalls
-pub fn network_snapshot(active_iface: &str) -> io::Result<NetworkSnapshot> {
+pub fn network_snapshot(active_iface: &str, include_stats: bool) -> io::Result<NetworkSnapshot> {
     Ok(NetworkSnapshot {
         build: crate::build_info::current(),
         active_iface: active_iface.to_string(),
         module_active: crate::daemon::is_running(),
         algorithm: crate::sysctl::current_algorithm().unwrap_or_else(|_| "unknown".to_string()),
         default_qdisc: crate::sysctl::default_qdisc().unwrap_or_else(|_| "unknown".to_string()),
+        available_algorithms: crate::sysctl::available_algorithms().unwrap_or_default(),
         proxy: crate::proxy::detect_proxy().label().to_string(),
-        hosts: crate::proxy::detect_hosts().label(),
+        hosts: crate::proxy::detect_hosts().key(),
         init_windows: crate::network::get_initcwnd_initrwnd().unwrap_or_default(),
-        tcp: parse_tcp_snmp(&fs::read_to_string("/proc/net/snmp")?)?,
-        iface: parse_iface_bytes(&fs::read_to_string("/proc/net/dev")?, active_iface)?,
-        sock: parse_sockstat(&fs::read_to_string("/proc/net/sockstat")?)?,
-        established: established_conns(),
-        dns: dns_servers(),
-        conn_info: tcp_conn_info(),
+        tcp: include_stats
+            .then(|| {
+                fs::read_to_string("/proc/net/snmp")
+                    .and_then(|content| parse_tcp_snmp(&content))
+                    .ok()
+            })
+            .flatten(),
+        iface: include_stats
+            .then(|| {
+                fs::read_to_string("/proc/net/dev")
+                    .and_then(|content| parse_iface_bytes(&content, active_iface))
+                    .ok()
+            })
+            .flatten(),
+        sock: include_stats
+            .then(|| {
+                fs::read_to_string("/proc/net/sockstat")
+                    .and_then(|content| parse_sockstat(&content))
+                    .ok()
+            })
+            .flatten(),
+        established: include_stats.then(established_conns),
+        dns: include_stats.then(dns_servers),
+        conn_info: include_stats.then(tcp_conn_info).flatten(),
+        verification: crate::policy::verify_policy(active_iface),
     })
 }
 

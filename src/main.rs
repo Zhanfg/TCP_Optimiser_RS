@@ -8,6 +8,7 @@ mod install;
 mod integrity;
 mod logging;
 mod network;
+mod policy;
 mod proxy;
 mod stats;
 mod sysctl;
@@ -33,6 +34,15 @@ enum Command {
         /// Interface to sample; defaults to the active route interface
         #[arg(long)]
         iface: Option<String>,
+        /// Skip throughput and connection statistics for lightweight UI refreshes
+        #[arg(long)]
+        runtime_only: bool,
+    },
+    /// Reapply configured TCP policy without terminating existing connections
+    Repair {
+        /// Interface to repair; defaults to the active route interface
+        #[arg(long)]
+        iface: Option<String>,
     },
     /// Print build provenance embedded in this binary
     BuildInfo,
@@ -50,7 +60,11 @@ fn main() {
         Command::Daemon => daemon::run(),
         Command::Once => daemon::run_once(),
         Command::Install => install::run(),
-        Command::Status { iface } => print_status(iface),
+        Command::Status {
+            iface,
+            runtime_only,
+        } => print_status(iface, runtime_only),
+        Command::Repair { iface } => repair_policy(iface),
         Command::BuildInfo => print_build_info(),
         Command::VerifyModule { path } => integrity::verify_module(&path),
     };
@@ -61,6 +75,16 @@ fn main() {
     }
 }
 
+fn repair_policy(iface: Option<String>) -> std::io::Result<()> {
+    let iface = iface.map(Ok).unwrap_or_else(network::active_iface)?;
+    let record = policy::repair_policy(&iface)?;
+    println!(
+        "{}",
+        serde_json::to_string(&record).map_err(std::io::Error::other)?
+    );
+    Ok(())
+}
+
 fn print_build_info() -> std::io::Result<()> {
     println!(
         "{}",
@@ -69,9 +93,9 @@ fn print_build_info() -> std::io::Result<()> {
     Ok(())
 }
 
-fn print_status(iface: Option<String>) -> std::io::Result<()> {
+fn print_status(iface: Option<String>, runtime_only: bool) -> std::io::Result<()> {
     let iface = iface.map(Ok).unwrap_or_else(network::active_iface)?;
-    let snapshot = stats::network_snapshot(&iface)?;
+    let snapshot = stats::network_snapshot(&iface, !runtime_only)?;
     println!(
         "{}",
         serde_json::to_string(&snapshot).map_err(std::io::Error::other)?

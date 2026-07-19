@@ -2916,6 +2916,87 @@ body {
   padding-top: 13px;
 }
 
+.verification-panel[data-state="match"] {
+  border-color: color-mix(in srgb, var(--md-sys-color-primary) 46%, var(--panel-border));
+}
+
+.verification-panel[data-state="drift"] {
+  border-color: color-mix(in srgb, var(--md-sys-color-error) 58%, var(--panel-border));
+}
+
+.verification-list {
+  display: grid;
+  gap: 7px;
+}
+
+.verification-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 9px 11px;
+  border-radius: 14px;
+  background: var(--md-sys-color-surface-container-low);
+}
+
+.verification-row__text {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.verification-row__text strong {
+  color: var(--md-sys-color-on-surface);
+  font-size: 0.78rem;
+  font-weight: 650;
+  text-transform: capitalize;
+}
+
+.verification-row__text span {
+  overflow: hidden;
+  color: var(--md-sys-color-on-surface-variant);
+  font: 500 0.68rem/1.35 var(--data-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.verification-row__state {
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: var(--md-sys-color-on-surface-variant);
+  background: var(--md-sys-color-surface-container-high);
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.verification-row[data-state="match"] .verification-row__state {
+  color: var(--md-sys-color-primary);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 13%, transparent);
+}
+
+.verification-row[data-state="drift"] .verification-row__state {
+  color: var(--md-sys-color-error);
+  background: color-mix(in srgb, var(--md-sys-color-error) 13%, transparent);
+}
+
+.verification-last-repair {
+  margin: 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.7rem;
+}
+
+.verification-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+}
+
+.verification-actions :is(.btn-outline, .btn-tonal) {
+  width: 100%;
+  min-height: 40px;
+}
+
 .stats-disclosure {
   border: 1px solid var(--panel-border);
   border-radius: var(--panel-radius);

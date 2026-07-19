@@ -2,6 +2,13 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AdvancedOverride {
+    pub key: &'static str,
+    pub path: &'static str,
+    pub value: u32,
+}
+
 const ADVANCED_SYSCTLS: &[(&str, &str, u32, u32)] = &[
     (
         "tcp_keepalive_time",
@@ -300,18 +307,22 @@ pub fn apply_base_sysctls() -> Vec<String> {
 }
 
 fn apply_advanced_overrides(failures: &mut Vec<String>) {
-    let path = crate::config::module_dir().join("advanced.conf");
-    let Ok(content) = fs::read_to_string(path) else {
-        return;
-    };
-    let (overrides, parse_failures) = parse_advanced_overrides(&content);
+    let (overrides, parse_failures) = configured_advanced_overrides();
     failures.extend(parse_failures);
-    for (sysctl_path, value) in overrides {
-        write_optional(sysctl_path, &value.to_string(), failures);
+    for item in overrides {
+        write_optional(item.path, &item.value.to_string(), failures);
     }
 }
 
-fn parse_advanced_overrides(content: &str) -> (Vec<(&'static str, u32)>, Vec<String>) {
+pub(crate) fn configured_advanced_overrides() -> (Vec<AdvancedOverride>, Vec<String>) {
+    let path = crate::config::module_dir().join("advanced.conf");
+    let Ok(content) = fs::read_to_string(path) else {
+        return (Vec::new(), Vec::new());
+    };
+    parse_advanced_overrides(&content)
+}
+
+fn parse_advanced_overrides(content: &str) -> (Vec<AdvancedOverride>, Vec<String>) {
     let mut overrides = Vec::new();
     let mut failures = Vec::new();
     for line in content
@@ -323,17 +334,21 @@ fn parse_advanced_overrides(content: &str) -> (Vec<(&'static str, u32)>, Vec<Str
             failures.push(format!("advanced.conf: malformed entry {line:?}"));
             continue;
         };
-        let Some((_, sysctl_path, min, max)) = ADVANCED_SYSCTLS
+        let Some(&(known_key, sysctl_path, min, max)) = ADVANCED_SYSCTLS
             .iter()
             .find(|(known, _, _, _)| *known == key)
         else {
             continue;
         };
-        let Some(value) = parse_bounded_value(raw_value, *min, *max) else {
+        let Some(value) = parse_bounded_value(raw_value, min, max) else {
             failures.push(format!("advanced.conf: invalid value for {key}"));
             continue;
         };
-        overrides.push((*sysctl_path, value));
+        overrides.push(AdvancedOverride {
+            key: known_key,
+            path: sysctl_path,
+            value,
+        });
     }
     (overrides, failures)
 }
@@ -417,7 +432,8 @@ fn preserve_and_raise_triplet(path: &str, floor: (u32, u32, u32), failures: &mut
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_advanced_overrides, parse_bounded_value, parse_sysctl_triplet, ADVANCED_SYSCTLS,
+        parse_advanced_overrides, parse_bounded_value, parse_sysctl_triplet, AdvancedOverride,
+        ADVANCED_SYSCTLS,
     };
 
     #[test]
@@ -464,9 +480,21 @@ mod tests {
         assert_eq!(
             overrides,
             vec![
-                ("/proc/sys/net/ipv4/tcp_fin_timeout", 30),
-                ("/proc/sys/net/ipv4/tcp_mtu_probing", 2),
-                ("/proc/sys/net/ipv4/tcp_plb_idle_rehash_rounds", 3),
+                AdvancedOverride {
+                    key: "tcp_fin_timeout",
+                    path: "/proc/sys/net/ipv4/tcp_fin_timeout",
+                    value: 30,
+                },
+                AdvancedOverride {
+                    key: "tcp_mtu_probing",
+                    path: "/proc/sys/net/ipv4/tcp_mtu_probing",
+                    value: 2,
+                },
+                AdvancedOverride {
+                    key: "tcp_plb_idle_rehash_rounds",
+                    path: "/proc/sys/net/ipv4/tcp_plb_idle_rehash_rounds",
+                    value: 3,
+                },
             ]
         );
         assert_eq!(failures.len(), 2);

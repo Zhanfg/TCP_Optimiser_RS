@@ -40,6 +40,7 @@ TCP Optimiser detects the active Wi-Fi or cellular interface and applies a kerne
 
 - Four primary views: Home, Statistics, Settings and Logs.
 - Live throughput, retransmission, congestion-window and RTT charts.
+- A single Rust JSON snapshot supplies runtime state and statistics, while the WebUI verifies saved policy against live kernel values and the interface qdisc; detected drift can be repaired without intentionally terminating existing connections.
 - Proxy detection with application name, package name, core name/version, VPN and TPROXY evidence.
 - Hosts-file detection for system defaults and common systemless hosts modules.
 - Per-interface DNS display and detailed network-route status.
@@ -55,7 +56,7 @@ TCP Optimiser detects the active Wi-Fi or cellular interface and applies a kerne
 - Five built-in presets plus JSON import/export for custom presets.
 - 39 runtime-detected advanced kernel parameters covering lifecycle, buffers, queues, loss recovery, PLB, low-latency polling and conntrack. Nodes absent from the running kernel remain unavailable and are never written.
 - Baseband partition discovery and backup with an automatically generated restore script.
-- Simplified Chinese and English interfaces with 252 validated translation entries.
+- Simplified Chinese and English interfaces with 279 validated translation entries.
 
 ## Installation
 

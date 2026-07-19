@@ -126,16 +126,16 @@ pub enum HostsStatus {
 }
 
 impl HostsStatus {
-    pub fn label(&self) -> String {
+    pub fn key(&self) -> String {
         match self {
-            HostsStatus::None => "\u{2014}".to_string(),
-            HostsStatus::Systemless => "Systemless".to_string(),
-            HostsStatus::BirdHost => "BirdHost".to_string(),
-            HostsStatus::AdAway => "AdAway".to_string(),
-            HostsStatus::Blocker => "Blocker App".to_string(),
-            HostsStatus::Blocked(n) => format!("{n} blocked"),
-            HostsStatus::Modified => "Modified".to_string(),
-            HostsStatus::Unknown => "\u{2014}".to_string(),
+            HostsStatus::None => "none".to_string(),
+            HostsStatus::Systemless => "systemless".to_string(),
+            HostsStatus::BirdHost => "birdhost".to_string(),
+            HostsStatus::AdAway => "adaway".to_string(),
+            HostsStatus::Blocker => "blocker".to_string(),
+            HostsStatus::Blocked(count) => format!("blocked:{count}"),
+            HostsStatus::Modified => "modified".to_string(),
+            HostsStatus::Unknown => "unknown".to_string(),
         }
     }
 }

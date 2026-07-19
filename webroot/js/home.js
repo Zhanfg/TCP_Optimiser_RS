@@ -1,15 +1,15 @@
-import { exec } from './kernelsu.js';
+import { exec, toast } from './kernelsu.js';
 import I18N from './i18n.js';
-import { get_active_iface, get_active_algorithm, getInitcwndInitrwndValue, getModuleActiveState, getDefaultQdisc, getProxyStatus, getHostsStatus, getQdiscCapabilities } from './common.js';
+import { get_active_iface, get_active_algorithm, getInitcwndInitrwndValue, getModuleActiveState, getDefaultQdisc, getProxyStatus, getHostsStatus, getQdiscCapabilities, getRuntimeSnapshot, repairRuntimePolicy, formatLocalDateTime } from './common.js';
 import router_state from './router.js';
 import { ALL_ALGOS, getAlgorithmDescription, getQdiscDescription } from './capabilities.js';
-import { setAnimatedText } from './motion.js';
+import { haptic, setAnimatedText } from './motion.js';
 
 let _lastAlgoSet = '';
 let _lastActiveAlgo = '';
 let _lastEnabled = false;
 
-export async function updateModuleStatus() {
+export async function updateModuleStatus(force = false) {
 	try {
 		// Check via KSU API (already loaded by updateModuleInformation)
 		if (!router_state.moduleInformation) {
@@ -17,10 +17,35 @@ export async function updateModuleStatus() {
 			return;
 		}
 
-		const [running, iface, algo, initcwndInitrwnd, defaultQdisc, proxy, hosts, qdiscCapabilities] = await Promise.all([
-			getModuleActiveState(), get_active_iface(), get_active_algorithm(),
-			getInitcwndInitrwndValue(), getDefaultQdisc(), getProxyStatus(), getHostsStatus(), getQdiscCapabilities(),
+		let snapshot = null;
+		try {
+			snapshot = await getRuntimeSnapshot(force);
+		} catch (error) {
+			console.warn('Unified runtime snapshot unavailable, using compatibility probes:', error);
+		}
+
+		let running, iface, algo, initcwndInitrwnd, defaultQdisc, hosts;
+		const [proxy, qdiscCapabilities] = await Promise.all([
+			getProxyStatus(force), getQdiscCapabilities(force),
 		]);
+		if (snapshot) {
+			running = snapshot.module_active;
+			iface = snapshot.active_iface;
+			algo = snapshot.algorithm;
+			initcwndInitrwnd = snapshot.init_windows || [];
+			defaultQdisc = snapshot.default_qdisc;
+			hosts = snapshot.hosts || 'unknown';
+			router_state.available_algorithms = snapshot.available_algorithms || [];
+			router_state.runtimeSnapshot = snapshot;
+			router_state.verification = snapshot.verification;
+		} else {
+			[running, iface, algo, initcwndInitrwnd, defaultQdisc, hosts] = await Promise.all([
+				getModuleActiveState(), get_active_iface(), get_active_algorithm(),
+				getInitcwndInitrwndValue(), getDefaultQdisc(), getHostsStatus(),
+			]);
+			router_state.runtimeSnapshot = null;
+			router_state.verification = null;
+		}
 
 		router_state.homePageParams.module_status = running ? "Enabled" : "Disabled";
 		router_state.homePageParams.active_iface = iface || "None";
@@ -36,6 +61,74 @@ export async function updateModuleStatus() {
 	} catch (error) {
 		console.error('Error updating status:', error);
 	}
+}
+
+function verificationCheckLabel(key) {
+	const known = {
+		interface_mode: 'verification_check_interface',
+		configured_policy: 'verification_check_policy',
+		congestion_algorithm: 'verification_check_algorithm',
+		default_qdisc: 'verification_check_default_qdisc',
+		interface_qdisc: 'verification_check_interface_qdisc',
+		tcp_pacing_ca_ratio: 'verification_check_pacing_ca',
+		tcp_pacing_ss_ratio: 'verification_check_pacing_ss',
+	};
+	return known[key] ? I18N.t(known[key]) : key.replace(/^advanced\./, '').replaceAll('_', ' ');
+}
+
+function renderVerification() {
+	const snapshot = router_state.verification;
+	const list = document.getElementById('verification-list');
+	const count = document.getElementById('verification-count');
+	const panel = document.getElementById('verification-panel');
+	const lastRepair = document.getElementById('verification-last-repair');
+	const repairButton = document.getElementById('verification-repair-btn');
+	if (!list || !count || !panel || !lastRepair) return;
+
+	list.replaceChildren();
+	if (!snapshot?.summary || !Array.isArray(snapshot.checks)) {
+		if (repairButton) repairButton.disabled = true;
+		count.textContent = I18N.t('verification_unavailable');
+		panel.dataset.state = 'unavailable';
+		lastRepair.textContent = I18N.t('verification_requires_core');
+		return;
+	}
+	if (repairButton) repairButton.disabled = router_state.homePageParams.module_status !== 'Enabled';
+
+	const summary = snapshot.summary;
+	count.textContent = summary.drifted > 0
+		? I18N.t('verification_drift_count', { count: summary.drifted })
+		: summary.unavailable > 0
+			? I18N.t('verification_unavailable_count', { count: summary.unavailable })
+			: I18N.t('verification_match_count', { matched: summary.matched, total: summary.total });
+	panel.dataset.state = summary.drifted > 0 ? 'drift' : (summary.unavailable > 0 ? 'unavailable' : 'match');
+
+	for (const check of snapshot.checks) {
+		const row = document.createElement('div');
+		row.className = 'verification-row';
+		row.dataset.state = check.state;
+		const text = document.createElement('div');
+		text.className = 'verification-row__text';
+		const title = document.createElement('strong');
+		title.textContent = verificationCheckLabel(check.key);
+		const values = document.createElement('span');
+		values.textContent = check.state === 'match'
+			? check.actual
+			: `${check.actual ?? I18N.t('verification_value_unavailable')} → ${check.expected}`;
+		text.append(title, values);
+		const state = document.createElement('span');
+		state.className = 'verification-row__state';
+		state.textContent = I18N.t(`verification_state_${check.state}`);
+		row.append(text, state);
+		list.appendChild(row);
+	}
+
+	const repair = snapshot.last_repair;
+	lastRepair.textContent = repair
+		? I18N.t(repair.success ? 'verification_last_repair_success' : 'verification_last_repair_failed', {
+			time: formatLocalDateTime(new Date(repair.timestamp_epoch * 1000)),
+		})
+		: I18N.t('verification_never_repaired');
 }
 
 function classifyInterface(ifaceName) {
@@ -269,9 +362,41 @@ export function updateHomeUI() {
 	}
 
 	updateAlgoChips();
+	renderVerification();
 }
 
 export async function initHome() {
+	document.getElementById('verification-refresh-btn')?.addEventListener('click', async event => {
+		const button = event.currentTarget;
+		button.disabled = true;
+		try {
+			await updateModuleStatus(true);
+			updateHomeUI();
+			haptic('selection');
+		} finally {
+			button.disabled = false;
+		}
+	});
+	document.getElementById('verification-repair-btn')?.addEventListener('click', async event => {
+		const button = event.currentTarget;
+		button.disabled = true;
+		try {
+			const record = await repairRuntimePolicy();
+			await updateModuleStatus(true);
+			updateHomeUI();
+			toast(I18N.t(record.success ? 'verification_repair_success' : 'verification_repair_failed', {
+				count: record.errors.length,
+			}));
+			haptic(record.success ? 'success' : 'error');
+		} catch (error) {
+			console.error('Policy repair failed:', error);
+			toast(I18N.t('verification_repair_error'));
+			haptic('error');
+		} finally {
+			button.disabled = false;
+		}
+	});
+
 	// Status cards are directly tappable and keyboard accessible.
 	['iface-type', 'iface-name', 'tcp-algo', 'qdisc', 'proxy', 'hosts'].forEach(id => {
 		const card = document.getElementById(id + '-card');
