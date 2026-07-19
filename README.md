@@ -68,11 +68,11 @@ TCP Optimiser 会识别当前使用的 Wi-Fi 或蜂窝网络接口，并依据�
 
 | 预设 | Wi-Fi | 蜂窝网络 | qdisc | Pacing | 适用场景 |
 |---|---|---|---|---:|---|
-| Balanced（平衡） | CUBIC | CUBIC | fq_codel | 150/200 | 日常使用 |
-| Gaming（游戏） | BBR | BBR | fq | 200/300 | 低延迟连接 |
-| Streaming（流媒体） | BBR | CUBIC | fq_codel | 180/250 | 持续吞吐 |
-| Battery Saver（省电） | Vegas | Westwood | fq_codel | 120/180 | 降低后台活动 |
-| High-Speed（高速） | BBR3 | BBR3 | fq | 220/320 | 受支持内核上的最大吞吐 |
+| 均衡 | `CUBIC` | `CUBIC` | `fq_codel` | `150/200` | 日常使用 |
+| 游戏 | `BBR` | `BBR` | `fq` | `200/300` | 低延迟连接 |
+| 流媒体 | `BBR` | `CUBIC` | `fq_codel` | `180/250` | 持续吞吐 |
+| 省电 | `Vegas` | `Westwood` | `fq_codel` | `120/180` | 降低后台活动 |
+| 高速 | `BBR3` | `BBR3` | `fq` | `220/320` | 受支持内核上的最大吞吐 |
 
 ## 构建与发行校验
 
