@@ -1,21 +1,24 @@
 use std::fs;
 use std::io;
+use std::net::IpAddr;
 use std::process::Command;
 
-#[derive(Debug, Default)]
+use serde::Serialize;
+
+#[derive(Debug, Default, Serialize)]
 pub struct TcpCounters {
     pub retrans: u64,
     pub in_segs: u64,
     pub out_segs: u64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct IfaceBytes {
     pub rx_bytes: u64,
     pub tx_bytes: u64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct SockStat {
     pub tcp_in_use: u32,
     pub tcp_orphan: u32,
@@ -24,13 +27,13 @@ pub struct SockStat {
     pub tcp_mem: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct DnsServer {
     pub iface: String,
     pub ip: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct TcpConnInfo {
     pub avg_rtt_ms: f64,
     pub max_rtt_ms: f64,
@@ -40,9 +43,18 @@ pub struct TcpConnInfo {
 }
 
 /// Single-call stats: read /proc/net/{snmp,dev,sockstat} in one batch
-#[derive(Debug, Default)]
+#[derive(Debug, Serialize)]
 pub struct NetworkSnapshot {
+    pub build: crate::build_info::BuildInfo,
+    pub active_iface: String,
+    pub module_active: bool,
+    pub algorithm: String,
+    pub default_qdisc: String,
+    pub proxy: String,
+    pub hosts: String,
+    pub init_windows: Vec<u32>,
     pub tcp: TcpCounters,
+    pub iface: IfaceBytes,
     pub sock: SockStat,
     pub established: u32,
     pub dns: Vec<DnsServer>,
@@ -51,51 +63,139 @@ pub struct NetworkSnapshot {
 
 /// Take a full network snapshot with minimal syscalls
 pub fn network_snapshot(active_iface: &str) -> io::Result<NetworkSnapshot> {
-    let mut snap = NetworkSnapshot::default();
+    Ok(NetworkSnapshot {
+        build: crate::build_info::current(),
+        active_iface: active_iface.to_string(),
+        module_active: crate::daemon::is_running(),
+        algorithm: crate::sysctl::current_algorithm().unwrap_or_else(|_| "unknown".to_string()),
+        default_qdisc: crate::sysctl::default_qdisc().unwrap_or_else(|_| "unknown".to_string()),
+        proxy: crate::proxy::detect_proxy().label().to_string(),
+        hosts: crate::proxy::detect_hosts().label(),
+        init_windows: crate::network::get_initcwnd_initrwnd().unwrap_or_default(),
+        tcp: parse_tcp_snmp(&fs::read_to_string("/proc/net/snmp")?)?,
+        iface: parse_iface_bytes(&fs::read_to_string("/proc/net/dev")?, active_iface)?,
+        sock: parse_sockstat(&fs::read_to_string("/proc/net/sockstat")?)?,
+        established: established_conns(),
+        dns: dns_servers(),
+        conn_info: tcp_conn_info(),
+    })
+}
 
-    // Batch read /proc/net/snmp + dev + sockstat in one awk call
-    let cmd = format!(
-        "awk 'NR==1{{for(i=1;i<=NF;i++){{if($i==\"RetransSegs\")ri=i;if($i==\"InSegs\")ii=i;if($i==\"OutSegs\")oi=i}}}}/^Tcp:/&&NR>1{{print\"retrans:\"$ri\"\\nin:\"$ii\"\\nout:\"$oi}}' /proc/net/snmp; \
-         awk -v if=\"{active_iface}\" '$1==if\":\"{{print\"rx:\"$2\"\\ntx:\"$10}}' /proc/net/dev 2>/dev/null; \
-         awk '/^TCP:/{{print $3,$5,$7,$9,$11}}' /proc/net/sockstat 2>/dev/null"
-    );
-
-    if let Ok(output) = Command::new("sh").arg("-c").arg(&cmd).output() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if line.starts_with("retrans:") {
-                snap.tcp.retrans = line[8..].parse().unwrap_or(0);
-            } else if line.starts_with("in:") {
-                snap.tcp.in_segs = line[3..].parse().unwrap_or(0);
-            } else if line.starts_with("out:") {
-                snap.tcp.out_segs = line[4..].parse().unwrap_or(0);
-            } else if line.starts_with("rx:") {
-                snap.tcp.in_segs = line[3..].parse().unwrap_or(0);
-            } else if line.starts_with("tx:") {
-                snap.tcp.out_segs = line[3..].parse().unwrap_or(0);
-            } else {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 5 {
-                    snap.sock.tcp_in_use = parts[0].parse().unwrap_or(0);
-                    snap.sock.tcp_orphan = parts[1].parse().unwrap_or(0);
-                    snap.sock.tcp_tw = parts[2].parse().unwrap_or(0);
-                    snap.sock.tcp_alloc = parts[3].parse().unwrap_or(0);
-                    snap.sock.tcp_mem = parts[4].parse().unwrap_or(0);
-                }
-            }
-        }
+fn parse_tcp_snmp(content: &str) -> io::Result<TcpCounters> {
+    let mut tcp_lines = content.lines().filter(|line| line.starts_with("Tcp:"));
+    let headers: Vec<&str> = tcp_lines
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing TCP SNMP header"))?
+        .split_whitespace()
+        .skip(1)
+        .collect();
+    let values: Vec<&str> = tcp_lines
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing TCP SNMP values"))?
+        .split_whitespace()
+        .skip(1)
+        .collect();
+    if headers.len() != values.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TCP SNMP header/value length mismatch",
+        ));
     }
+    let get = |name: &str| -> io::Result<u64> {
+        let index = headers
+            .iter()
+            .position(|header| *header == name)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("missing TCP counter {name}"),
+                )
+            })?;
+        values[index].parse::<u64>().map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid TCP counter {name}: {error}"),
+            )
+        })
+    };
+    Ok(TcpCounters {
+        retrans: get("RetransSegs")?,
+        in_segs: get("InSegs")?,
+        out_segs: get("OutSegs")?,
+    })
+}
 
-    // Established connections count
-    snap.established = established_conns();
+fn parse_iface_bytes(content: &str, active_iface: &str) -> io::Result<IfaceBytes> {
+    for line in content.lines() {
+        let Some((name, values)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim() != active_iface {
+            continue;
+        }
+        let fields: Vec<&str> = values.split_whitespace().collect();
+        if fields.len() < 9 {
+            break;
+        }
+        return Ok(IfaceBytes {
+            rx_bytes: parse_u64(fields[0], "interface rx_bytes")?,
+            tx_bytes: parse_u64(fields[8], "interface tx_bytes")?,
+        });
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("interface {active_iface} missing from /proc/net/dev"),
+    ))
+}
 
-    // DNS
-    snap.dns = dns_servers();
+fn parse_sockstat(content: &str) -> io::Result<SockStat> {
+    let line = content
+        .lines()
+        .find(|line| line.starts_with("TCP:"))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing TCP sockstat line"))?;
+    let fields: Vec<&str> = line.split_whitespace().skip(1).collect();
+    let get = |name: &str| -> io::Result<u32> {
+        let index = fields
+            .iter()
+            .position(|field| *field == name)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("missing sockstat field {name}"),
+                )
+            })?;
+        fields
+            .get(index + 1)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("missing value for {name}"),
+                )
+            })?
+            .parse::<u32>()
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid {name}: {error}"),
+                )
+            })
+    };
+    Ok(SockStat {
+        tcp_in_use: get("inuse")?,
+        tcp_orphan: get("orphan")?,
+        tcp_tw: get("tw")?,
+        tcp_alloc: get("alloc")?,
+        tcp_mem: get("mem")?,
+    })
+}
 
-    // Connection info
-    snap.conn_info = tcp_conn_info();
-
-    Ok(snap)
+fn parse_u64(value: &str, name: &str) -> io::Result<u64> {
+    value.parse::<u64>().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid {name}: {error}"),
+        )
+    })
 }
 
 /// Get established connections count via ss
@@ -104,6 +204,7 @@ fn established_conns() -> u32 {
         .args(["-Htn", "state", "established"])
         .output()
         .ok()
+        .filter(|output| output.status.success())
         .map(|o| {
             let stdout = String::from_utf8_lossy(&o.stdout);
             stdout.lines().count() as u32
@@ -117,22 +218,34 @@ fn dns_servers() -> Vec<DnsServer> {
     if let Ok(output) = Command::new("getprop").output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            if line.contains("dns") {
-                if let Some(start) = line.find('[') {
-                    if let Some(end) = line.find("]: [") {
-                        let val = &line[end + 4..line.len() - 1];
-                        if !val.is_empty() && val != "0.0.0.0" && val != "::" {
-                            servers.push(DnsServer {
-                                iface: line[start + 1..end].replace("net.", "").replace(".dns", ""),
-                                ip: val.to_string(),
-                            });
-                        }
-                    }
-                }
+            if let Some(server) = parse_dns_property(line) {
+                servers.push(server);
             }
         }
     }
     servers
+}
+
+fn parse_dns_property(line: &str) -> Option<DnsServer> {
+    let (raw_key, raw_value) = line.split_once("]: [")?;
+    let key = raw_key.strip_prefix('[')?;
+    let property = key.strip_prefix("net.")?;
+    let (iface, dns_key) = property
+        .rsplit_once('.')
+        .map_or(("system", property), |(iface, key)| (iface, key));
+    let slot = dns_key.strip_prefix("dns")?;
+    if slot.is_empty() || !slot.chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+    let value = raw_value.strip_suffix(']')?.trim();
+    let address = value.parse::<IpAddr>().ok()?;
+    if address.is_unspecified() {
+        return None;
+    }
+    Some(DnsServer {
+        iface: iface.to_string(),
+        ip: address.to_string(),
+    })
 }
 
 /// Get per-connection TCP info from ss
@@ -161,7 +274,7 @@ fn tcp_conn_info() -> Option<TcpConnInfo> {
     let avg_rtt = rtts.iter().sum::<f64>() / rtts.len() as f64;
     let max_rtt = rtts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let avg_cwnd = if !cwnds.is_empty() {
-        cwnds.iter().sum::<u32>() / cwnds.len() as u32
+        (cwnds.iter().map(|value| u64::from(*value)).sum::<u64>() / cwnds.len() as u64) as u32
     } else {
         0
     };
@@ -192,4 +305,53 @@ fn extract_ss_val_f64(line: &str, prefix: &str) -> Option<f64> {
         .map(|i| start + i)
         .unwrap_or(line.len());
     line[start..end].parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SNMP: &str = "Tcp: RtoAlgorithm InSegs OutSegs RetransSegs\nTcp: 1 120 90 3\n";
+    const DEV: &str =
+        "Inter-| Receive | Transmit\n wlan0: 1000 1 2 3 4 5 6 7 2000 9 10 11 12 13 14 15\n";
+    const SOCK: &str = "sockets: used 100\nTCP: inuse 8 orphan 2 tw 3 alloc 10 mem 4\n";
+
+    #[test]
+    fn keeps_tcp_segments_separate_from_interface_bytes() {
+        let tcp = parse_tcp_snmp(SNMP).unwrap();
+        let iface = parse_iface_bytes(DEV, "wlan0").unwrap();
+        assert_eq!((tcp.in_segs, tcp.out_segs, tcp.retrans), (120, 90, 3));
+        assert_eq!((iface.rx_bytes, iface.tx_bytes), (1000, 2000));
+    }
+
+    #[test]
+    fn parses_named_sockstat_fields() {
+        let sock = parse_sockstat(SOCK).unwrap();
+        assert_eq!(
+            (
+                sock.tcp_in_use,
+                sock.tcp_orphan,
+                sock.tcp_tw,
+                sock.tcp_alloc,
+                sock.tcp_mem
+            ),
+            (8, 2, 3, 10, 4)
+        );
+    }
+
+    #[test]
+    fn dns_parser_rejects_malformed_properties_without_panicking() {
+        let system = parse_dns_property("[net.dns1]: [8.8.8.8]").unwrap();
+        assert_eq!(
+            (system.iface.as_str(), system.ip.as_str()),
+            ("system", "8.8.8.8")
+        );
+        let wifi = parse_dns_property("[net.wlan0.dns2]: [2001:4860:4860::8888]").unwrap();
+        assert_eq!(wifi.iface, "wlan0");
+        assert!(parse_dns_property("[net.dns1]: [").is_none());
+        assert!(parse_dns_property("[persist.sys.private_dns_mode]: [opportunistic]").is_none());
+        assert!(parse_dns_property("[init.svc.dnsmasq]: [running]").is_none());
+        assert!(parse_dns_property("[net.dns1]: [0.0.0.0]").is_none());
+        assert!(parse_dns_property("garbage").is_none());
+    }
 }

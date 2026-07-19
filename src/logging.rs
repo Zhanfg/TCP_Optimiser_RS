@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,6 +13,7 @@ static LOG_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// Guard to ensure one-time log clearing per boot
 static CLEARED_ONCE: Mutex<bool> = Mutex::new(false);
+static LOG_LOCK: Mutex<()> = Mutex::new(());
 
 fn log_path() -> &'static PathBuf {
     LOG_PATH.get_or_init(|| config::module_dir().join("service.log"))
@@ -20,11 +21,17 @@ fn log_path() -> &'static PathBuf {
 
 /// Ensure log is cleared on first run after boot
 fn ensure_boot_cleared() {
-    let mut cleared = CLEARED_ONCE.lock().unwrap();
+    let Ok(mut cleared) = CLEARED_ONCE.lock() else {
+        return;
+    };
     if !*cleared {
-        if !std::path::Path::new(FLAG_FILE).exists() {
+        if fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(FLAG_FILE)
+            .is_ok()
+        {
             let _ = fs::remove_file(log_path());
-            let _ = fs::write(FLAG_FILE, "");
         }
         *cleared = true;
     }
@@ -96,12 +103,16 @@ fn timestamp() -> String {
 }
 
 fn is_leap(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
 /// Log a message with timestamp
 pub fn log_print(message: &str) {
     ensure_boot_cleared();
+
+    let Ok(_guard) = LOG_LOCK.lock() else {
+        return;
+    };
 
     let entry = format!("{} - {}\n", timestamp(), message);
 
@@ -116,12 +127,20 @@ pub fn log_print(message: &str) {
 
     let _ = file.write_all(entry.as_bytes());
 
-    rotate_if_needed();
-}
+    if config::module_dir().join("debug_mode").exists() {
+        let debug_path = config::module_dir().join("debug.log");
+        if let Ok(mut debug) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(debug_path)
+        {
+            let _ = debug.write_all(
+                format!("{} [PID:{}] {}\n", timestamp(), std::process::id(), message).as_bytes(),
+            );
+        }
+    }
 
-/// Get the log flag file path
-pub fn flag_file_exists() -> bool {
-    std::path::Path::new(FLAG_FILE).exists()
+    rotate_if_needed();
 }
 
 /// Ensure boot-cleared flag is set (called by daemon on start)

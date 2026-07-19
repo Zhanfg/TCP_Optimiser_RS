@@ -2,33 +2,11 @@ import { exec } from './kernelsu.js';
 import I18N from './i18n.js';
 import { updateModuleInformation } from './common.js';
 import { updateModuleStatus, initHome, updateHomeUI } from './home.js';
-import { initLogs, addLog, read_log_file, updateLogsUI } from './logs.js';
+import { initLogs, read_log_file, updateLogsUI } from './logs.js';
 import { initSettings } from './settings.js';
 import { updateStats, initStatsUI } from './stats.js';
-
-// Floating nav scroll hide/show
-let _lastScrollY = 0;
-let _navScrollTicking = false;
-
-function onScroll() {
-	if (_navScrollTicking) return;
-	_navScrollTicking = true;
-	requestAnimationFrame(() => {
-		const nav = document.getElementById('nav-bar');
-		if (!nav) return;
-		const currentY = window.scrollY;
-		const delta = currentY - _lastScrollY;
-		if (currentY > 60 && delta > 8) {
-			nav.classList.add('scroll-hidden');
-		} else if (delta < -4 || currentY < 10) {
-			nav.classList.remove('scroll-hidden');
-		}
-		_lastScrollY = currentY;
-		_navScrollTicking = false;
-	});
-}
-
-window.addEventListener('scroll', onScroll, { passive: true });
+import { initDynamicColorTheme } from './theme.js';
+import { initMotion } from './motion.js';
 
 const router_state = {
 	moduleInformation: null,
@@ -42,6 +20,7 @@ const router_state = {
 		wifi_calling_state: false,
 		default_qdisc: "unknown",
 		proxy_status: "unknown",
+		proxy_info: null,
 		hosts_status: "unknown",
 	},
 	settingsPageParams: {
@@ -52,16 +31,29 @@ const router_state = {
 	},
 	logsList: [],
 	available_algorithms: [],
+	qdiscCapabilities: [],
 	current_active_page: 'home',
-	statsParams: { tcpConns: 0, sockStat: null, dnsServers: [], ssInfo: null, tcpCounters: null },
+	statsParams: { tcpConns: null, sockStat: null, dnsServers: null, ssInfo: null, tcpCounters: null },
 };
 
-let updateInterval = null;
+let updateTimer = null;
+let lastStatusUpdate = 0;
+let settingsInitPromise = null;
+const VALID_PAGES = new Set(['home', 'stats', 'settings', 'logs', 'adv']);
 
-let _initialPopState = true;
-let _ignoreNextPop = false;
+function ensureSettingsInitialized() {
+	if (!router_state.moduleInformation) return Promise.resolve();
+	if (!settingsInitPromise) {
+		settingsInitPromise = initSettings().catch(error => {
+			settingsInitPromise = null;
+			console.error('Error initializing settings:', error);
+		});
+	}
+	return settingsInitPromise;
+}
 
 function showPage(pageName, push = true) {
+	if (!VALID_PAGES.has(pageName)) pageName = 'home';
 	document.querySelectorAll('#pages > section').forEach(s => s.hidden = true);
 	const page = document.getElementById(pageName + '-page');
 	if (page) page.hidden = false;
@@ -83,44 +75,60 @@ function showPage(pageName, push = true) {
 	if (push) {
 		history.pushState({ page: pageName }, '', `#${pageName}`);
 	}
+	if (!router_state.isInitializing) void updateUI();
+	if (!router_state.isInitializing && (pageName === 'settings' || pageName === 'adv')) {
+		void ensureSettingsInitialized();
+	}
 }
 
 window.addEventListener('popstate', (e) => {
-	if (_initialPopState) {
-		_initialPopState = false;
-		return;
-	}
-	if (_ignoreNextPop) {
-		_ignoreNextPop = false;
-		return;
-	}
 	const page = e.state?.page || 'home';
 	showPage(page, false);
 });
 
-function updateUI() {
+async function updateUI() {
 	switch (router_state.current_active_page) {
 		case 'home': updateHomeUI(); break;
 		case 'logs': updateLogsUI(); break;
-		case 'stats': updateStats(); break;
+		case 'stats': await updateStats(); break;
 	}
 }
 
-const startRealtimeUpdater = async () => {
+const runRealtimeUpdate = async () => {
 	try {
-		if (updateInterval) clearInterval(updateInterval);
-		updateInterval = setInterval(async () => {
+		const page = router_state.current_active_page;
+		const now = Date.now();
+		if (page === 'home' || now - lastStatusUpdate >= 15000) {
 			await updateModuleStatus();
+			lastStatusUpdate = now;
+		}
+		if (page === 'logs') {
 			await read_log_file();
-			updateUI();
-		}, 5000);
+			updateLogsUI();
+		} else if (page === 'stats') {
+			await updateStats();
+		} else if (page === 'home') {
+			updateHomeUI();
+		}
 	} catch (error) {
 		console.error('Error setting update loop:', error);
+	} finally {
+		const delay = router_state.current_active_page === 'home' ? 10000
+			: router_state.current_active_page === 'settings' || router_state.current_active_page === 'adv' ? 15000
+			: 5000;
+		updateTimer = setTimeout(runRealtimeUpdate, delay);
 	}
+};
+
+const startRealtimeUpdater = () => {
+	if (updateTimer) clearTimeout(updateTimer);
+	updateTimer = setTimeout(runRealtimeUpdate, 5000);
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
 	await I18N.init();
+	initMotion();
+	await initDynamicColorTheme();
 	await updateModuleInformation();
 
 	document.querySelectorAll('.link-chip').forEach(chip => {
@@ -140,16 +148,30 @@ document.addEventListener('DOMContentLoaded', async () => {
 		});
 	});
 
-	initHome();
+	window._debug?.init();
+	await initHome();
 	initLogs();
-	await initSettings();
 	initStatsUI();
+	router_state.isInitializing = false;
+	if (router_state.moduleInformation) {
+		await updateModuleStatus();
+		lastStatusUpdate = Date.now();
+	} else {
+		router_state.homePageParams.module_status = 'NotInstalled';
+	}
 
 	showPage('home', false);
 	history.replaceState({ page: 'home' }, '', '#home');
+	await updateUI();
 	startRealtimeUpdater();
 
-	document.addEventListener('i18n-changed', () => updateUI());
+	document.addEventListener('i18n-changed', () => {
+		// I18N.applyToDOM restores static placeholders (including the global
+		// status chip and title), so immediately repaint their live values.
+		updateHomeUI();
+		showPage(router_state.current_active_page, false);
+		void updateUI();
+	});
 });
 
 export default router_state;

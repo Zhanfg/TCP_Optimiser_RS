@@ -1,7 +1,9 @@
 use std::fs;
-use std::io;
+use std::fs::OpenOptions;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crate::config;
 use crate::logging;
@@ -16,17 +18,21 @@ const SLEEP_FAST: u64 = 2;
 const SLEEP_NORMAL: u64 = 5;
 
 pub fn run() -> io::Result<()> {
+    let _daemon_guard = DaemonGuard::acquire()?;
     logging::ensure_flag();
     reset_description();
+    for error in sysctl::apply_base_sysctls() {
+        logging::log_print(&format!("[WARN] startup sysctl apply failed: {error}"));
+    }
 
     let mut last_mode = IfaceMode::Unknown;
-    let mut change_time: u64 = 0;
+    let mut last_iface = String::new();
+    let mut last_change: Option<Instant> = None;
+    let mut wifi_pending_since: Option<Instant> = None;
+    let mut wifi_applied = false;
     let mut adaptive_count: u32 = 0;
-    let mut sleep_secs = SLEEP_NORMAL;
 
     loop {
-        let now = epoch_secs();
-
         let iface = match network::active_iface() {
             Ok(i) => i,
             Err(e) => {
@@ -40,65 +46,154 @@ pub fn run() -> io::Result<()> {
         let force_apply = config::module_dir().join("force_apply").exists();
         let mut mode_changed = false;
 
-        if new_mode != last_mode || force_apply {
-            if now.saturating_sub(change_time) >= DEBOUNCE_TIME {
+        if new_mode != last_mode || iface != last_iface || force_apply {
+            let debounce_elapsed = force_apply
+                || last_change
+                    .map(|changed| changed.elapsed() >= Duration::from_secs(DEBOUNCE_TIME))
+                    .unwrap_or(true);
+            if debounce_elapsed {
+                if force_apply {
+                    for error in sysctl::apply_base_sysctls() {
+                        logging::log_print(&format!("[WARN] forced sysctl apply failed: {error}"));
+                    }
+                }
                 mode_changed = true;
                 match new_mode {
                     IfaceMode::Cellular => {
-                        apply_interface_settings(&iface, &IfaceMode::Cellular);
+                        apply_interface_settings(&iface, IfaceMode::Cellular);
                     }
-                    IfaceMode::WiFi => { /* handled below */ }
+                    IfaceMode::WiFi => {
+                        if force_apply {
+                            apply_interface_settings(&iface, IfaceMode::WiFi);
+                            wifi_applied = true;
+                            wifi_pending_since = None;
+                        } else {
+                            wifi_applied = false;
+                            wifi_pending_since = Some(Instant::now());
+                        }
+                    }
                     IfaceMode::Unknown => {}
                 }
                 last_mode = new_mode;
-                change_time = now;
+                last_iface.clone_from(&iface);
+                last_change = Some(Instant::now());
                 let _ = fs::remove_file(config::module_dir().join("force_apply"));
             }
         }
 
         // Unified Wi-Fi apply with VoWiFi detection
-        if new_mode == IfaceMode::WiFi {
-            let vowifi = proxy::wifi_calling_active().unwrap_or(true);
-            if mode_changed || (now.saturating_sub(change_time) >= VOWIFI_CONNECT_TIME || !vowifi) {
-                logging::log_print(&format!("[INFO] Applying Wi-Fi settings (VoWiFi={})", !vowifi));
-                apply_interface_settings(&iface, &IfaceMode::WiFi);
+        // Only complete the VoWiFi wait for the interface transition that was
+        // accepted above. Otherwise a rapid wlan0 -> wlan1 handover can reuse
+        // wlan0's timer and apply settings to wlan1 before the debounce ends.
+        let current_wifi_transition =
+            new_mode == IfaceMode::WiFi && last_mode == IfaceMode::WiFi && iface == last_iface;
+        if current_wifi_transition && !wifi_applied {
+            let pending_since = wifi_pending_since.get_or_insert_with(Instant::now);
+            let vowifi_active = proxy::wifi_calling_active().unwrap_or(false);
+            if should_apply_wifi(wifi_applied, vowifi_active, pending_since.elapsed()) {
+                logging::log_print(&format!(
+                    "[INFO] Applying Wi-Fi settings (VoWiFi={vowifi_active})"
+                ));
+                apply_interface_settings(&iface, IfaceMode::WiFi);
+                wifi_applied = true;
             }
+        } else if new_mode != IfaceMode::WiFi {
+            wifi_applied = false;
+            wifi_pending_since = None;
         }
 
         // Adaptive polling
-        if mode_changed {
+        let sleep_secs = if mode_changed {
             adaptive_count = ADAPTIVE_FAST_CYCLES;
-            sleep_secs = SLEEP_FAST;
+            SLEEP_FAST
         } else if adaptive_count > 0 {
             adaptive_count -= 1;
-            sleep_secs = SLEEP_FAST;
+            SLEEP_FAST
         } else {
-            sleep_secs = SLEEP_NORMAL;
-        }
+            SLEEP_NORMAL
+        };
 
         thread::sleep(Duration::from_secs(sleep_secs));
     }
 }
 
+struct DaemonGuard {
+    path: PathBuf,
+}
+
+impl DaemonGuard {
+    fn acquire() -> io::Result<Self> {
+        let path = config::module_dir().join("daemon.pid");
+        match create_pid_file(&path) {
+            Ok(()) => Ok(Self { path }),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                if daemon_pid_is_live(&path) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "TCP Optimiser daemon is already running",
+                    ));
+                }
+                fs::remove_file(&path)?;
+                create_pid_file(&path)?;
+                Ok(Self { path })
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn create_pid_file(path: &Path) -> io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    writeln!(file, "{}", std::process::id())
+}
+
+fn daemon_pid_is_live(path: &Path) -> bool {
+    let Ok(pid) = fs::read_to_string(path).and_then(|value| {
+        value
+            .trim()
+            .parse::<u32>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }) else {
+        return false;
+    };
+    let Ok(command_line) = fs::read(format!("/proc/{pid}/cmdline")) else {
+        return false;
+    };
+    command_line
+        .split(|byte| *byte == 0)
+        .any(|arg| arg.ends_with(b"tcp_optimiser"))
+}
+
+pub fn is_running() -> bool {
+    daemon_pid_is_live(&config::module_dir().join("daemon.pid"))
+}
+
 pub fn run_once() -> io::Result<()> {
     thread::sleep(Duration::from_secs(2));
-
-    let algo = if sysctl::algo_available("bbr").unwrap_or(false) {
-        "bbr"
-    } else {
-        "cubic"
-    };
-
-    if let Err(e) = sysctl::set_congestion_control(algo) {
-        logging::log_print(&format!("[ERROR] Failed to set initial algo: {e}"));
+    for error in sysctl::apply_base_sysctls() {
+        logging::log_print(&format!("[WARN] sysctl apply failed: {error}"));
     }
-    sysctl::apply_base_sysctls();
-    logging::log_print(&format!("[INFO] Once: congestion_control={algo}"));
+
+    match network::active_iface() {
+        Ok(iface) => match network::iface_mode(&iface) {
+            IfaceMode::Unknown => {
+                logging::log_print(&format!("[WARN] Once: unsupported interface {iface}"));
+            }
+            mode => apply_interface_settings(&iface, mode),
+        },
+        Err(error) => logging::log_print(&format!("[WARN] Once: iface detect failed: {error}")),
+    }
 
     Ok(())
 }
 
-fn apply_interface_settings(iface: &str, mode: &IfaceMode) {
+fn apply_interface_settings(iface: &str, mode: IfaceMode) {
     let prefix = mode.prefix();
     let available = match sysctl::available_algorithms() {
         Ok(a) => a,
@@ -108,40 +203,44 @@ fn apply_interface_settings(iface: &str, mode: &IfaceMode) {
         }
     };
 
-    let algo = available
-        .iter()
-        .find(|a| config::module_dir().join(format!("{prefix}_{a}")).exists())
-        .map(|s| s.as_str())
-        .unwrap_or("cubic");
+    let algo = select_algorithm(prefix, &available);
 
     let cfg = config::get_algo_config(algo);
+    logging::log_print(&format!("Selected {algo}: {}", cfg.desc));
 
-    let (ca, ss) = if *mode == IfaceMode::WiFi {
+    let (base_ca, base_ss) = pacing_override().unwrap_or((cfg.pacing_ca, cfg.pacing_ss));
+    let (ca, ss) = if mode == IfaceMode::WiFi {
         match network::wifi_freq(iface) {
             Some(freq) => {
                 logging::log_print(&format!("Wi-Fi band detected: {freq} MHz"));
                 if freq < 3000 {
-                    (cfg.pacing_ca * 3 / 4, cfg.pacing_ss * 3 / 4)
+                    (base_ca * 3 / 4, base_ss * 3 / 4)
                 } else if freq < 6000 {
-                    (cfg.pacing_ca, cfg.pacing_ss)
+                    (base_ca, base_ss)
                 } else {
-                    (cfg.pacing_ca * 5 / 4, cfg.pacing_ss * 5 / 4)
+                    (base_ca * 5 / 4, base_ss * 5 / 4)
                 }
             }
-            None => (cfg.pacing_ca, cfg.pacing_ss),
+            None => (base_ca, base_ss),
         }
     } else {
-        (cfg.pacing_ca, cfg.pacing_ss)
+        (base_ca, base_ss)
     };
 
     if let Err(e) = sysctl::set_pacing(ca, ss) {
         logging::log_print(&format!("[WARN] Pacing failed: {e}"));
     }
 
-    if !cfg.qdisc.is_empty() {
-        match network::set_qdisc(iface, cfg.qdisc) {
-            Ok(()) => logging::log_print(&format!("Applied qdisc: {} ({iface})", cfg.qdisc)),
-            Err(e) => logging::log_print(&format!("Failed to apply qdisc: {} ({iface}): {e}", cfg.qdisc)),
+    let qdisc = qdisc_override().unwrap_or(cfg.qdisc);
+    if !qdisc.is_empty() {
+        if let Err(error) = sysctl::set_default_qdisc(qdisc) {
+            logging::log_print(&format!(
+                "[WARN] Failed to set default qdisc {qdisc}: {error}"
+            ));
+        }
+        match network::set_qdisc(iface, qdisc) {
+            Ok(()) => logging::log_print(&format!("Applied qdisc: {qdisc} ({iface})")),
+            Err(e) => logging::log_print(&format!("Failed to apply qdisc: {qdisc} ({iface}): {e}")),
         }
     }
 
@@ -151,11 +250,16 @@ fn apply_interface_settings(iface: &str, mode: &IfaceMode) {
                 logging::log_print(&format!("[ERROR] Failed to set {algo}: {e}"));
                 return;
             }
-            logging::log_print(&format!("Applied congestion control: {algo} ({})", mode.as_str()));
+            logging::log_print(&format!(
+                "Applied congestion control: {algo} ({})",
+                mode.as_str()
+            ));
 
             if config::module_dir().join("kill_connections").exists() {
                 logging::log_print(&format!("Killing TCP connections on {iface}"));
-                network::kill_connections(iface);
+                if let Err(error) = network::kill_connections(iface) {
+                    logging::log_print(&format!("[WARN] Failed to kill TCP connections: {error}"));
+                }
             }
             update_description(mode, algo);
         }
@@ -170,9 +274,9 @@ fn apply_interface_settings(iface: &str, mode: &IfaceMode) {
     }
 }
 
-fn update_description(mode: &IfaceMode, algo: &str) {
+fn update_description(mode: IfaceMode, algo: &str) {
     let desc = format!(
-        "TCP Optimisations \\& update tcp_cong_algo based on interface \\| iface\\: {} {} \\| algo\\: {algo}",
+        "TCP Optimisations & dynamic congestion control | iface: {} {} | algo: {algo}",
         mode.as_str(),
         mode.icon()
     );
@@ -190,7 +294,7 @@ fn update_description(mode: &IfaceMode, algo: &str) {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        if let Err(e) = fs::write(&mod_prop, updated) {
+        if let Err(e) = fs::write(&mod_prop, format!("{updated}\n")) {
             logging::log_print(&format!("[WARN] Failed to update description: {e}"));
         }
     }
@@ -210,15 +314,70 @@ fn reset_description() {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        if let Err(e) = fs::write(&mod_prop, updated) {
+        if let Err(e) = fs::write(&mod_prop, format!("{updated}\n")) {
             logging::log_print(&format!("[WARN] Failed to reset description: {e}"));
         }
     }
 }
 
-fn epoch_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+fn select_algorithm<'a>(prefix: &str, available: &'a [String]) -> &'a str {
+    for known in config::ALL_ALGOS {
+        if let Some(algo) = available.iter().find(|algo| algo.as_str() == *known) {
+            if config::module_dir()
+                .join(format!("{prefix}_{known}"))
+                .exists()
+            {
+                return algo;
+            }
+        }
+    }
+    available
+        .iter()
+        .find(|algo| algo.as_str() == "cubic")
+        .or_else(|| {
+            available
+                .iter()
+                .find(|algo| config::is_known_algorithm(algo))
+        })
+        .map(String::as_str)
+        .unwrap_or("cubic")
+}
+
+fn qdisc_override() -> Option<&'static str> {
+    let value = fs::read_to_string(config::module_dir().join("qdisc")).ok()?;
+    let value = value.trim();
+    config::KNOWN_QDISCS
+        .iter()
+        .copied()
+        .find(|known| *known == value)
+}
+
+fn pacing_override() -> Option<(u32, u32)> {
+    let read = |name: &str| {
+        fs::read_to_string(config::module_dir().join(name))
+            .ok()?
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|value| (1..=1000).contains(value))
+    };
+    Some((read("pacing_ca")?, read("pacing_ss")?))
+}
+
+fn should_apply_wifi(already_applied: bool, vowifi_active: bool, elapsed: Duration) -> bool {
+    !already_applied && (vowifi_active || elapsed >= Duration::from_secs(VOWIFI_CONNECT_TIME))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_apply_wifi;
+    use std::time::Duration;
+
+    #[test]
+    fn wifi_applies_on_registration_or_timeout_only_once() {
+        assert!(should_apply_wifi(false, true, Duration::ZERO));
+        assert!(!should_apply_wifi(false, false, Duration::from_secs(9)));
+        assert!(should_apply_wifi(false, false, Duration::from_secs(10)));
+        assert!(!should_apply_wifi(true, true, Duration::from_secs(20)));
+    }
 }

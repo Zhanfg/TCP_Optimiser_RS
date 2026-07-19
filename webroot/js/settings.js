@@ -1,36 +1,24 @@
-import { exec, toast } from './kernelsu.js';
+import { exec, toast, shellQuote } from './kernelsu.js';
+import { haptic } from './motion.js';
 import I18N from './i18n.js';
 import router_state from './router.js';
 import { addLog } from './logs.js';
-import { fetchIsConfigFile, getDefaultQdisc, getKnownQdiscs, setDefaultQdisc } from './common.js';
+import { fetchIsConfigFile, getDefaultQdisc, getQdiscCapabilities, setDefaultQdisc } from './common.js';
+import { ALL_ALGOS, ALL_QDISCS, getAlgorithmDescription, getQdiscDescription } from './capabilities.js';
+import { setDynamicColorEnabled, setThemeMode } from './theme.js';
 
-const ALL_ALGOS = ['bbr', 'bbr2', 'bbr3', 'cubic', 'westwood', 'westwood_plus', 'reno',
-	'htcp', 'vegas', 'yeah', 'illinois', 'dctcp', 'cdg', 'bic', 'highspeed',
-	'hybla', 'nv', 'scalable', 'lp'];
-
-const ALGO_DESC = {
-	bbr: 'Google BBR — high throughput, low latency',
-	cubic: 'Default Linux — stable and reliable',
-	westwood: 'Bandwidth estimation — good for wireless',
-	reno: 'Classic TCP — widely compatible',
-	htcp: 'Hamilton TCP — high-speed long-distance',
-	vegas: 'Delay-based — low latency',
-	yeah: 'YeAH — high-speed with fairness',
-	illinois: 'Illinois — hybrid for high BDP',
-	dctcp: 'Data Center TCP — low queuing',
-	cdg: 'CAIA Delay Gradient',
-	bic: 'Binary Increase',
-	highspeed: 'RFC 3649 for fast links',
-	hybla: 'Satellite / high-latency links',
-	nv: 'New Vegas — modern delay-based',
-	scalable: 'Scalable — simple high-speed',
-	lp: 'Low Priority — background transfers',
-};
+let advancedInitialized = false;
 
 async function getSelectedAlgorithm(prefix) {
+	if (!['wlan', 'rmnet_data'].includes(prefix)) return null;
 	try {
-		const { stdout: algo } = await exec(`ls ${router_state.moduleInformation.moduleDir}/${prefix}_* 2>/dev/null | xargs -n 1 basename | head -n1 | awk -F_ '{print $NF}'`);
-		const trimmed = algo.trim();
+		const dir = router_state.moduleInformation.moduleDir;
+		const { stdout } = await exec(`for f in ${shellQuote(dir)}/${prefix}_*; do [ -f "$f" ] && printf '%s\n' "\${f##*/}"; done`);
+		const selected = stdout.split('\n')
+			.map(name => name.trim())
+			.filter(name => name.startsWith(`${prefix}_`))
+			.map(name => name.slice(prefix.length + 1));
+		const trimmed = ALL_ALGOS.find(algo => selected.includes(algo)) || '';
 		if (prefix === "wlan") router_state.settingsPageParams.wlanAlgo = trimmed;
 		else if (prefix === "rmnet_data") router_state.settingsPageParams.rmnetAlgo = trimmed;
 		return trimmed;
@@ -48,21 +36,29 @@ async function checkAndGetPrefixValueExists(prefix) {
 }
 
 const fetchAvailableAlgorithms = async (force = false) => {
+	if (!force && router_state.available_algorithms.length > 0) return;
 	try {
-		if (router_state.available_algorithms.length === 0 || force) {
-			const { stdout: output } = await exec('cat /proc/sys/net/ipv4/tcp_available_congestion_control');
-			if (output) {
-				router_state.available_algorithms = output.trim().split(/\s+/);
-			} else {
-				addLog(I18N.t('toast_fetch_congestion_fail'));
-				toast(I18N.t('toast_no_congestion_algo'));
-			}
+		const { stdout: output } = await exec('cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null');
+		const algos = output.trim().split(/\s+/).filter(a => ALL_ALGOS.includes(a));
+		if (algos.length > 0) {
+			router_state.available_algorithms = algos;
+			// Update cache for next time
+			const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
+			await exec(`printf '%s\\n' ${shellQuote(algos.join(' '))} > ${shellQuote(`${dir}/available_algos`)} 2>/dev/null`).catch(() => {});
+			return;
 		}
-	} catch (error) {
-		console.error('Error fetching algorithms:', error);
-		addLog(I18N.t('toast_fetch_congestion_fail'));
-		toast(I18N.t('toast_fetch_congestion_fail'));
-	}
+	} catch (e) {}
+	// Fallback: try cached file
+	try {
+		const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
+		const { stdout: cached } = await exec(`cat ${shellQuote(`${dir}/available_algos`)} 2>/dev/null`);
+		const algos = cached.trim().split(/\s+/).filter(a => ALL_ALGOS.includes(a));
+		if (algos.length > 0) {
+			router_state.available_algorithms = algos;
+			return;
+		}
+	} catch (e) {}
+	toast(I18N.t('toast_no_congestion_algo'));
 };
 
 function buildAlgoChips(containerId, selectedAlgo, onClick) {
@@ -70,62 +66,129 @@ function buildAlgoChips(containerId, selectedAlgo, onClick) {
 	if (!container) return;
 	container.innerHTML = '';
 
-	const available = new Set(router_state.available_algorithms);
+	const avail = router_state.available_algorithms;
+	if (!avail) {
+		container.innerHTML = '<span style="color:var(--md-sys-color-on-surface-variant);font-size:0.8rem;">' + I18N.t('label_loading') + '</span>';
+		return;
+	}
+	const supported = new Set(avail);
+	const description = document.getElementById(containerId === 'wifi-algo-chips'
+		? 'wifi-algo-description' : 'cell-algo-description');
+	const updateDescription = (algo) => {
+		if (description) description.textContent = getAlgorithmDescription(algo, I18N.currentLang);
+	};
+	const countId = containerId === 'wifi-algo-chips' ? 'wifi-capability-count' : 'cell-capability-count';
+	const count = document.getElementById(countId);
+	if (count) count.textContent = I18N.t('capability_available_count', {
+		available: supported.size,
+		total: ALL_ALGOS.length,
+	});
 
 	ALL_ALGOS.forEach(algo => {
-		if (!available.has(algo)) return; // skip unsupported
 		const chip = document.createElement('button');
 		chip.className = 'algo-chip';
 		chip.dataset.algo = algo;
-		chip.title = ALGO_DESC[algo] || algo;
-		chip.textContent = algo;
-		if (algo === selectedAlgo) chip.classList.add('selected');
+		const capabilityLabel = I18N.t(supported.has(algo) ? 'capability_supported' : 'capability_unsupported');
+		const algorithmDescription = getAlgorithmDescription(algo, I18N.currentLang);
+		chip.title = `${algorithmDescription} · ${capabilityLabel}`;
+		chip.setAttribute('aria-label', `${algo}: ${capabilityLabel}. ${algorithmDescription}`);
+		const label = document.createElement('span');
+		label.textContent = algo;
+		chip.appendChild(label);
+		if (!supported.has(algo)) {
+			chip.classList.add('unsupported');
+			chip.dataset.unavailable = 'true';
+			const mark = document.createElement('span');
+			mark.className = 'capability-mark';
+			mark.textContent = '×';
+			mark.setAttribute('aria-hidden', 'true');
+			chip.appendChild(mark);
+		}
+		if (algo === selectedAlgo) {
+			chip.classList.add('selected');
+			updateDescription(algo);
+		}
 		chip.addEventListener('click', () => {
+			if (!supported.has(algo)) {
+				toast(I18N.t('algo_not_supported', { algo }));
+				return;
+			}
 			if (chip.classList.contains('selected')) return;
 			container.querySelectorAll('.algo-chip.selected').forEach(c => c.classList.remove('selected'));
 			chip.classList.add('selected');
+			updateDescription(algo);
 			onClick(algo);
 		});
 		container.appendChild(chip);
 	});
 }
 
+function refreshCapabilityLabels() {
+	const algorithmCount = I18N.t('capability_available_count', {
+		available: router_state.available_algorithms.length,
+		total: ALL_ALGOS.length,
+	});
+	for (const id of ['wifi-capability-count', 'cell-capability-count']) {
+		const count = document.getElementById(id);
+		if (count) count.textContent = algorithmCount;
+	}
+	document.querySelectorAll('[data-algo].algo-chip').forEach(chip => {
+		const stateKey = chip.classList.contains('unsupported') ? 'capability_unsupported' : 'capability_supported';
+		chip.title = `${getAlgorithmDescription(chip.dataset.algo, I18N.currentLang)} · ${I18N.t(stateKey)}`;
+		chip.setAttribute('aria-label', `${chip.dataset.algo}: ${I18N.t(stateKey)}. ${getAlgorithmDescription(chip.dataset.algo, I18N.currentLang)}`);
+	});
+	for (const [id, algo] of [
+		['wifi-algo-description', router_state.settingsPageParams.wlanAlgo],
+		['cell-algo-description', router_state.settingsPageParams.rmnetAlgo],
+	]) {
+		const description = document.getElementById(id);
+		if (description && algo) description.textContent = getAlgorithmDescription(algo, I18N.currentLang);
+	}
+
+	const supportedQdiscs = router_state.qdiscCapabilities.filter(item => item.state === 'supported').length;
+	const qdiscCount = document.getElementById('qdisc-capability-count');
+	if (qdiscCount) qdiscCount.textContent = I18N.t('capability_available_count', {
+		available: supportedQdiscs,
+		total: ALL_QDISCS.length,
+	});
+	document.querySelectorAll('[data-qdisc].algo-chip').forEach(chip => {
+		const state = chip.dataset.capability || 'unknown';
+		const stateKey = state === 'supported' ? 'capability_supported'
+			: state === 'unsupported' ? 'capability_unsupported' : 'capability_unknown';
+		chip.title = `${getQdiscDescription(chip.dataset.qdisc, I18N.currentLang)} · ${I18N.t(stateKey)}`;
+		chip.setAttribute('aria-label', `${chip.dataset.qdisc}: ${I18N.t(stateKey)}. ${getQdiscDescription(chip.dataset.qdisc, I18N.currentLang)}`);
+	});
+	const qdiscDescription = document.getElementById('qdisc-description');
+	const activeQdisc = document.querySelector('[data-qdisc].algo-chip.selected')?.dataset.qdisc;
+	if (qdiscDescription && activeQdisc) qdiscDescription.textContent = getQdiscDescription(activeQdisc, I18N.currentLang);
+}
+
+function algorithmMarkerCommand(dir, prefix, algorithm) {
+	const selected = shellQuote(`${dir}/${prefix}_${algorithm}`);
+	return `touch ${selected} && for f in ${shellQuote(dir)}/${prefix}_*; do [ "$f" = ${selected} ] || rm -f "$f"; done`;
+}
+
 function initThemeSettings() {
-	const savedMode = localStorage.getItem('tcp_themeMode') || 'dark';
-	const savedPreset = localStorage.getItem('tcp_themePreset') || 'monet';
+	const savedMode = localStorage.getItem('tcp_themeMode') || 'auto';
 
 	const modeButtons = document.querySelectorAll('.theme-mode-btn');
 	modeButtons.forEach(btn => {
 		btn.classList.toggle('selected', btn.dataset.mode === savedMode);
 		btn.addEventListener('click', () => {
 			const mode = btn.dataset.mode;
-			localStorage.setItem('tcp_themeMode', mode);
-			applyTheme(mode, localStorage.getItem('tcp_themePreset') || 'monet');
+			setThemeMode(mode);
 			modeButtons.forEach(b => b.classList.toggle('selected', b.dataset.mode === mode));
 		});
 	});
 
-	document.querySelectorAll('.preset-btn').forEach(btn => {
-		btn.classList.toggle('selected', btn.dataset.preset === savedPreset);
-		btn.addEventListener('click', () => {
-			const preset = btn.dataset.preset;
-			localStorage.setItem('tcp_themePreset', preset);
-			const mode = localStorage.getItem('tcp_themeMode') || 'dark';
-			applyTheme(mode, preset);
-			document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('selected'));
-			btn.classList.add('selected');
+	const dynamicColorToggle = document.getElementById('dynamic-color-toggle');
+	if (dynamicColorToggle) {
+		dynamicColorToggle.addEventListener('change', async () => {
+			dynamicColorToggle.disabled = true;
+			await setDynamicColorEnabled(dynamicColorToggle.checked);
+			dynamicColorToggle.disabled = false;
 		});
-	});
-}
-
-function applyTheme(mode, preset) {
-	const resolved = mode === 'auto'
-		? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-		: mode;
-	document.documentElement.setAttribute('data-theme', mode);
-	document.documentElement.setAttribute('data-theme-preset', preset);
-	document.documentElement.setAttribute('data-theme-resolved', resolved);
-	document.documentElement.style.colorScheme = resolved;
+	}
 }
 
 export async function initSettings() {
@@ -143,6 +206,7 @@ export async function initSettings() {
 		btn.addEventListener('click', async () => {
 			const lang = btn.dataset.lang;
 			await I18N.switchTo(lang);
+			refreshCapabilityLabels();
 			document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('selected'));
 			btn.classList.add('selected');
 		});
@@ -187,26 +251,33 @@ export async function initSettings() {
 			const validAlgos = new Set(router_state.available_algorithms);
 			if (!validAlgos.has(settings.wifiAlgorithm) || !validAlgos.has(settings.cellularAlgorithm)) {
 				toast(I18N.t('toast_invalid_algo'));
-				return;
+				return false;
 			}
-			const optionals = [
-				settings.killOnChange ? `touch ${dir}/kill_connections` : '',
-				settings.setInitcwndInitrwndOnChange ? `touch ${dir}/initcwnd_initrwnd` : '',
-			].filter(Boolean).join(' && ');
+			const killCommand = settings.killOnChange
+				? `touch ${shellQuote(`${dir}/kill_connections`)}`
+				: `rm -f ${shellQuote(`${dir}/kill_connections`)}`;
+			const initCommand = settings.setInitcwndInitrwndOnChange
+				? `touch ${shellQuote(`${dir}/initcwnd_initrwnd`)}`
+				: `rm -f ${shellQuote(`${dir}/initcwnd_initrwnd`)}`;
 
 			await exec(
-				`rm -f ${dir}/wlan_* ${dir}/rmnet_data_* ${dir}/kill_connections ${dir}/initcwnd_initrwnd` +
-				` && touch ${dir}/wlan_${settings.wifiAlgorithm} ${dir}/rmnet_data_${settings.cellularAlgorithm}` +
-				(optionals ? ` && ${optionals}` : '')
+				algorithmMarkerCommand(dir, 'wlan', settings.wifiAlgorithm) +
+				` && ${algorithmMarkerCommand(dir, 'rmnet_data', settings.cellularAlgorithm)}` +
+				` && rm -f ${shellQuote(`${dir}/pacing_ca`)} ${shellQuote(`${dir}/pacing_ss`)}` +
+				` && ${killCommand} && ${initCommand}`
 			);
 
 			router_state.settingsPageParams.killConnections = settings.killOnChange;
 			router_state.settingsPageParams.initcwndInitrwnd = settings.setInitcwndInitrwndOnChange;
-			addLog(`Settings: WiFi=${settings.wifiAlgorithm}, Cellular=${settings.cellularAlgorithm}`);
+			await addLog(`Settings: WiFi=${settings.wifiAlgorithm}, Cellular=${settings.cellularAlgorithm}`);
 			toast(I18N.t('toast_settings_applied'));
+			haptic('success');
+			return true;
 		} catch (error) {
 			console.error('Error applying settings:', error);
 			toast(I18N.t('toast_error'));
+			haptic('error');
+			return false;
 		} finally {
 			applyBtn.disabled = forceApplyBtn.disabled = false;
 			applyBtn.textContent = I18N.t('settings_apply_btn');
@@ -214,52 +285,92 @@ export async function initSettings() {
 	}
 
 	applyBtn.addEventListener('click', async () => {
-		await applySettings();
-		toast(I18N.t('toast_toggle_connection'));
+		if (await applySettings()) toast(I18N.t('toast_toggle_connection'));
 	});
 
 	forceApplyBtn.addEventListener('click', async () => {
-		await applySettings();
+		if (!await applySettings()) return;
 		const dir = router_state.moduleInformation.moduleDir;
-		const { errno } = await exec(`touch ${dir}/force_apply && chmod 644 ${dir}/force_apply`);
-		if (errno === 0) toast(I18N.t('toast_wait_5s'));
+		try {
+			await exec(`touch ${shellQuote(`${dir}/force_apply`)} && chmod 644 ${shellQuote(`${dir}/force_apply`)}`);
+			toast(I18N.t('toast_wait_5s'));
+		} catch (error) {
+			console.error('Error forcing settings apply:', error);
+			toast(I18N.t('toast_error'));
+		}
 	});
 
 	// Qdisc selector
 	const currentQdisc = await getDefaultQdisc();
-	const knownQdiscs = getKnownQdiscs();
+	const qdiscCapabilities = await getQdiscCapabilities();
+	router_state.qdiscCapabilities = qdiscCapabilities;
 	const qdiscContainer = document.getElementById('qdisc-chips');
 	if (qdiscContainer) {
+		const supportedCount = qdiscCapabilities.filter(item => item.state === 'supported').length;
+		const qdiscCount = document.getElementById('qdisc-capability-count');
+		if (qdiscCount) qdiscCount.textContent = I18N.t('capability_available_count', {
+			available: supportedCount,
+			total: ALL_QDISCS.length,
+		});
 		qdiscContainer.innerHTML = '';
-		knownQdiscs.forEach(q => {
+		ALL_QDISCS.forEach(q => {
+			const state = qdiscCapabilities.find(item => item.name === q)?.state || 'unknown';
 			const chip = document.createElement('button');
 			chip.className = 'algo-chip';
 			chip.dataset.qdisc = q;
-			chip.textContent = q;
+			chip.dataset.capability = state;
+			const stateLabel = I18N.t(state === 'supported' ? 'capability_supported' : state === 'unsupported' ? 'capability_unsupported' : 'capability_unknown');
+			chip.setAttribute('aria-label', `${q}: ${stateLabel}. ${getQdiscDescription(q, I18N.currentLang)}`);
+			const label = document.createElement('span');
+			label.textContent = q;
+			chip.appendChild(label);
+			chip.title = `${getQdiscDescription(q, I18N.currentLang)} · ${I18N.t(state === 'supported' ? 'capability_supported' : state === 'unsupported' ? 'capability_unsupported' : 'capability_unknown')}`;
+			if (state !== 'supported') {
+				chip.classList.add(state === 'unsupported' ? 'unsupported' : 'capability-unknown');
+				chip.dataset.unavailable = 'true';
+				const mark = document.createElement('span');
+				mark.className = 'capability-mark';
+				mark.textContent = state === 'unsupported' ? '×' : '?';
+				mark.setAttribute('aria-hidden', 'true');
+				chip.appendChild(mark);
+			}
 			if (q === currentQdisc) chip.classList.add('selected');
 			chip.addEventListener('click', async () => {
+				if (state !== 'supported') {
+					toast(`${q}: ${getQdiscDescription(q, I18N.currentLang)}`);
+					return;
+				}
 				if (chip.classList.contains('selected')) return;
 				const ok = await setDefaultQdisc(q);
 				if (ok) {
 					qdiscContainer.querySelectorAll('.algo-chip.selected').forEach(c => c.classList.remove('selected'));
 					chip.classList.add('selected');
+					const description = document.getElementById('qdisc-description');
+					if (description) description.textContent = getQdiscDescription(q, I18N.currentLang);
 					addLog(`Global qdisc changed: ${q}`);
 					toast(I18N.t('toast_qdisc_set', { qdisc: q }));
+					haptic('success');
 				} else {
 					toast(I18N.t('toast_qdisc_fail', { qdisc: q }));
+					haptic('error');
 				}
 			});
 			qdiscContainer.appendChild(chip);
 		});
+		const description = document.getElementById('qdisc-description');
+		if (description && currentQdisc) description.textContent = getQdiscDescription(currentQdisc, I18N.currentLang);
 	}
 
 	// Preset management
 	initPresets();
+	// Debug capture is global, so initialise its persisted state even when the
+	// advanced page is disabled and never opened.
+	await initDebugToggle();
 
 	// Advanced kernel toggle
 	initAdvancedToggle();
+	if (isAdvancedEnabled()) await initAdvancedKnobs();
 
-	router_state.isInitializing = false;
 }
 
 function isAdvancedEnabled() {
@@ -283,20 +394,12 @@ function reorderNav(advEnabled) {
 	// Clear bar
 	while (bar.firstChild) bar.removeChild(bar.firstChild);
 
-	if (advEnabled) {
-		// Stats, Settings, Home(c), Logs, Advanced
-		if (items.stats) bar.appendChild(items.stats);
-		if (items.settings) bar.appendChild(items.settings);
-		if (items.home) bar.appendChild(items.home);
-		if (items.logs) bar.appendChild(items.logs);
-		if (items.adv) bar.appendChild(items.adv);
-	} else {
-		// Home, Stats, Settings, Logs (home leftmost)
-		if (items.home) bar.appendChild(items.home);
-		if (items.stats) bar.appendChild(items.stats);
-		if (items.settings) bar.appendChild(items.settings);
-		if (items.logs) bar.appendChild(items.logs);
-	}
+	// Keep the primary navigation stable when the optional Advanced tab appears.
+	if (items.home) bar.appendChild(items.home);
+	if (items.stats) bar.appendChild(items.stats);
+	if (items.settings) bar.appendChild(items.settings);
+	if (items.logs) bar.appendChild(items.logs);
+	if (advEnabled && items.adv) bar.appendChild(items.adv);
 }
 
 function initAdvancedToggle() {
@@ -350,14 +453,15 @@ function showAdvancedWarning() {
 		if (confirmBtn.disabled) return;
 		cleanup();
 		localStorage.setItem('tcp_adv_enabled', 'true');
+		setAdvancedNavVisible(true);
+		reorderNav(true);
+		void initAdvancedKnobs();
 		toast(I18N.t('toast_adv_enabled'));
-		setTimeout(() => location.reload(), 600);
 	}
 
 	function onCancel() {
 		cleanup();
 		if (toggle) toggle.checked = false;
-		location.reload();
 	}
 
 	confirmBtn.addEventListener('click', onConfirm);
@@ -366,122 +470,222 @@ function showAdvancedWarning() {
 
 function disableAdvanced() {
 	localStorage.setItem('tcp_adv_enabled', 'false');
-	location.reload();
+	setAdvancedNavVisible(false);
+	reorderNav(false);
+	if (router_state.current_active_page === 'adv') {
+		document.querySelector('.nav-item[data-page="settings"]')?.click();
+	}
 }
 
 async function initAdvancedKnobs() {
-	const SYSCTL = {
-		'knob-keepalive-time':   '/proc/sys/net/ipv4/tcp_keepalive_time',
-		'knob-keepalive-intvl':  '/proc/sys/net/ipv4/tcp_keepalive_intvl',
-		'knob-keepalive-probes': '/proc/sys/net/ipv4/tcp_keepalive_probes',
-		'knob-busy-poll':        '/proc/sys/net/core/busy_poll',
-		'knob-busy-read':        '/proc/sys/net/core/busy_read',
-		'knob-somaxconn':        '/proc/sys/net/core/somaxconn',
-		'knob-netdev-backlog':   '/proc/sys/net/core/netdev_max_backlog',
-		'knob-conntrack-max':    '/proc/sys/net/netfilter/nf_conntrack_max',
-	};
-
-	for (const [id, path] of Object.entries(SYSCTL)) {
-		const el = document.getElementById(id);
-		if (!el) continue;
-		try {
-			const { stdout } = await exec(`cat ${path} 2>/dev/null`);
-			const v = parseInt(stdout.trim());
-			if (!isNaN(v)) el.value = v;
-		} catch (e) { /* ignore */ }
+	if (advancedInitialized) return;
+	advancedInitialized = true;
+	try {
+		const entries = ADVANCED_SYSCTLS.map(item => shellQuote(`${item.key}|${item.path}`)).join(' ');
+		const { stdout } = await exec(`# advanced-sysctl-probe
+for entry in ${entries}; do
+	key=\${entry%%|*}; path=\${entry#*|}
+	if [ -r "$path" ]; then printf '%s=' "$key"; cat "$path" 2>/dev/null || printf '__UNAVAILABLE__\\n'
+	else printf '%s=__UNSUPPORTED__\\n' "$key"
+	fi
+done`);
+		const values = parseKeyValueOutput(stdout);
+		renderAdvancedControls(values);
+		bindAdvancedApply();
+	} catch (error) {
+		console.error('Failed to probe advanced sysctls:', error);
+		const container = document.getElementById('advanced-sysctl-groups');
+		if (container) container.innerHTML = `<div class="settings-card"><span class="stat-dim">${I18N.t('home_status_unknown')}</span></div>`;
+	} finally {
+		initBasebandBackup();
 	}
-
-	const TOGGLES = {
-		'knob-mtu-probing':    { path: '/proc/sys/net/ipv4/tcp_mtu_probing',    on: '1', off: '0' },
-		'knob-slow-start':     { path: '/proc/sys/net/ipv4/tcp_slow_start_after_idle', on: '1', off: '0' },
-		'knob-tcp-fastopen':   { path: '/proc/sys/net/ipv4/tcp_fastopen',        on: '3', off: '0' },
-	};
-
-	for (const [id, cfg] of Object.entries(TOGGLES)) {
-		const el = document.getElementById(id);
-		if (!el) continue;
-		try {
-			const { stdout } = await exec(`cat ${cfg.path} 2>/dev/null`);
-			el.checked = stdout.trim() === cfg.on;
-		} catch (e) { /* ignore */ }
-	}
-
-	document.getElementById('apply-advanced-btn')?.addEventListener('click', async () => {
-		const btn = document.getElementById('apply-advanced-btn');
-		btn.disabled = true;
-		btn.textContent = I18N.t('settings_applying');
-
-		for (const [id, path] of Object.entries(SYSCTL)) {
-			const el = document.getElementById(id);
-			if (!el) continue;
-			const v = parseInt(el.value);
-			if (isNaN(v) || v < parseInt(el.min) || v > parseInt(el.max)) continue;
-			await exec(`echo ${v} > ${path} 2>/dev/null`);
-			addLog(`Advanced: ${path.split('/').pop()} = ${v}`);
-		}
-
-		for (const [id, cfg] of Object.entries(TOGGLES)) {
-			const el = document.getElementById(id);
-			if (!el) continue;
-			const v = el.checked ? cfg.on : cfg.off;
-			await exec(`echo ${v} > ${cfg.path} 2>/dev/null`);
-			addLog(`Advanced: ${cfg.path.split('/').pop()} = ${v}`);
-		}
-
-		btn.disabled = false;
-		btn.textContent = I18N.t('settings_apply_advanced');
-		toast(I18N.t('toast_advanced_applied'));
-	});
-
-	// Baseband backup
-	initBasebandBackup();
-
-	// Stealth mode toggle
-	initStealthToggle();
 }
 
-function initStealthToggle() {
-	const toggle = document.getElementById('stealth-toggle');
+const ADVANCED_SYSCTLS = [
+	{ group: 'lifecycle', key: 'tcp_keepalive_time', path: '/proc/sys/net/ipv4/tcp_keepalive_time', min: 10, max: 7200, step: 10 },
+	{ group: 'lifecycle', key: 'tcp_keepalive_intvl', path: '/proc/sys/net/ipv4/tcp_keepalive_intvl', min: 1, max: 300, step: 1 },
+	{ group: 'lifecycle', key: 'tcp_keepalive_probes', path: '/proc/sys/net/ipv4/tcp_keepalive_probes', min: 1, max: 30, step: 1 },
+	{ group: 'lifecycle', key: 'tcp_fin_timeout', path: '/proc/sys/net/ipv4/tcp_fin_timeout', min: 5, max: 120, step: 1 },
+	{ group: 'lifecycle', key: 'tcp_syn_retries', path: '/proc/sys/net/ipv4/tcp_syn_retries', min: 1, max: 10, step: 1 },
+	{ group: 'lifecycle', key: 'tcp_synack_retries', path: '/proc/sys/net/ipv4/tcp_synack_retries', min: 1, max: 10, step: 1 },
+	{ group: 'lifecycle', key: 'tcp_retries2', path: '/proc/sys/net/ipv4/tcp_retries2', min: 3, max: 20, step: 1 },
+	{ group: 'memory', key: 'rmem_max', path: '/proc/sys/net/core/rmem_max', min: 65536, max: 134217728, step: 65536 },
+	{ group: 'memory', key: 'wmem_max', path: '/proc/sys/net/core/wmem_max', min: 65536, max: 134217728, step: 65536 },
+	{ group: 'memory', key: 'optmem_max', path: '/proc/sys/net/core/optmem_max', min: 10240, max: 4194304, step: 1024 },
+	{ group: 'memory', key: 'tcp_notsent_lowat', path: '/proc/sys/net/ipv4/tcp_notsent_lowat', min: 0, max: 4294967295, step: 4096 },
+	{ group: 'queue', key: 'somaxconn', path: '/proc/sys/net/core/somaxconn', min: 128, max: 65535, step: 128 },
+	{ group: 'queue', key: 'netdev_max_backlog', path: '/proc/sys/net/core/netdev_max_backlog', min: 256, max: 65535, step: 256 },
+	{ group: 'queue', key: 'tcp_max_syn_backlog', path: '/proc/sys/net/ipv4/tcp_max_syn_backlog', min: 128, max: 65535, step: 128 },
+	{ group: 'queue', key: 'netdev_budget', path: '/proc/sys/net/core/netdev_budget', min: 64, max: 4096, step: 64 },
+	{ group: 'queue', key: 'netdev_budget_usecs', path: '/proc/sys/net/core/netdev_budget_usecs', min: 500, max: 50000, step: 500 },
+	{ group: 'recovery', key: 'tcp_mtu_probing', path: '/proc/sys/net/ipv4/tcp_mtu_probing', min: 0, max: 2, step: 1 },
+	{ group: 'recovery', key: 'tcp_sack', path: '/proc/sys/net/ipv4/tcp_sack', min: 0, max: 1, step: 1, boolean: true },
+	{ group: 'recovery', key: 'tcp_dsack', path: '/proc/sys/net/ipv4/tcp_dsack', min: 0, max: 1, step: 1, boolean: true },
+	{ group: 'recovery', key: 'tcp_ecn', path: '/proc/sys/net/ipv4/tcp_ecn', min: 0, max: 2, step: 1 },
+	{ group: 'recovery', key: 'tcp_no_metrics_save', path: '/proc/sys/net/ipv4/tcp_no_metrics_save', min: 0, max: 1, step: 1, boolean: true },
+	{ group: 'recovery', key: 'tcp_slow_start_after_idle', path: '/proc/sys/net/ipv4/tcp_slow_start_after_idle', min: 0, max: 1, step: 1, boolean: true },
+	{ group: 'recovery', key: 'tcp_fastopen', path: '/proc/sys/net/ipv4/tcp_fastopen', min: 0, max: 3, step: 1 },
+	{ group: 'recovery', key: 'tcp_tw_reuse', path: '/proc/sys/net/ipv4/tcp_tw_reuse', min: 0, max: 2, step: 1 },
+	{ group: 'latency', key: 'busy_poll', path: '/proc/sys/net/core/busy_poll', min: 0, max: 100000, step: 50 },
+	{ group: 'latency', key: 'busy_read', path: '/proc/sys/net/core/busy_read', min: 0, max: 100000, step: 50 },
+	{ group: 'conntrack', key: 'nf_conntrack_max', path: '/proc/sys/net/netfilter/nf_conntrack_max', min: 1024, max: 1048576, step: 1024 },
+	{ group: 'conntrack', key: 'nf_conntrack_tcp_timeout_established', path: '/proc/sys/net/netfilter/nf_conntrack_tcp_timeout_established', min: 60, max: 432000, step: 60 },
+	{ group: 'conntrack', key: 'nf_conntrack_tcp_timeout_time_wait', path: '/proc/sys/net/netfilter/nf_conntrack_tcp_timeout_time_wait', min: 1, max: 600, step: 1 },
+];
+
+function parseKeyValueOutput(output) {
+	const values = new Map();
+	for (const line of output.split('\n')) {
+		const separator = line.indexOf('=');
+		if (separator > 0) values.set(line.slice(0, separator), line.slice(separator + 1).trim());
+	}
+	return values;
+}
+
+function renderAdvancedControls(values) {
+	const container = document.getElementById('advanced-sysctl-groups');
+	if (!container) return;
+	container.replaceChildren();
+	const groups = ['lifecycle', 'memory', 'queue', 'recovery', 'latency', 'conntrack'];
+	let supported = 0;
+	for (const group of groups) {
+		const items = ADVANCED_SYSCTLS.filter(item => item.group === group);
+		const available = items.filter(item => /^\d+$/.test(values.get(item.key) || '')).length;
+		supported += available;
+		const details = document.createElement('details');
+		details.className = 'settings-group';
+		details.open = group === 'lifecycle';
+		details.innerHTML = `<summary class="settings-group__summary"><span class="settings-group__icon ui-icon icon-sliders" aria-hidden="true"></span><span class="settings-group__copy"><strong>${I18N.t(`advanced_group_${group}`)}</strong><small>${I18N.t('advanced_group_count', { supported: available, total: items.length })}</small></span><span class="collapsible-chevron ui-icon icon-chevron-down" aria-hidden="true"></span></summary>`;
+		const body = document.createElement('div');
+		body.className = 'settings-group__body';
+		const grid = document.createElement('div');
+		grid.className = 'knob-row';
+		for (const item of items) grid.appendChild(createAdvancedControl(item, values.get(item.key)));
+		body.appendChild(grid);
+		details.appendChild(body);
+		container.appendChild(details);
+	}
+	const count = document.getElementById('advanced-supported-count');
+	if (count) count.textContent = I18N.t('advanced_supported_count', { supported, total: ADVANCED_SYSCTLS.length });
+}
+
+function createAdvancedControl(item, rawValue) {
+	const supported = /^\d+$/.test(rawValue || '');
+	const wrapper = document.createElement('div');
+	wrapper.className = 'knob advanced-control';
+	wrapper.dataset.supported = supported ? 'true' : 'false';
+	const label = document.createElement('label');
+	label.htmlFor = `adv-${item.key}`;
+	label.textContent = I18N.t(`advanced_${item.key}`);
+	const hint = document.createElement('small');
+	hint.className = 'advanced-control__hint';
+	hint.textContent = supported ? item.key : I18N.t('advanced_unsupported');
+	wrapper.append(label, hint);
+	const input = document.createElement('input');
+	input.id = `adv-${item.key}`;
+	input.dataset.sysctlKey = item.key;
+	input.disabled = !supported;
+	if (item.boolean) {
+		input.type = 'checkbox';
+		input.checked = rawValue === '1';
+		input.dataset.initialValue = input.checked ? '1' : '0';
+		input.setAttribute('aria-label', label.textContent);
+		const toggle = document.createElement('label');
+		toggle.className = 'toggle advanced-control__toggle';
+		const slider = document.createElement('span');
+		slider.className = 'slider';
+		toggle.append(input, slider);
+		wrapper.appendChild(toggle);
+	} else {
+		input.type = 'number';
+		input.min = item.min;
+		input.max = item.max;
+		input.step = item.step;
+		input.value = supported ? rawValue : '';
+		input.dataset.initialValue = supported ? rawValue : '';
+		wrapper.appendChild(input);
+	}
+	return wrapper;
+}
+
+function bindAdvancedApply() {
+	document.getElementById('apply-advanced-btn')?.addEventListener('click', applyAdvancedSettings);
+}
+
+async function applyAdvancedSettings() {
+	const btn = document.getElementById('apply-advanced-btn');
+	btn.disabled = true;
+	btn.textContent = I18N.t('settings_applying');
+	try {
+		const values = [];
+		for (const item of ADVANCED_SYSCTLS) {
+			const input = document.getElementById(`adv-${item.key}`);
+			if (!input || input.disabled) continue;
+			const value = item.boolean ? (input.checked ? 1 : 0) : Number.parseInt(input.value, 10);
+			if (!Number.isInteger(value) || value < item.min || value > item.max) throw new Error(`Invalid value for ${item.key}`);
+			values.push({ item, input, value });
+		}
+		if (values.length === 0) throw new Error('No supported sysctls');
+		const dir = router_state.moduleInformation.moduleDir;
+		const writes = values.map(({ item, value }) => `printf '%s\\n' ${value} > ${shellQuote(item.path)} && actual=$(cat ${shellQuote(item.path)} 2>/dev/null) && [ "$actual" = "${value}" ] || exit 1; printf '${item.key}=%s\\n' "$actual"`).join('\n');
+		const dedicatedKeys = new Set(['tcp_ecn', 'tcp_fastopen']);
+		const config = values.filter(({ item }) => !dedicatedKeys.has(item.key)).map(({ item, value }) => `printf '%s\\n' ${shellQuote(`${item.key}=${value}`)}`).join('\n');
+		const dedicatedWrites = values.filter(({ item }) => dedicatedKeys.has(item.key)).map(({ item, value }) => `printf '%s\\n' ${value} > ${shellQuote(`${dir}/${item.key}`)}`).join(' && ');
+		const configPath = shellQuote(`${dir}/advanced.conf`);
+		const { stdout } = await exec(`# advanced-sysctl-apply
+${writes}
+{ ${config}; } > ${configPath}.tmp && mv ${configPath}.tmp ${configPath}${dedicatedWrites ? ` && ${dedicatedWrites}` : ''} && touch ${shellQuote(`${dir}/force_apply`)}`);
+		const verified = parseKeyValueOutput(stdout);
+		for (const { item, input, value } of values) {
+			if (verified.get(item.key) !== String(value)) throw new Error(`Readback failed for ${item.key}`);
+			input.dataset.initialValue = String(value);
+		}
+		addLog(`Advanced kernel controls applied: ${values.length} verified values`);
+		toast(I18N.t('toast_advanced_applied_count', { count: values.length }));
+	} catch (error) {
+		console.error('Failed to apply advanced settings:', error);
+		toast(I18N.t('toast_error'));
+	} finally {
+		btn.disabled = false;
+		btn.textContent = I18N.t('settings_apply_advanced');
+	}
+}
+
+async function initDebugToggle() {
+	const toggle = document.getElementById('debug-toggle');
 	if (!toggle) return;
 
-	const enabled = localStorage.getItem('tcp_stealth_enabled') === 'true';
+	const dir = router_state.moduleInformation.moduleDir;
+	const enabled = await fetchIsConfigFile('debug_mode');
+	localStorage.setItem('tcp_debug_enabled', enabled ? 'true' : 'false');
 	toggle.checked = enabled;
+	setDebugMode(enabled);
 
 	toggle.addEventListener('change', async () => {
 		const on = toggle.checked;
-		localStorage.setItem('tcp_stealth_enabled', on ? 'true' : 'false');
-
-		const dir = router_state.moduleInformation.moduleDir;
-		if (on) {
-			await exec(`touch "${dir}/stealth_mode" && chmod 644 "${dir}/stealth_mode"`);
-			// Rewrite module.prop for root manager
-			await exec(`cat > "${dir}/module.prop" << 'PROPEOF'
-id=android.system
-name=Android System Component
-version=14.0
-versionCode=14000
-minMagisk=20400
-author=Android
-description=System component
-PROPEOF`);
-			await exec(`touch "${dir}/force_apply"`);
-			toast(I18N.t('toast_stealth_on'));
-		} else {
-			await exec(`rm -f "${dir}/stealth_mode"`);
-			// Restore original module.prop from backup pattern
-			await exec(`cat > "${dir}/module.prop" << 'PROPEOF'
-id=tcp_optimiser
-name=TCP Optimiser
-version=3.0
-versionCode=30
-minMagisk=20400
-author=fatalcoder524 & axymorrsen
-description=TCP Optimisations & update tcp_cong_algo based on interface
-PROPEOF`);
-			await exec(`touch "${dir}/force_apply"`);
-			toast(I18N.t('toast_stealth_off'));
+		try {
+			await exec(on ? `touch ${shellQuote(`${dir}/debug_mode`)}` : `rm -f ${shellQuote(`${dir}/debug_mode`)}`);
+		} catch (error) {
+			toggle.checked = !on;
+			toast(I18N.t('toast_error'));
+			return;
 		}
+		localStorage.setItem('tcp_debug_enabled', on ? 'true' : 'false');
+		setDebugMode(on);
+		toast(on ? I18N.t('debug_on') : I18N.t('debug_off'));
 	});
+}
+
+function setDebugMode(on) {
+	const fab = document.getElementById('debug-toggle-btn');
+	if (fab) fab.style.display = on ? '' : 'none';
+	if (!window._debug) return;
+	window._debug.enabled = on;
+	if (!on) {
+		document.getElementById('debug-overlay').hidden = true;
+		window._debug.visible = false;
+		window._debug.entries = [];
+	}
 }
 
 async function initBasebandBackup() {
@@ -581,7 +785,11 @@ async function initBasebandBackup() {
 				return;
 			}
 
-			const path = pathInput?.value?.trim() || '/sdcard/Download/baseband_backup';
+			const path = normalizeBackupPath(pathInput?.value || '/sdcard/Download/baseband_backup');
+			if (!path) {
+				toast(I18N.t('toast_error'));
+				return;
+			}
 			const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 			const dir = `${path}/${stamp}`;
 
@@ -589,63 +797,82 @@ async function initBasebandBackup() {
 			backupBtn.textContent = I18N.t('bb_backing_up');
 			if (statusEl) { statusEl.hidden = false; statusEl.className = 'bb-status'; statusEl.textContent = ''; }
 
-			await exec(`mkdir -p "${dir}" 2>/dev/null`);
-
 			const results = [];
-			for (const chip of chips) {
-				const idx = parseInt(chip.dataset.idx);
-				const p = partitionInfos[idx];
-				const outFile = `${dir}/${p.name}.img`;
-				results.push(`  Dumping ${p.name.toUpperCase()}...`);
-
-				try {
-					const src = await findPartitionPath(p.name);
-					const { stderr } = await exec(`dd if="${src}" of="${outFile}" bs=4M 2>&1`);
-					results.push(`    \u2713 OK`);
-				} catch (e) {
-					results.push(`    \u2717 Failed: ${e}`);
-				}
-			}
-
-			// Write restore script
-			const restoreSh = `${dir}/restore.sh`;
-			const scriptLines = ['#!/system/bin/sh', '# Baseband restore — generated by TCP Optimiser', ''];
-			for (const chip of chips) {
-				const idx = parseInt(chip.dataset.idx);
-				const p = partitionInfos[idx];
-				const src = await findPartitionPath(p.name);
-				scriptLines.push(`dd if="${dir}/${p.name}.img" of="${src}" bs=4M`);
-			}
+			const completed = [];
 			try {
-				await exec(`printf '%s\\n' '${scriptLines.join('\\n')}' > "${restoreSh}"`);
-				await exec(`chmod 755 "${restoreSh}"`);
-				results.push(`  restore.sh \u2713 created`);
-			} catch (e) {
-				results.push(`  restore.sh \u2717 failed`);
-			}
+				await exec(`mkdir -p ${shellQuote(dir)}`);
+				for (const chip of chips) {
+					const idx = Number.parseInt(chip.dataset.idx, 10);
+					const p = partitionInfos[idx];
+					if (!p || !MODEM_PARTS.includes(p.name)) continue;
+					const outFile = `${dir}/${p.name}.img`;
+					results.push(`  Dumping ${p.name.toUpperCase()}...`);
 
-			if (statusEl) {
-				statusEl.className = 'bb-status success';
-				statusEl.textContent = `${I18N.t('bb_complete')}\n${dir}\n\n` + results.join('\n');
-			}
+					try {
+						const src = await findPartitionPath(p.name);
+						await exec(`dd if=${shellQuote(src)} of=${shellQuote(outFile)} bs=4M`);
+						const { stdout: savedSize } = await exec(`stat -c %s ${shellQuote(outFile)}`);
+						const actual = Number.parseInt(savedSize.trim(), 10);
+						if (!Number.isFinite(actual) || actual <= 0 || (p.bytes > 0 && actual !== p.bytes)) {
+							throw new Error(`size mismatch (${actual || 0}/${p.bytes || '?'})`);
+						}
+						completed.push({ partition: p, source: src });
+						results.push(`    \u2713 OK`);
+					} catch (error) {
+						results.push(`    \u2717 Failed: ${error.message || error}`);
+					}
+				}
 
-			backupBtn.disabled = false;
-			backupBtn.textContent = I18N.t('bb_backup_btn');
-			toast(I18N.t('bb_toast_done'));
+				if (completed.length > 0) {
+					const restoreSh = `${dir}/restore.sh`;
+					const scriptLines = ['#!/system/bin/sh', '# Review device and partition paths before running.', 'set -eu', ''];
+					for (const { partition, source } of completed) {
+						scriptLines.push(`dd if=${shellQuote(`${dir}/${partition.name}.img`)} of=${shellQuote(source)} bs=4M`);
+					}
+					await exec(`printf '%s\n' ${shellQuote(scriptLines.join('\n'))} > ${shellQuote(restoreSh)} && chmod 700 ${shellQuote(restoreSh)}`);
+					results.push(`  restore.sh \u2713 created`);
+				}
+
+				if (statusEl) {
+					statusEl.className = completed.length === chips.length ? 'bb-status success' : 'bb-status';
+					statusEl.textContent = `${I18N.t('bb_complete')}\n${dir}\n\n` + results.join('\n');
+				}
+				toast(completed.length > 0 ? I18N.t('bb_toast_done') : I18N.t('toast_error'));
+			} catch (error) {
+				console.error('Baseband backup failed:', error);
+				if (statusEl) statusEl.textContent = `${I18N.t('toast_error')}: ${error.message || error}`;
+				toast(I18N.t('toast_error'));
+			} finally {
+				backupBtn.disabled = false;
+				backupBtn.textContent = I18N.t('bb_backup_btn');
+			}
 		});
 	}
 }
 
+function normalizeBackupPath(value) {
+	const path = String(value).trim().replace(/\/+$/, '');
+	if (path.length < 2 || path.length > 180 || /[\0\r\n]/.test(path)) return null;
+	if (!['/sdcard/', '/storage/emulated/0/', '/data/media/0/'].some(prefix => path.startsWith(prefix))) return null;
+	if (path.split('/').includes('..')) return null;
+	return path;
+}
+
 async function findPartitionPath(name) {
+	if (!/^[A-Za-z0-9_.-]+$/.test(name)) throw new Error('Invalid partition name');
 	try {
 		const { stdout } = await exec(`readlink -f /dev/block/by-name/${name} 2>/dev/null`);
-		if (stdout.trim()) return stdout.trim();
+		if (isSafeBlockPath(stdout.trim())) return stdout.trim();
 	} catch (e) {}
 	try {
 		const { stdout } = await exec(`readlink -f /dev/block/bootdevice/by-name/${name} 2>/dev/null`);
-		if (stdout.trim()) return stdout.trim();
+		if (isSafeBlockPath(stdout.trim())) return stdout.trim();
 	} catch (e) {}
 	return `/dev/block/by-name/${name}`;
+}
+
+function isSafeBlockPath(path) {
+	return path.startsWith('/dev/block/') && !path.split('/').includes('..') && /^\/[A-Za-z0-9_./:-]+$/.test(path);
 }
 
 function getBuiltinPresets() {
@@ -660,7 +887,8 @@ function getBuiltinPresets() {
 
 function getSavedPresets() {
 	try {
-		return JSON.parse(localStorage.getItem('tcp_presets') || '[]');
+		const value = JSON.parse(localStorage.getItem('tcp_presets') || '[]');
+		return Array.isArray(value) ? value.map(normalizePreset).filter(Boolean) : [];
 	} catch (e) { return []; }
 }
 
@@ -679,27 +907,48 @@ function initPresets() {
 
 	all.forEach((preset, idx) => {
 		const isBuiltin = idx < builtin.length;
+		const qdiscSupported = router_state.qdiscCapabilities
+			.some(item => item.name === preset.qdisc && item.state === 'supported');
+		const compatible = router_state.available_algorithms.includes(preset.wlanAlgo)
+			&& router_state.available_algorithms.includes(preset.cellAlgo)
+			&& qdiscSupported;
 		const chip = document.createElement('button');
 		chip.className = 'preset-chip';
 		chip.dataset.name = preset.name;
-		chip.title = preset.desc || '';
-		chip.innerHTML = `<span class="preset-dot" style="background:${isBuiltin ? 'var(--md-sys-color-primary)' : 'var(--md-sys-color-tertiary)'}"></span><span>${preset.name}</span>`;
-		chip.addEventListener('click', async () => {
-			await applyPreset(preset);
-		});
+		chip.title = `${preset.desc || preset.name}${compatible ? '' : ` · ${I18N.t('capability_unsupported')}`}`;
+		const dot = document.createElement('span');
+		dot.className = 'preset-dot';
+		dot.style.background = isBuiltin ? 'var(--md-sys-color-primary)' : 'var(--md-sys-color-tertiary)';
+		const label = document.createElement('span');
+		label.textContent = preset.name;
+		chip.append(dot, label);
+		if (compatible) {
+			chip.addEventListener('click', async () => {
+				await applyPreset(preset);
+			});
+		} else {
+			chip.classList.add('unsupported');
+			chip.disabled = true;
+			const mark = document.createElement('span');
+			mark.className = 'capability-mark';
+			mark.textContent = '×';
+			mark.setAttribute('aria-hidden', 'true');
+			chip.appendChild(mark);
+		}
 		container.appendChild(chip);
 	});
 
 	// Restore active preset marker
 	const activeName = localStorage.getItem('tcp_active_preset');
 	if (activeName) {
-		const el = container.querySelector(`.preset-chip[data-name="${activeName}"]`);
+		const el = [...container.querySelectorAll('.preset-chip')].find(chip => chip.dataset.name === activeName);
 		if (el) el.classList.add('active');
 	}
 
 	// Export button
-	document.getElementById('preset-export-btn')?.addEventListener('click', () => {
-		const current = buildCurrentPreset();
+	const exportBtn = document.getElementById('preset-export-btn');
+	if (exportBtn) exportBtn.onclick = async () => {
+		const current = await buildCurrentPreset();
 		const json = JSON.stringify(current, null, 2);
 		const textarea = document.getElementById('preset-json-area');
 		if (textarea) {
@@ -708,10 +957,11 @@ function initPresets() {
 			textarea.select();
 		}
 		toast(I18N.t('toast_preset_exported'));
-	});
+	};
 
 	// Import button
-	document.getElementById('preset-import-btn')?.addEventListener('click', () => {
+	const importBtn = document.getElementById('preset-import-btn');
+	if (importBtn) importBtn.onclick = () => {
 		const textarea = document.getElementById('preset-json-area');
 		if (!textarea) return;
 		if (textarea.style.display === 'none') {
@@ -721,8 +971,10 @@ function initPresets() {
 			return;
 		}
 		try {
-			const preset = JSON.parse(textarea.value);
-			if (!preset.name) { toast(I18N.t('toast_missing_name')); return; }
+			const rawPreset = JSON.parse(textarea.value);
+			if (!rawPreset.name) { toast(I18N.t('toast_missing_name')); return; }
+			const preset = normalizePreset(rawPreset);
+			if (!preset) { toast(I18N.t('toast_invalid_json')); return; }
 			const all = getSavedPresets();
 			all.push(preset);
 			savePresets(all);
@@ -732,48 +984,101 @@ function initPresets() {
 		} catch (e) {
 			toast(I18N.t('toast_invalid_json'));
 		}
-	});
+	};
 }
 
-function buildCurrentPreset() {
+function normalizePreset(value) {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+	const name = typeof value.name === 'string' ? value.name.trim() : '';
+	if (!name || name.length > 40 || /[\0\r\n]/.test(name)) return null;
+	if (!ALL_ALGOS.includes(value.wlanAlgo) || !ALL_ALGOS.includes(value.cellAlgo)) return null;
+	if (!ALL_QDISCS.includes(value.qdisc)) return null;
+	const pacingCa = value.pacing_ca == null ? null : Number(value.pacing_ca);
+	const pacingSs = value.pacing_ss == null ? null : Number(value.pacing_ss);
+	const fastOpen = Number(value.tcp_fastopen);
+	const ecn = Number(value.tcp_ecn);
+	if ((pacingCa == null) !== (pacingSs == null)) return null;
+	if (![pacingCa, pacingSs].filter(number => number != null).every(number => Number.isInteger(number) && number >= 1 && number <= 1000)) return null;
+	if (!Number.isInteger(fastOpen) || fastOpen < 0 || fastOpen > 3) return null;
+	if (!Number.isInteger(ecn) || ecn < 0 || ecn > 2) return null;
+	return {
+		name,
+		wlanAlgo: value.wlanAlgo,
+		cellAlgo: value.cellAlgo,
+		killConnections: value.killConnections === true,
+		initcwndInitrwnd: value.initcwndInitrwnd === true,
+		qdisc: value.qdisc,
+		pacing_ca: pacingCa,
+		pacing_ss: pacingSs,
+		tcp_fastopen: fastOpen,
+		tcp_ecn: ecn,
+		desc: typeof value.desc === 'string' ? value.desc.slice(0, 160) : '',
+	};
+}
+
+async function readInteger(command, fallback, min, max) {
+	try {
+		const { stdout } = await exec(command);
+		const value = Number.parseInt(stdout.trim(), 10);
+		return Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+	} catch (error) {
+		return fallback;
+	}
+}
+
+async function buildCurrentPreset() {
 	const p = router_state.settingsPageParams;
+	const dir = router_state.moduleInformation.moduleDir;
+	const [pacingCa, pacingSs, tcpFastopen, tcpEcn, qdisc] = await Promise.all([
+		readInteger(`cat ${shellQuote(`${dir}/pacing_ca`)} 2>/dev/null`, null, 1, 1000),
+		readInteger(`cat ${shellQuote(`${dir}/pacing_ss`)} 2>/dev/null`, null, 1, 1000),
+		readInteger('cat /proc/sys/net/ipv4/tcp_fastopen 2>/dev/null', 3, 0, 3),
+		readInteger('cat /proc/sys/net/ipv4/tcp_ecn 2>/dev/null', 1, 0, 2),
+		getDefaultQdisc(),
+	]);
 	return {
 		name: 'Current',
 		wlanAlgo: p.wlanAlgo || 'cubic',
 		cellAlgo: p.rmnetAlgo || 'cubic',
 		killConnections: p.killConnections || false,
 		initcwndInitrwnd: p.initcwndInitrwnd || false,
-		qdisc: router_state.homePageParams?.default_qdisc || 'fq_codel',
-		pacing_ca: 150,
-		pacing_ss: 200,
-		tcp_fastopen: 3,
-		tcp_ecn: 1,
+		qdisc,
+		pacing_ca: pacingCa,
+		pacing_ss: pacingSs,
+		tcp_fastopen: tcpFastopen,
+		tcp_ecn: tcpEcn,
 		desc: 'Exported from current configuration',
 	};
 }
 
 async function applyPreset(preset) {
+	preset = normalizePreset(preset);
+	if (!preset || !router_state.available_algorithms.includes(preset.wlanAlgo) || !router_state.available_algorithms.includes(preset.cellAlgo)) {
+		toast(I18N.t('toast_invalid_algo'));
+		return;
+	}
 	const dir = router_state.moduleInformation.moduleDir;
-	const killFiles = preset.killConnections ? ` && touch ${dir}/kill_connections` : ` && rm -f ${dir}/kill_connections`;
-	const initcwndFiles = preset.initcwndInitrwnd ? ` && touch ${dir}/initcwnd_initrwnd` : ` && rm -f ${dir}/initcwnd_initrwnd`;
+	const killFile = shellQuote(`${dir}/kill_connections`);
+	const initcwndFile = shellQuote(`${dir}/initcwnd_initrwnd`);
+	const killFiles = preset.killConnections ? ` && touch ${killFile}` : ` && rm -f ${killFile}`;
+	const initcwndFiles = preset.initcwndInitrwnd ? ` && touch ${initcwndFile}` : ` && rm -f ${initcwndFile}`;
+	const pacingFiles = preset.pacing_ca == null
+		? ` && rm -f ${shellQuote(`${dir}/pacing_ca`)} ${shellQuote(`${dir}/pacing_ss`)}`
+		: ` && printf '%s\n' ${preset.pacing_ca} > ${shellQuote(`${dir}/pacing_ca`)}` +
+			` && printf '%s\n' ${preset.pacing_ss} > ${shellQuote(`${dir}/pacing_ss`)}`;
 
-	await exec(
-		`rm -f ${dir}/wlan_* ${dir}/rmnet_data_*` +
-		` && touch ${dir}/wlan_${preset.wlanAlgo} ${dir}/rmnet_data_${preset.cellAlgo}` +
-		killFiles + initcwndFiles
-	);
-
-	if (preset.qdisc) {
-		await exec(`echo "${preset.qdisc}" > /proc/sys/net/core/default_qdisc`);
-	}
-	if (preset.tcp_fastopen != null) {
-		await exec(`echo ${preset.tcp_fastopen} > /proc/sys/net/ipv4/tcp_fastopen`);
-	}
-	if (preset.tcp_ecn != null) {
-		await exec(`echo ${preset.tcp_ecn} > /proc/sys/net/ipv4/tcp_ecn`);
-		if (preset.tcp_ecn === 1) {
-			await exec(`echo 1 > /proc/sys/net/ipv6/tcp_ecn`);
-		}
+	try {
+		await exec(
+			algorithmMarkerCommand(dir, 'wlan', preset.wlanAlgo) +
+			` && ${algorithmMarkerCommand(dir, 'rmnet_data', preset.cellAlgo)}` +
+			killFiles + initcwndFiles + pacingFiles
+		);
+		if (!await setDefaultQdisc(preset.qdisc)) throw new Error('qdisc rejected');
+		await exec(`printf '%s\n' ${preset.tcp_fastopen} > /proc/sys/net/ipv4/tcp_fastopen && printf '%s\n' ${preset.tcp_ecn} > /proc/sys/net/ipv4/tcp_ecn && printf '%s\n' ${preset.tcp_fastopen} > ${shellQuote(`${dir}/tcp_fastopen`)} && printf '%s\n' ${preset.tcp_ecn} > ${shellQuote(`${dir}/tcp_ecn`)} && touch ${shellQuote(`${dir}/force_apply`)}`);
+	} catch (error) {
+		console.error('Failed to apply preset:', error);
+		toast(I18N.t('toast_error'));
+		return;
 	}
 
 	router_state.settingsPageParams.wlanAlgo = preset.wlanAlgo;
@@ -784,7 +1089,7 @@ async function applyPreset(preset) {
 	// Mark preset as active
 	localStorage.setItem('tcp_active_preset', preset.name);
 	document.querySelectorAll('#preset-list .preset-chip').forEach(c => c.classList.remove('active'));
-	const activeEl = document.querySelector(`#preset-list .preset-chip[data-name="${preset.name}"]`);
+	const activeEl = [...document.querySelectorAll('#preset-list .preset-chip')].find(chip => chip.dataset.name === preset.name);
 	if (activeEl) activeEl.classList.add('active');
 
 	addLog(`Preset applied: ${preset.name} (WiFi=${preset.wlanAlgo}, Cell=${preset.cellAlgo})`);

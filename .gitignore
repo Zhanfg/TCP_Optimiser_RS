@@ -1,3 +1,8 @@
 /target
-/Cargo.lock
+/dist
+/output
+/.playwright-cli
+/*.zip
+/service_ref.sh
+/utils_ref.sh
 *.rs.bk

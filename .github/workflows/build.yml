@@ -1,0 +1,213 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  ANDROID_NDK_VERSION: 28.2.13676358
+
+jobs:
+  validate:
+    name: Validate source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+          key: ${{ runner.os }}-cargo-host-${{ hashFiles('Cargo.lock') }}
+
+      - name: Validate Rust
+        run: |
+          cargo fmt --all -- --check
+          cargo test --all-targets --locked
+          cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Validate WebUI and release metadata
+        run: |
+          find webroot/js -name '*.js' -print0 | xargs -0 -n1 node --check
+          node scripts/validate-webui.mjs
+          node scripts/validate-release.mjs
+
+      - name: Validate module scripts
+        run: |
+          bash -n customize.sh post-fs-data.sh service.sh uninstall.sh scripts/package-module.sh scripts/validate-package.sh
+          shellcheck customize.sh post-fs-data.sh service.sh uninstall.sh scripts/package-module.sh scripts/validate-package.sh
+
+  build-android:
+    name: Build ${{ matrix.abi }}
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-android
+            abi: arm64-v8a
+            machine: AArch64
+          - target: armv7-linux-androideabi
+            abi: armeabi-v7a
+            machine: ARM
+          - target: x86_64-linux-android
+            abi: x86_64
+            machine: X86-64
+    env:
+      TCP_OPTIMISER_OFFICIAL_BUILD: '1'
+      TCP_OPTIMISER_BUILD_REPOSITORY: ${{ github.repository }}
+      TCP_OPTIMISER_BUILD_REVISION: ${{ github.sha }}
+      RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/_/TCP_Optimiser_RS -C debuginfo=0
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/${{ matrix.target }}
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Select pinned Android NDK
+        shell: bash
+        run: |
+          NDK_HOME="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          if [ ! -d "$NDK_HOME" ]; then
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION"
+          fi
+          echo "ANDROID_NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
+          echo "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Build release binary
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+
+      - name: Verify Android ELF
+        run: |
+          binary="target/${{ matrix.target }}/release/tcp_optimiser"
+          test -s "$binary"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all "$binary"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h "$binary" | tee elf-header.txt
+          grep -F "Machine:" elf-header.txt | grep -F "${{ matrix.machine }}"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strings" "$binary" | grep -F "https://github.com/${GITHUB_REPOSITORY}"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strings" "$binary" | grep -F "$GITHUB_SHA"
+          install -Dm755 "$binary" "artifact/bin/${{ matrix.abi }}/tcp_optimiser"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.abi }}
+          path: artifact/bin/${{ matrix.abi }}/tcp_optimiser
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    name: Assemble module
+    if: github.event_name != 'pull_request'
+    needs: [validate, build-android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      zip_name: ${{ steps.metadata.outputs.zip_name }}
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: binary-input
+          merge-multiple: true
+
+      - id: metadata
+        name: Resolve package metadata
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version=//p' module.prop | head -n1)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "zip_name=TCP_Optimiser_RS-v$version.zip" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=TCP_Optimiser_RS-v$version-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Build reproducible module ZIP
+        env:
+          MODULE_SIGNING_KEY: ${{ secrets.MODULE_SIGNING_KEY }}
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          bash scripts/package-module.sh "dist/${{ steps.metadata.outputs.zip_name }}" binary-input/bin
+          bash scripts/validate-package.sh "dist/${{ steps.metadata.outputs.zip_name }}"
+          cd dist
+          sha256sum "${{ steps.metadata.outputs.zip_name }}" > "${{ steps.metadata.outputs.zip_name }}.sha256"
+
+      - name: Attest official public build
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/${{ steps.metadata.outputs.zip_name }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: |
+            dist/${{ steps.metadata.outputs.zip_name }}
+            dist/${{ steps.metadata.outputs.zip_name }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.package.outputs.artifact_name }}
+          path: dist
+
+      - name: Verify release tag
+        env:
+          VERSION: ${{ needs.package.outputs.version }}
+        run: test "$GITHUB_REF_NAME" = "v$VERSION"
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ZIP_NAME: ${{ needs.package.outputs.zip_name }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "dist/$ZIP_NAME" "dist/$ZIP_NAME.sha256" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              "dist/$ZIP_NAME" "dist/$ZIP_NAME.sha256" \
+              --verify-tag --generate-notes --title "TCP Optimiser $GITHUB_REF_NAME"
+          fi

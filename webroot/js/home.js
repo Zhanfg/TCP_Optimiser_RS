@@ -1,64 +1,106 @@
-import { exec, toast } from './kernelsu.js';
+import { exec } from './kernelsu.js';
 import I18N from './i18n.js';
-import { get_active_iface, get_active_algorithm, getInitcwndInitrwndValue, get_wifi_calling_state, getModuleActiveState, getDefaultQdisc, getProxyStatus, getHostsStatus } from './common.js';
+import { get_active_iface, get_active_algorithm, getInitcwndInitrwndValue, getModuleActiveState, getDefaultQdisc, getProxyStatus, getHostsStatus, getQdiscCapabilities } from './common.js';
 import router_state from './router.js';
+import { ALL_ALGOS, getAlgorithmDescription, getQdiscDescription } from './capabilities.js';
+import { setAnimatedText } from './motion.js';
 
-const ALL_ALGOS = ['bbr', 'bbr2', 'bbr3', 'cubic', 'westwood', 'westwood_plus', 'reno',
-	'htcp', 'vegas', 'yeah', 'illinois', 'dctcp', 'cdg', 'bic', 'highspeed',
-	'hybla', 'nv', 'scalable', 'lp'];
 let _lastAlgoSet = '';
 let _lastActiveAlgo = '';
 let _lastEnabled = false;
 
 export async function updateModuleStatus() {
 	try {
-		const [enabled, iface, algo, initcwndInitrwnd, defaultQdisc, proxy, hosts] = await Promise.all([
-			getModuleActiveState(),
-			get_active_iface(),
-			get_active_algorithm(),
-			getInitcwndInitrwndValue(),
-			getDefaultQdisc(),
-			getProxyStatus(),
-			getHostsStatus(),
+		// Check via KSU API (already loaded by updateModuleInformation)
+		if (!router_state.moduleInformation) {
+			router_state.homePageParams.module_status = "NotInstalled";
+			return;
+		}
+
+		const [running, iface, algo, initcwndInitrwnd, defaultQdisc, proxy, hosts, qdiscCapabilities] = await Promise.all([
+			getModuleActiveState(), get_active_iface(), get_active_algorithm(),
+			getInitcwndInitrwndValue(), getDefaultQdisc(), getProxyStatus(), getHostsStatus(), getQdiscCapabilities(),
 		]);
-		const isActive = enabled;
-		router_state.homePageParams.module_status = isActive ? "Enabled" : "Disabled";
+
+		router_state.homePageParams.module_status = running ? "Enabled" : "Disabled";
 		router_state.homePageParams.active_iface = iface || "None";
-		router_state.homePageParams.active_iface_type = (iface || "").startsWith("rmnet") || (iface || "").startsWith("ccmni") ? "Cellular"
-			: (iface || "").startsWith("wlan") || (iface || "").startsWith("tun") ? "Wi-Fi" : "Unknown";
+		const ifaceName = iface || "";
+		router_state.homePageParams.active_iface_type = classifyInterface(ifaceName);
 		router_state.homePageParams.active_algorithm = algo || "Unknown";
 		router_state.homePageParams.active_InitcwndInitrwndValue = initcwndInitrwnd;
 		router_state.homePageParams.default_qdisc = defaultQdisc;
-		router_state.homePageParams.proxy_status = proxy;
+		router_state.homePageParams.proxy_status = proxy?.status || 'unknown';
+		router_state.homePageParams.proxy_info = proxy || null;
 		router_state.homePageParams.hosts_status = hosts;
+		router_state.qdiscCapabilities = qdiscCapabilities;
 	} catch (error) {
 		console.error('Error updating status:', error);
 	}
 }
 
+function classifyInterface(ifaceName) {
+	if (/^(wlan|swlan|wifi|ap)/i.test(ifaceName)) return 'Wi-Fi';
+	if (/^(rmnet|ccmni|ccemni|pdp|wwan|v4-rmnet|rev_rmnet)/i.test(ifaceName)) return 'Cellular';
+	if (/^(eth|en)[A-Za-z0-9_.-]*/i.test(ifaceName)) return 'Ethernet';
+	if (/^(rndis|usb)[A-Za-z0-9_.-]*/i.test(ifaceName)) return 'USB';
+	if (/^(tun|tap|wg)[A-Za-z0-9_.-]*/i.test(ifaceName)) return 'VPN';
+	return 'Unknown';
+}
+
 function updateAlgoChips() {
 	const container = document.getElementById('home-algo-chips');
 	if (!container) return;
-	const available = new Set(router_state.available_algorithms);
+	const avail = router_state.available_algorithms;
 	const active = router_state.homePageParams.active_algorithm;
 	const enabled = router_state.homePageParams.module_status === "Enabled";
+	const count = document.getElementById('algo-capability-count');
+	if (count) setAnimatedText(count, avail?.length ? I18N.t('capability_available_count', {
+		available: avail.length,
+		total: ALL_ALGOS.length,
+	}) : I18N.t('home_status_unknown'));
 
-	const curSet = [...available].sort().join(',');
+	const curSet = [...(avail || [])].sort().join(',');
 	if (curSet === _lastAlgoSet && active === _lastActiveAlgo && enabled === _lastEnabled) return;
 	_lastAlgoSet = curSet;
 	_lastActiveAlgo = active;
 	_lastEnabled = enabled;
 
 	container.innerHTML = '';
+	if (!avail || avail.length === 0) {
+		container.innerHTML = '<span style="color:var(--md-sys-color-on-surface-variant);font-size:0.8rem;">' + I18N.t('home_status_unknown') + '</span>';
+		return;
+	}
+	const supported = new Set(avail || []);
 	ALL_ALGOS.forEach(algo => {
-		if (!available.has(algo)) return;
 		const chip = document.createElement('button');
 		chip.className = 'algo-chip';
 		chip.dataset.algo = algo;
-		chip.textContent = algo;
+		chip.title = getAlgorithmDescription(algo, I18N.currentLang);
+		const label = document.createElement('span');
+		label.textContent = algo;
+		chip.appendChild(label);
+		chip.setAttribute('aria-label', `${algo}: ${I18N.t(supported.has(algo) ? 'capability_supported' : 'capability_unsupported')}`);
+		if (!supported.has(algo)) {
+			chip.classList.add('unsupported');
+			chip.disabled = true;
+			chip.title = I18N.t('capability_unsupported');
+			const mark = document.createElement('span');
+			mark.className = 'capability-mark';
+			mark.textContent = '×';
+			mark.setAttribute('aria-hidden', 'true');
+			chip.appendChild(mark);
+		} else {
+			chip.title = I18N.t('capability_supported');
+		}
 		if (enabled && algo === active) chip.classList.add('selected');
 		chip.addEventListener('click', () => {
-			toast(algo === active ? I18N.t('algo_active', { algo }) : I18N.t('algo_available', { algo }));
+			document.querySelector('.nav-item[data-page="settings"]')?.click();
+			requestAnimationFrame(() => {
+				const group = document.getElementById('network-policy-group');
+				if (group) group.open = true;
+				document.querySelector(`#wifi-algo-chips [data-algo="${algo}"]`)?.focus({ preventScroll: true });
+				group?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+			});
 		});
 		container.appendChild(chip);
 	});
@@ -74,105 +116,196 @@ function showDetail(title, body) {
 	overlay.hidden = false;
 }
 
+function escapeHtml(value) {
+	return String(value).replace(/[&<>"']/g, char => ({
+		'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+	})[char]);
+}
+
+function detailBlock(primary, lines = [], note = '') {
+	const parts = [`<b>${escapeHtml(primary)}</b>`];
+	for (const line of lines.filter(Boolean)) parts.push(escapeHtml(line));
+	if (note) parts.push(`<i>${escapeHtml(note)}</i>`);
+	return parts.join('<br>');
+}
+
 function cardLongDesc(id) {
 	const p = router_state.homePageParams;
 	switch (id) {
 		case 'iface-type':
-			return `<b>${p.active_iface_type}</b><br>Wi-Fi: 2.4/5/6 GHz freq-based pacing scaling<br>Cellular: independent algorithm selection<br><i>Detected by ip route get 192.0.2.1</i>`;
+			return detailBlock(I18N.t('detail_iface_summary', { type: p.active_iface_type, name: p.active_iface }), [
+				I18N.t('detail_iface_basis'),
+			], I18N.t('detail_live_device'));
 		case 'iface-name':
-			return `<b>${p.active_iface}</b><br>wlan* → Wi-Fi<br>rmnet*/ccmni* → Cellular<br>tun* → VPN/VoWiFi<br><i>Active route determines interface</i>`;
+			return detailBlock(p.active_iface, [I18N.t('detail_iface_basis')], I18N.t('detail_live_device'));
 		case 'tcp-algo':
-			return `<b>${p.active_algorithm}</b><br>Set via /proc/sys/net/ipv4/tcp_congestion_control<br>All available: ${router_state.available_algorithms.join(', ')}<br><i>Changes apply to new connections</i>`;
+			return detailBlock(p.active_algorithm, [
+				getAlgorithmDescription(p.active_algorithm, I18N.currentLang),
+				I18N.t('detail_algo_source'),
+			], I18N.t('detail_algo_note'));
 		case 'qdisc':
-			return `<b>${p.default_qdisc}</b><br>fq = Fair Queue (low latency paired with BBR)<br>fq_codel = Fair Queuing + CoDel (balanced)<br>cake = Common Applications Kept Enhanced<br>pfifo_fast = Default kernel FIFO<br><i>Affects all new socket connections</i>`;
+			return detailBlock(p.default_qdisc, [
+				getQdiscDescription(p.default_qdisc, I18N.currentLang),
+				I18N.t('detail_qdisc_source'),
+			], I18N.t('detail_live_device'));
 		case 'proxy':
-			const s = p.proxy_status;
-			if (s === 'none') return '<b>No proxy detected</b><br><i>Checked via ps -A for clash/v2ray/sing-box/shadowsocks processes</i>';
-			if (s === 'vpn') return '<b>System VPN</b><br>A tun interface is active (Android VPN API)<br><i>Check ip link show grep tun</i>';
-			return `<b>Transparent Proxy</b><br>Type: ${s}<br>Detected process: ${s === 'clash' ? 'clash/mihomo' : s === 'v2ray' ? 'v2ray/xray' : s === 'sing-box' ? 'sing-box' : s === 'surfing' ? 'Surfing' : s === 'shadowsocks' ? 'Shadowsocks' : s}<br><i>Module-level transparent proxy active</i>`;
+			return proxyDetail(p.proxy_status, p.proxy_info);
 		case 'hosts':
-			const h = p.hosts_status;
-			if (h === 'none') return '<b>Default hosts</b><br>2 entries (localhost + ip6-localhost)<br><i>No modifications detected</i>';
-			if (h === 'systemless') return '<b>Systemless Hosts</b><br>Magisk module at /data/adb/modules/hosts<br><i>Overlays /etc/hosts at boot</i>';
-			if (h === 'birdhost') return '<b>BirdHost</b><br>DNS-rewriting hosts app running<br><i>Process detected via ps</i>';
-			if (h === 'adaway') return '<b>AdAway</b><br>Ad-blocking hosts manager active<br><i>Process detected via ps</i>';
-			if (h === 'blocker') return '<b>DNS Blocker App</b><br>Blokada/DNS66/NetGuard type blocker<br><i>Process detected via ps</i>';
-			if (h.startsWith('blocked:')) return `<b>${h.split(':')[1]} entries blocked</b><br>Hosts file size > 200 bytes<br>0.0.0.0/127.0.0.1 redirects active`;
-			if (h === 'modified') return '<b>Hosts modified</b><br>Content differs from stock Android<br><i>Review /etc/hosts manually</i>';
-			return `<b>${h}</b>`;
+			return detailBlock(document.getElementById('hosts-value')?.textContent || p.hosts_status, [
+				I18N.t('detail_hosts_basis'),
+			], I18N.t('detail_live_device'));
 		default: return '';
 	}
+}
+
+function proxyDetail(status, info = {}) {
+	if (status === 'unknown') return detailBlock(I18N.t('home_status_unknown'), [
+		I18N.t('detail_proxy_unknown'),
+	]);
+	if (status === 'none') return detailBlock(I18N.t('home_proxy_none'), [
+		I18N.t('detail_proxy_none'),
+	], I18N.t('detail_live_device'));
+	if (status === 'vpn') return detailBlock(I18N.t('home_proxy_vpn'), [
+		I18N.t('detail_proxy_vpn'),
+	], I18N.t('detail_live_device'));
+
+	const transparent = status === 'tproxy' || status.endsWith('_tproxy');
+	const family = status.replace(/_tproxy$/, '');
+	const names = {
+		mihomo: 'Mihomo', clash: 'Clash', 'sing-box': 'sing-box',
+		v2ray: 'V2Ray / Xray', shadowsocks: 'Shadowsocks', other: I18N.t('home_proxy_other'),
+	};
+	const coreName = info?.coreName || (status === 'tproxy' ? '' : names[family] || family);
+	const primary = info?.appName || coreName || (status === 'tproxy' ? 'TPROXY' : family);
+	const lines = [];
+	if (info?.managerType === 'app') {
+		if (info.appName) lines.push(I18N.t('detail_proxy_app', { name: info.appName }));
+		if (info.packageName) lines.push(I18N.t('detail_proxy_package', { name: info.packageName }));
+	} else if (info?.managerType === 'module') {
+		lines.push(I18N.t('detail_proxy_module', { name: info.appName || info.managerId || '—' }));
+		if (info.managerId) lines.push(I18N.t('detail_proxy_module_id', { id: info.managerId }));
+		lines.push(I18N.t('detail_proxy_package_module'));
+	}
+	if (coreName) lines.push(I18N.t('detail_proxy_core', { name: coreName }));
+	lines.push(info?.coreVersion
+		? I18N.t('detail_proxy_version', { version: info.coreVersion })
+		: I18N.t('detail_proxy_version_unknown'));
+	if (transparent) lines.push(I18N.t('detail_proxy_tproxy'));
+	return detailBlock(primary, lines, I18N.t('detail_proxy_note'));
 }
 
 export function updateHomeUI() {
 	if (router_state.isInitializing) return;
 	const p = router_state.homePageParams;
+	const notInstalled = p.module_status === "NotInstalled";
 	const enabled = p.module_status === "Enabled";
 
-	document.getElementById('module-status-value').textContent = enabled ? I18N.t('status_active') : I18N.t('status_disabled');
-	document.getElementById('hero-status-card').classList.toggle('disabled', !enabled);
-	document.getElementById('status-chip').classList.toggle('enabled', enabled);
-	document.getElementById('status-chip').classList.toggle('disabled', !enabled);
-	document.getElementById('status-chip-label').textContent = enabled ? I18N.t('status_active') : I18N.t('status_inactive');
+	const statusVal = document.getElementById('module-status-value');
+	const heroCard = document.getElementById('hero-status-card');
+	const statusChip = document.getElementById('status-chip');
+	const chipLabel = document.getElementById('status-chip-label');
 
-	document.getElementById('iface-type-value').textContent = enabled ? p.active_iface_type : "\u2014";
-	document.getElementById('iface-name-value').textContent = enabled ? p.active_iface : "\u2014";
-	document.getElementById('tcp-algo-value').textContent = enabled ? p.active_algorithm : "\u2014";
-	document.getElementById('qdisc-value').textContent = enabled ? p.default_qdisc : "\u2014";
+	if (notInstalled) {
+		setAnimatedText(statusVal, I18N.t('status_not_installed'));
+		heroCard.classList.add('disabled');
+		setAnimatedText(chipLabel, I18N.t('status_not_installed'));
+		statusChip.classList.remove('enabled');
+		statusChip.classList.add('disabled');
+	} else {
+		setAnimatedText(statusVal, enabled ? I18N.t('status_active') : I18N.t('status_disabled'));
+		heroCard.classList.toggle('disabled', !enabled);
+		setAnimatedText(chipLabel, enabled ? I18N.t('status_active') : I18N.t('status_inactive'));
+		statusChip.classList.toggle('enabled', enabled);
+		statusChip.classList.toggle('disabled', !enabled);
+	}
+
+	setAnimatedText(document.getElementById('iface-type-value'), notInstalled ? "\u2014" : (enabled ? p.active_iface_type : "\u2014"));
+	setAnimatedText(document.getElementById('iface-name-value'), notInstalled ? "\u2014" : (enabled ? p.active_iface : "\u2014"));
+	setAnimatedText(document.getElementById('tcp-algo-value'), notInstalled ? "\u2014" : (enabled ? p.active_algorithm : "\u2014"));
+	setAnimatedText(document.getElementById('qdisc-value'), notInstalled ? "\u2014" : (enabled ? p.default_qdisc : "\u2014"));
+	document.querySelector('.network-panel')?.classList.toggle('is-live', enabled && !notInstalled);
 
 	const proxyLabel = {
-		none: '\u2014', vpn: 'System VPN', clash: 'Clash', surfing: 'Surfing', v2ray: 'V2Ray / Xray',
-		'sing-box': 'sing-box', shadowsocks: 'Shadowsocks', other: 'Transparent', multiple: 'Multiple', unknown: '...'
+		none: I18N.t('home_proxy_none'), vpn: I18N.t('home_proxy_vpn'), tproxy: 'TPROXY',
+		mihomo: 'Mihomo', mihomo_tproxy: 'Mihomo · TPROXY',
+		clash: 'Clash', clash_tproxy: 'Clash · TPROXY',
+		v2ray: 'V2Ray / Xray', v2ray_tproxy: 'V2Ray / Xray · TPROXY',
+		'sing-box': 'sing-box', 'sing-box_tproxy': 'sing-box · TPROXY',
+		shadowsocks: 'Shadowsocks', shadowsocks_tproxy: 'Shadowsocks · TPROXY',
+		other: I18N.t('home_proxy_other'), other_tproxy: `${I18N.t('home_proxy_other')} · TPROXY`,
+		multiple: I18N.t('home_status_multiple'), unknown: I18N.t('home_status_unknown')
 	};
 	const proxyEl = document.getElementById('proxy-value');
-	if (proxyEl) proxyEl.textContent = proxyLabel[p.proxy_status] || p.proxy_status;
+	const proxyCard = document.getElementById('proxy-card');
+	const coreLabel = proxyLabel[p.proxy_status] || p.proxy_info?.coreName || p.proxy_status;
+	const managerLabel = p.proxy_info?.appName;
+	const hasDistinctManager = managerLabel && p.proxy_info?.coreName
+		&& managerLabel.toLowerCase() !== p.proxy_info.coreName.toLowerCase();
+	const displayedProxy = hasDistinctManager ? `${managerLabel} · ${coreLabel}` : coreLabel;
+	if (proxyEl) setAnimatedText(proxyEl, displayedProxy);
+	if (proxyCard) {
+		proxyCard.dataset.state = p.proxy_status === 'unknown' ? 'unknown' : (p.proxy_status === 'none' ? 'neutral' : 'active');
+		proxyCard.setAttribute('aria-label', `${I18N.t('home_proxy')}: ${proxyEl?.textContent || I18N.t('home_status_unknown')}`);
+	}
 
 	const hostsEl = document.getElementById('hosts-value');
 	if (hostsEl) {
 		const h = p.hosts_status;
-		if (h === 'none') hostsEl.textContent = '\u2014';
-		else if (h === 'systemless') hostsEl.textContent = 'Systemless';
-		else if (h === 'birdhost') hostsEl.textContent = 'BirdHost';
-		else if (h === 'adaway') hostsEl.textContent = 'AdAway';
-		else if (h === 'blocker') hostsEl.textContent = 'Blocker';
-		else if (h.startsWith('blocked:')) hostsEl.textContent = h.split(':')[1] + ' blocked';
-		else if (h === 'modified') hostsEl.textContent = 'Modified';
-		else hostsEl.textContent = h;
+		let hostsLabel = h;
+		if (h === 'none') hostsLabel = I18N.t('home_hosts_default');
+		else if (h === 'systemless') hostsLabel = 'Systemless';
+		else if (h === 'birdhost') hostsLabel = 'BirdHost';
+		else if (h === 'adaway') hostsLabel = 'AdAway';
+		else if (h === 'blocker') hostsLabel = 'Blocker';
+		else if (h.startsWith('blocked:')) hostsLabel = I18N.t('home_hosts_blocked', { count: h.split(':')[1] });
+		else if (h === 'modified') hostsLabel = I18N.t('home_hosts_modified');
+		else if (h === 'unknown') hostsLabel = I18N.t('home_status_unknown');
+		setAnimatedText(hostsEl, hostsLabel);
+		const hostsCard = document.getElementById('hosts-card');
+		if (hostsCard) {
+			hostsCard.dataset.state = h === 'unknown' ? 'unknown' : (h === 'none' ? 'neutral' : 'active');
+			hostsCard.setAttribute('aria-label', `${I18N.t('home_hosts')}: ${hostsEl.textContent}`);
+		}
 	}
 
 	updateAlgoChips();
 }
 
 export async function initHome() {
-	// Long press on info cards → detail popup
+	// Status cards are directly tappable and keyboard accessible.
 	['iface-type', 'iface-name', 'tcp-algo', 'qdisc', 'proxy', 'hosts'].forEach(id => {
 		const card = document.getElementById(id + '-card');
 		if (!card) return;
-		let timer = null;
-		card.addEventListener('pointerdown', async () => {
-			const handler = async () => {
-				if (id === 'hosts') {
-					try {
-						const { stdout } = await exec('cat /etc/hosts 2>/dev/null | head -50');
-						const content = stdout.trim() || '(empty)';
-						showDetail(I18N.t('home_hosts'), `<pre style="font-size:0.65rem;max-height:200px;overflow:auto;white-space:pre-wrap;font-family:monospace">${content}</pre>`);
-					} catch (e) {
-						showDetail(I18N.t('home_hosts'), cardLongDesc(id));
-					}
-				} else {
-					showDetail(I18N.t('home_' + id.replace('-', '_')), cardLongDesc(id));
+		card.classList.add('detail-card');
+		card.tabIndex = 0;
+		card.setAttribute('role', 'button');
+		const openDetail = async () => {
+			if (id === 'hosts') {
+				try {
+					const { stdout } = await exec('cat /etc/hosts 2>/dev/null | head -50');
+					const content = stdout.trim() || '(empty)';
+					showDetail(I18N.t('home_hosts'), `<pre style="font-size:0.75rem;max-height:240px;overflow:auto;white-space:pre-wrap;font-family:monospace">${escapeHtml(content)}</pre>`);
+				} catch (e) {
+					showDetail(I18N.t('home_hosts'), cardLongDesc(id));
 				}
-			};
-			timer = setTimeout(handler, 500);
+			} else {
+				showDetail(I18N.t('home_' + id.replace('-', '_')), cardLongDesc(id));
+			}
+		};
+		card.addEventListener('click', openDetail);
+		card.addEventListener('keydown', (event) => {
+			if (event.key !== 'Enter' && event.key !== ' ') return;
+			event.preventDefault();
+			void openDetail();
 		});
-		card.addEventListener('pointerup', () => clearTimeout(timer));
-		card.addEventListener('pointerleave', () => clearTimeout(timer));
-		card.addEventListener('pointercancel', () => clearTimeout(timer));
 	});
 
 	// Detail overlay close
 	document.getElementById('detail-overlay')?.addEventListener('click', (e) => {
 		if (e.target.id === 'detail-overlay') e.target.hidden = true;
+	});
+	document.addEventListener('keydown', (event) => {
+		if (event.key === 'Escape') document.getElementById('detail-overlay').hidden = true;
 	});
 
 	// About modal handlers
@@ -215,6 +348,5 @@ export async function initHome() {
 		document.getElementById('about-overlay').hidden = false;
 	});
 
-	router_state.isInitializing = false;
 	updateHomeUI();
 }
