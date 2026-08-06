@@ -44,8 +44,12 @@ jobs:
           cargo clippy --all-targets --locked -- -D warnings
 
       - name: Validate WebUI and release metadata
+        shell: bash
         run: |
-          find webroot/js -name '*.js' -print0 | xargs -0 -n1 node --check
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            node --input-type=module --check < "$file"
+          done < <(find webroot/js -name '*.js' -print0)
           node scripts/validate-webui.mjs
           node scripts/validate-release.mjs
 
