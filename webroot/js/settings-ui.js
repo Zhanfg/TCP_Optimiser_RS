@@ -4,6 +4,7 @@ let initialized = false;
 let observer = null;
 let advancedSearch = null;
 let forceGuardInstalled = false;
+let syncQueued = false;
 
 function localText(english, chinese) {
 	const language = I18N.currentLang || localStorage.getItem('tcp_lang') || document.documentElement.lang;
@@ -104,13 +105,14 @@ function filterAdvancedControls() {
 			const input = control.querySelector('[data-sysctl-key]');
 			const searchable = `${control.textContent} ${input?.dataset.sysctlKey || ''}`.toLocaleLowerCase();
 			const match = !query || searchable.includes(query);
-			control.hidden = !match;
+			if (control.hidden === match) control.hidden = !match;
 			if (match) {
 				visible += 1;
 				groupVisible += 1;
 			}
 		}
-		group.hidden = groupVisible === 0;
+		const hideGroup = groupVisible === 0;
+		if (group.hidden !== hideGroup) group.hidden = hideGroup;
 		if (query && groupVisible > 0) group.open = true;
 	}
 	const count = document.getElementById('advanced-search-count');
@@ -177,23 +179,37 @@ function syncSettingsSemantics() {
 	installForceApplyGuard();
 }
 
+function scheduleSettingsSync() {
+	if (syncQueued) return;
+	syncQueued = true;
+	queueMicrotask(() => {
+		syncQueued = false;
+		syncSettingsSemantics();
+	});
+}
+
 export function initSettingsEnhancements() {
 	if (initialized) {
-		syncSettingsSemantics();
+		scheduleSettingsSync();
 		return;
 	}
 	initialized = true;
 	ensureStyles();
 	syncSettingsSemantics();
-	observer = new MutationObserver(() => syncSettingsSemantics());
+	observer = new MutationObserver(scheduleSettingsSync);
 	for (const root of [document.getElementById('settings-page'), document.getElementById('adv-page')]) {
-		if (root) observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'hidden'] });
+		if (root) observer.observe(root, {
+			childList: true,
+			subtree: true,
+			attributes: true,
+			attributeFilter: ['class'],
+		});
 	}
 	document.addEventListener('i18n-changed', () => {
 		syncSelectableState();
 		syncAdvancedSearchLanguage();
 	});
 	document.addEventListener('tcp:page-change', event => {
-		if (event.detail?.page === 'settings' || event.detail?.page === 'adv') syncSettingsSemantics();
+		if (event.detail?.page === 'settings' || event.detail?.page === 'adv') scheduleSettingsSync();
 	});
 }
