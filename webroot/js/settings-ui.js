@@ -66,7 +66,8 @@ function ensureStyles() {
 
 function syncSelectableState(root = document) {
 	for (const element of root.querySelectorAll('.algo-chip, .preset-chip, .theme-mode-btn, .lang-btn')) {
-		const selected = element.classList.contains('selected');
+		const selected = element.classList.contains('selected')
+			|| (element.classList.contains('preset-chip') && element.classList.contains('active'));
 		element.setAttribute('aria-pressed', String(selected));
 		if (element.classList.contains('unsupported') || element.dataset.unavailable === 'true') {
 			element.setAttribute('aria-disabled', 'true');
@@ -87,7 +88,6 @@ function bindSingleOpenDetails(root) {
 				if (sibling !== details && sibling instanceof HTMLDetailsElement && sibling.classList.contains('settings-group')) {
 					sibling.open = false;
 				}
-			}
 		});
 	}
 }
