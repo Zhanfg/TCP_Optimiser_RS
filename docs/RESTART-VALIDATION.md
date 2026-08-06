@@ -21,11 +21,21 @@ This checklist must be completed before the feature branch is tagged as a stable
 - [ ] current physical interface root qdisc is journaled
 - [ ] daemon starts only after the snapshot validates
 
-## Upgrade
+## One-time legacy migration
 
-- [ ] install an older module build and record the baseline hash
+- [ ] install a release that predates `baseline-v1.json`
 - [ ] apply a non-default algorithm, qdisc and advanced settings
-- [ ] flash the candidate build without uninstalling
+- [ ] attempt a direct candidate upgrade and confirm both shell and Rust checks refuse it
+- [ ] confirm the installer explicitly requests uninstall plus one reboot
+- [ ] uninstall the legacy release and reboot once
+- [ ] install the candidate and confirm the baseline now reflects the clean post-reboot state
+
+## Transactional upgrade
+
+- [ ] install a build that already created `baseline-v1.json`
+- [ ] record the baseline hash and capture timestamp
+- [ ] apply a non-default algorithm, qdisc and advanced settings
+- [ ] flash the next transactional build without uninstalling
 - [ ] confirm the original baseline hash and timestamp are unchanged
 - [ ] confirm user-selected configuration files are preserved
 
