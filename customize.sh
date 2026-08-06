@@ -21,6 +21,13 @@ RUST_BIN="$MODPATH/bin/$RUST_ABI/tcp_optimiser"
 [ -f "$RUST_BIN" ] || abort "! Missing Rust binary for $RUST_ABI"
 chmod 0755 "$RUST_BIN" || abort "! Cannot make Rust binary executable"
 
+LIVE_DIR="/data/adb/modules/tcp_optimiser"
+if [ "$MODPATH" != "$LIVE_DIR" ] && [ -f "$LIVE_DIR/module.prop" ] && [ ! -s "$LIVE_DIR/baseline-v1.json" ]; then
+    ui_print "! Existing release has no exact pre-module kernel baseline"
+    ui_print "! Uninstall the current TCP Optimiser, reboot once, then install this build"
+    abort "! Direct upgrade refused to prevent recording tuned values as system defaults"
+fi
+
 export TCP_OPTIMISER_MODULE_DIR="$MODPATH"
 export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:$PATH"
 "$RUST_BIN" verify-module "$MODPATH" || abort "! Module signature or file hash verification failed"
