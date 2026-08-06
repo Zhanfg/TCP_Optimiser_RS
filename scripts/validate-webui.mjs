@@ -48,7 +48,14 @@ for (const key of Object.keys(english)) if (!(key in chinese)) fail(`zh.json is 
 for (const key of Object.keys(chinese)) if (!(key in english)) fail(`zh.json has unknown key ${key}`);
 
 const html = read('webroot/index.html');
-const javascriptFiles = fs.readdirSync(path.join(root, 'webroot/js')).filter(file => file.endsWith('.js'));
+const javascriptDirectory = path.join(root, 'webroot/js');
+const javascriptDirectoryEntries = fs.readdirSync(javascriptDirectory);
+const forbiddenJavascriptArtifacts = javascriptDirectoryEntries.filter(file =>
+	file.endsWith('.fixed')
+	|| file.endsWith('.tmp')
+	|| /^\.(?:cleanup(?:-marker)?|finalize|noop|stop)$/.test(file));
+for (const file of forbiddenJavascriptArtifacts) fail(`temporary WebUI artifact must not be packaged: webroot/js/${file}`);
+const javascriptFiles = javascriptDirectoryEntries.filter(file => file.endsWith('.js'));
 const javascript = javascriptFiles.map(file => read(`webroot/js/${file}`)).join('\n');
 const referencedKeys = new Set([
 	...[...html.matchAll(/data-i18n(?:-placeholder|-aria-label)?="([^"]+)"/g)].map(match => match[1]),
@@ -131,8 +138,13 @@ rejectText(router, "history.replaceState({ page: 'home' }, '', '#home')", 'route
 
 requireText(logs, `tail -n \${MAX_LINES_PER_SOURCE}`, 'log reads must be bounded instead of loading unbounded files');
 requireText(logs, 'SOURCE_MARKER', 'logs must preserve source identity across service, debug and restore files');
+requireText(logs, 'SOURCE_STATUS_MARKER', 'logs must expose missing and unreadable source files');
 requireText(logs, 'log-filter-input', 'logs must provide filtering');
+requireText(logs, 'pendingSource', 'log filtering must remove empty source headings');
 requireText(logs, 'log-follow-btn', 'logs must provide controllable tail following');
+requireText(logs, 'syncFollowButton', 'log follow state must remain synchronized with scrolling');
+requireText(logs, 'fallbackCopy(text)', 'clipboard rejection must fall back to the legacy copy path');
+requireText(logs, 'if (sources.length === 0)', 'log clearing must guard an unavailable module directory');
 requireText(logs, 'router_state.logsError', 'log failures must not be represented as an empty list');
 requireText(logs, 'window.confirm', 'destructive log clearing must require confirmation');
 
