@@ -4,6 +4,7 @@ import { updateModuleInformation } from './common.js';
 import { updateModuleStatus, initHome, updateHomeUI } from './home.js';
 import { initLogs, read_log_file, updateLogsUI } from './logs.js';
 import { initSettings, syncAdvancedNavVisibility } from './settings.js';
+import { initSettingsEnhancements } from './settings-ui.js';
 import { updateStats, initStatsUI } from './stats.js';
 import { initDynamicColorTheme } from './theme.js';
 import { initMotion } from './motion.js';
@@ -91,10 +92,12 @@ function normalizedPage(pageName) {
 function ensureSettingsInitialized() {
 	if (!router_state.moduleInformation) return Promise.resolve();
 	if (!settingsInitPromise) {
-		settingsInitPromise = initSettings().catch(error => {
-			settingsInitPromise = null;
-			console.error('Error initializing settings:', error);
-		});
+		settingsInitPromise = initSettings()
+			.then(() => initSettingsEnhancements())
+			.catch(error => {
+				settingsInitPromise = null;
+				console.error('Error initializing settings:', error);
+			});
 	}
 	return settingsInitPromise;
 }
