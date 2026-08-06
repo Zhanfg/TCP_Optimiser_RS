@@ -2,6 +2,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::baseline;
 use crate::config;
 use crate::logging;
 use crate::sysctl;
@@ -14,6 +15,15 @@ pub fn run() -> io::Result<()> {
     fs::create_dir_all(&staging_dir)?;
     logging::log_print("Starting module customization (Rust)...");
     let live_dir = config::live_module_dir();
+
+    // Preserve the first pre-module snapshot before any upgrade logic can
+    // observe values already changed by an older TCP Optimiser release.
+    preserve_exact_config(&staging_dir, &live_dir, "baseline-v1.json")?;
+    let baseline = baseline::ensure_global_baseline()?;
+    logging::log_print(&format!(
+        "Kernel baseline ready (sysctls={}, interfaces={}, captured_at={}).",
+        baseline.sysctl_count, baseline.interface_count, baseline.captured_at_epoch
+    ));
 
     let available = sysctl::available_algorithms().unwrap_or_else(|error| {
         logging::log_print(&format!(
@@ -42,7 +52,7 @@ pub fn run() -> io::Result<()> {
         "kill_connections",
         "initcwnd_initrwnd",
         "qdisc",
-        "pacing_ca",
+        "pacing_top",
         "pacing_ss",
         "tcp_ecn",
         "tcp_fastopen",
@@ -177,6 +187,28 @@ mod tests {
         assert_eq!(
             fs::read_to_string(staging.join("advanced.conf")).unwrap(),
             "tcp_fin_timeout=30\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn upgrade_preserves_original_kernel_baseline() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("tcp-optimiser-baseline-{unique}"));
+        let live = root.join("live");
+        let staging = root.join("staging");
+        fs::create_dir_all(&live).unwrap();
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(live.join("baseline-v1.json"), "{\"version\":1}\n").unwrap();
+
+        preserve_exact_config(&staging, &live, "baseline-v1.json").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(staging.join("baseline-v1.json")).unwrap(),
+            "{\"version\":1}\n"
         );
         fs::remove_dir_all(root).unwrap();
     }
