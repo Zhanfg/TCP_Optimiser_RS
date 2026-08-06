@@ -28,8 +28,8 @@ TCP Optimiser 会识别当前使用的 Wi-Fi 或蜂窝网络接口，并依据�
 ### Rust 核心
 
 - 自动识别 Wi-Fi 与蜂窝网络接口并切换对应策略。
-- 支持 19 种拥塞控制算法：BBR、BBR2、BBR3、CUBIC、Westwood、Westwood+、Reno、HTCP、Vegas、YeAH、Illinois、DCTCP、CDG、BIC、HighSpeed、Hybla、NV、Scalable 和 LP。
-- 按算法配置 qdisc、`pacing_ca`、`pacing_ss`、`initcwnd` 与 `initrwnd`。
+- 支持 19 种拥塞控制算法：BBR、BBR2、BBR3、CUBIC、Westwood、Westwood+、Reno、HTCP、TLP、YeAH、Illinois、DCTCP、CDG、BIC、HighSpeed、Hybla、NV、Scalable 和 LP。
+- 按算法配置 qdisc、`pacing ca`、`pacing ss`、`initcwnd` 与 `initrwnd`。
 - 在应用 Wi-Fi 策略前检测 VoWiFi 状态。
 - 接口变化后提高检测频率，网络稳定后降低轮询频率。
 - 根据 2.4、5、6 GHz Wi-Fi 频段调整 pacing。
@@ -56,6 +56,16 @@ TCP Optimiser 会识别当前使用的 Wi-Fi 或蜂窝网络接口，并依据�
 - 支持基带分区识别与备份，并自动生成恢复脚本。
 - 简体中文与英文双语界面，共 279 项经过一致性校验的翻译文本。
 
+### 安全回滚
+
+- 首次安装时记录模块可能修改的全部可用 sysctl 原值，不用通用默认值代替设备原值。
+- 升级时保留首次快照，避免把旧版模块已经写入的参数误认成系统基线。
+- Wi-Fi 或蜂窝接口首次改写 qdisc 前，单独记录该接口原始 root qdisc。
+- 快照缺失、损坏或版本不支持时，早期启动和守护进程拒绝继续调参。
+- 卸载时逐项恢复并回读验证；无法精确恢复时记录错误，但不会强行写入 `cubic/fq_codel`。
+
+完整设计和安全边界见 [`docs/ROLLBACK-SAFETY.md`](docs/ROLLBACK-SAFETY.md)。
+
 ## 安装
 
 1. 从 [Releases](https://github.com/Zhanfg/TCP_Optimiser_RS/releases) 下载 `TCP_Optimiser_RS-v*.zip`。
@@ -72,7 +82,7 @@ TCP Optimiser 会识别当前使用的 Wi-Fi 或蜂窝网络接口，并依据�
 | 均衡 | `CUBIC` | `CUBIC` | `fq_codel` | `150/200` | 日常使用 |
 | 游戏 | `BBR` | `BBR` | `fq` | `200/300` | 低延迟连接 |
 | 流媒体 | `BBR` | `CUBIC` | `fq_codel` | `180/250` | 持续吞吐 |
-| 省电 | `Vegas` | `Westwood` | `fq_codel` | `120/180` | 降低后台活动 |
+| 省电 | `TLP` | `Westwood` | `fq_codel` | `120/180` | 降低后台活动 |
 | 高速 | `BBR3` | `BBR3` | `fq` | `220/320` | 受支持内核上的最大吞吐 |
 
 ## 构建与发行校验
