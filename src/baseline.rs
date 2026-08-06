@@ -18,6 +18,58 @@ const STALE_LOCK_SECONDS: u64 = 30;
 const CONGESTION_CONTROL_PATH: &str = "/proc/sys/net/ipv4/tcp_congestion_control";
 const DEFAULT_QDISC_PATH: &str = "/proc/sys/net/core/default_qdisc";
 
+/// Complete allowlist of kernel nodes the module can modify. Restoration only
+/// accepts paths from this list, so a damaged baseline cannot redirect writes
+/// to arbitrary files even though uninstall runs with root privileges.
+const MANAGED_SYSCTL_PATHS: &[&str] = &[
+    CONGESTION_CONTROL_PATH,
+    DEFAULT_QDISC_PATH,
+    "/proc/sys/net/ipv4/tcp_pacing_ca_ratio",
+    "/proc/sys/net/ipv4/tcp_pacing_ss_ratio",
+    "/proc/sys/net/ipv4/tcp_ecn",
+    "/proc/sys/net/ipv4/tcp_window_scaling",
+    "/proc/sys/net/ipv4/tcp_max_syn_backlog",
+    "/proc/sys/net/ipv4/tcp_mtu_probing",
+    "/proc/sys/net/ipv4/tcp_fastopen",
+    "/proc/sys/net/ipv4/tcp_tw_reuse",
+    "/proc/sys/net/ipv4/tcp_rmem",
+    "/proc/sys/net/ipv4/tcp_wmem",
+    "/proc/sys/net/core/rmem_max",
+    "/proc/sys/net/core/wmem_max",
+    "/proc/sys/net/ipv4/tcp_keepalive_time",
+    "/proc/sys/net/ipv4/tcp_keepalive_intvl",
+    "/proc/sys/net/ipv4/tcp_keepalive_probes",
+    "/proc/sys/net/ipv4/tcp_fin_timeout",
+    "/proc/sys/net/ipv4/tcp_syn_retries",
+    "/proc/sys/net/ipv4/tcp_synack_retries",
+    "/proc/sys/net/ipv4/tcp_retries2",
+    "/proc/sys/net/core/optmem_max",
+    "/proc/sys/net/ipv4/tcp_notsent_lowat",
+    "/proc/sys/net/core/somaxconn",
+    "/proc/sys/net/core/netdev_max_backlog",
+    "/proc/sys/net/core/netdev_budget",
+    "/proc/sys/net/core/netdev_budget_usecs",
+    "/proc/sys/net/ipv4/tcp_sack",
+    "/proc/sys/net/ipv4/tcp_dsack",
+    "/proc/sys/net/ipv4/tcp_no_metrics_save",
+    "/proc/sys/net/ipv4/tcp_slow_start_after_idle",
+    "/proc/sys/net/ipv4/tcp_autocorking",
+    "/proc/sys/net/ipv4/tcp_early_retrans",
+    "/proc/sys/net/ipv4/tcp_thin_linear_timeouts",
+    "/proc/sys/net/ipv4/tcp_thin_dupack",
+    "/proc/sys/net/ipv4/tcp_rto_max_ms",
+    "/proc/sys/net/ipv4/tcp_plb_enabled",
+    "/proc/sys/net/ipv4/tcp_plb_idle_rehash_rounds",
+    "/proc/sys/net/ipv4/tcp_plb_rehash_rounds",
+    "/proc/sys/net/ipv4/tcp_plb_suspend_rto_sec",
+    "/proc/sys/net/ipv4/tcp_plb_cong_thresh",
+    "/proc/sys/net/core/busy_poll",
+    "/proc/sys/net/core/busy_read",
+    "/proc/sys/net/netfilter/nf_conntrack_max",
+    "/proc/sys/net/netfilter/nf_conntrack_tcp_timeout_established",
+    "/proc/sys/net/netfilter/nf_conntrack_tcp_timeout_time_wait",
+];
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct BaselineSnapshot {
     version: u32,
@@ -99,8 +151,9 @@ pub fn restore() -> io::Result<RestoreReport> {
     let _lock = BaselineLock::acquire(&module_dir)?;
     let path = module_dir.join(BASELINE_FILE);
     let snapshot = load_snapshot(&path)?;
-    let managed = sysctl::managed_sysctl_paths()
-        .into_iter()
+    let managed = MANAGED_SYSCTL_PATHS
+        .iter()
+        .copied()
         .collect::<BTreeSet<_>>();
     let mut report = RestoreReport {
         success: false,
@@ -140,7 +193,7 @@ pub fn restore() -> io::Result<RestoreReport> {
 
 fn capture_snapshot() -> io::Result<BaselineSnapshot> {
     let mut sysctls = BTreeMap::new();
-    for path in sysctl::managed_sysctl_paths() {
+    for path in MANAGED_SYSCTL_PATHS.iter().copied() {
         if !Path::new(path).exists() {
             continue;
         }
