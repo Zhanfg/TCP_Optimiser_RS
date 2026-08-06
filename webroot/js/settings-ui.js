@@ -1,4 +1,5 @@
 import I18N from './i18n.js';
+import { initPresetTransactions } from './preset-transaction.js';
 
 let initialized = false;
 let advancedSearch = null;
@@ -176,6 +177,7 @@ function syncSettingsSemantics() {
 		filterAdvancedControls();
 	}
 	installForceApplyGuard();
+	initPresetTransactions();
 }
 
 function scheduleSettingsSync() {
@@ -211,4 +213,5 @@ export function initSettingsEnhancements() {
 	document.addEventListener('tcp:page-change', event => {
 		if (event.detail?.page === 'settings' || event.detail?.page === 'adv') scheduleSettingsSync();
 	});
+	document.addEventListener('tcp:preset-applied', scheduleSettingsSync);
 }
