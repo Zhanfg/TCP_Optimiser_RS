@@ -101,7 +101,11 @@ for (const required of [
 	'webroot/js/product-ui.js',
 	'webroot/js/settings-ui.js',
 	'webroot/js/baseline-ui.js',
+	'webroot/js/runtime-control-ui.js',
 	'src/baseline_status.rs',
+	'src/control.rs',
+	'src/checkpoint.rs',
+	'src/plan.rs',
 ]) {
 	if (!exists(required)) fail(`missing production WebUI file ${required}`);
 }
@@ -110,7 +114,12 @@ const productLayout = read('webroot/css/product-layout.css');
 const productUi = read('webroot/js/product-ui.js');
 const settingsUi = read('webroot/js/settings-ui.js');
 const baselineUi = read('webroot/js/baseline-ui.js');
+const runtimeControlUi = read('webroot/js/runtime-control-ui.js');
 const baselineStatus = read('src/baseline_status.rs');
+const runtimeControl = read('src/control.rs');
+const checkpoint = read('src/checkpoint.rs');
+const plan = read('src/plan.rs');
+const daemon = read('src/daemon.rs');
 const mainRust = read('src/main.rs');
 const router = read('webroot/js/router.js');
 const logs = read('webroot/js/logs.js');
@@ -170,6 +179,42 @@ rejectText(baselineUi, 'capture-baseline', 'opening the WebUI must never create 
 requireText(baselineUi, 'captured_at_epoch', 'baseline UI must surface capture time');
 requireText(baselineUi, 'sysctl_count', 'baseline UI must surface managed sysctl count');
 
+requireText(baselineUi, "from './runtime-control-ui.js'", 'baseline bootstrap must initialize runtime control UI');
+requireText(runtimeControlUi, "'control-status'", 'runtime UI must read the persistent control state');
+requireText(runtimeControlUi, "'checkpoint-status'", 'runtime UI must expose the last-known-good checkpoint');
+requireText(runtimeControlUi, "'restore-checkpoint'", 'runtime UI must expose guarded checkpoint restoration');
+requireText(runtimeControlUi, "'safe-mode --disable'", 'runtime UI must provide an explicit safe-mode recovery path');
+requireText(runtimeControlUi, 'Promise.allSettled', 'missing routes must not hide runtime control state');
+requireText(runtimeControlUi, 'window.confirm', 'runtime write controls must require confirmation where appropriate');
+requireText(runtimeControlUi, 'runtime-control-panel', 'runtime controls must be visible on the Home page');
+requireText(runtimeControlUi, 'actionBusy = false', 'runtime actions must release their busy state before refreshing');
+
+for (const command of [
+	'Plan',
+	'Diff',
+	'Reload',
+	'Pause',
+	'Resume',
+	'SafeMode',
+	'ControlStatus',
+	'CheckpointStatus',
+	'RestoreCheckpoint',
+]) {
+	requireText(mainRust, command, `Rust CLI must expose ${command}`);
+}
+requireText(runtimeControl, 'runtime-control-v1.json', 'runtime mode must use a versioned persistent state file');
+requireText(runtimeControl, 'ControlState::safe_fallback', 'invalid runtime state must fail closed');
+requireText(runtimeControl, 'recovery_state', 'explicit commands must recover from a corrupt control file');
+requireText(checkpoint, 'last-good-policy-v1.json', 'last-known-good policy must use a versioned checkpoint');
+requireText(checkpoint, 'AUTOMATIC_SAFE_MODE_THRESHOLD', 'checkpoint failures must have an explicit safe-mode threshold');
+requireText(checkpoint, 'validate_checkpoint', 'checkpoint restoration must validate all stored kernel tokens');
+requireText(plan, 'write_allowed', 'read-only policy plans must report whether writes are allowed');
+requireText(plan, 'network::root_qdisc', 'policy plans must compare the interface qdisc');
+requireText(daemon, 'requested_action.requests_apply()', 'daemon must consume hot reload generations');
+requireText(daemon, '!control_state.mode.allows_writes()', 'paused and safe modes must block daemon writes');
+requireText(daemon, 'checkpoint::record_failure', 'daemon must journal failed policy verification');
+requireText(daemon, 'checkpoint::persist', 'daemon must persist verified last-known-good policy');
+
 if (!process.exitCode) {
-	console.log(`webui validation: ${Object.keys(english).length} translations, ${rustAlgorithms.length} algorithms, ${rustQdiscs.length} qdiscs, production shell enforced`);
+	console.log(`webui validation: ${Object.keys(english).length} translations, ${rustAlgorithms.length} algorithms, ${rustQdiscs.length} qdiscs, runtime controls enforced`);
 }
