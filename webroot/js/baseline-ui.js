@@ -2,6 +2,7 @@ import { exec, shellQuote } from './kernelsu.js';
 import I18N from './i18n.js';
 import { formatLocalDateTime } from './common.js';
 import router_state from './router.js';
+import { initRuntimeControlUI } from './runtime-control-ui.js';
 
 let panel = null;
 let status = null;
@@ -186,6 +187,7 @@ export async function refreshBaselineStatus(force = false) {
 export function initBaselineUI() {
 	if (initialized) return;
 	initialized = true;
+	initRuntimeControlUI();
 	ensurePanel();
 	document.addEventListener('i18n-changed', () => {
 		updateLabels();
