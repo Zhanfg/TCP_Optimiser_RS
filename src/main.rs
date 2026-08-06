@@ -107,21 +107,14 @@ fn main() {
             runtime_only,
         } => print_status(iface, runtime_only),
         Command::Repair { iface } => repair_policy(iface),
-        Command::Plan { iface } => print_json(&plan::build(iface)?),
-        Command::Diff { iface } => print_json(&plan::diff(iface)?),
-        Command::Reload => print_json(&control::request_reload("cli-reload")?),
-        Command::Pause => print_json(&control::pause("cli-pause")?),
-        Command::Resume => print_json(&control::resume("cli-resume")?),
-        Command::SafeMode { disable } => print_json(&control::set_safe_mode(
-            !disable,
-            if disable {
-                "cli-leave-safe-mode"
-            } else {
-                "cli-enter-safe-mode"
-            },
-        )?),
-        Command::ControlStatus => print_json(&control::read()?),
-        Command::CheckpointStatus => print_json(&checkpoint::status()?),
+        Command::Plan { iface } => print_plan(iface),
+        Command::Diff { iface } => print_diff(iface),
+        Command::Reload => request_reload(),
+        Command::Pause => pause_runtime(),
+        Command::Resume => resume_runtime(),
+        Command::SafeMode { disable } => set_safe_mode(disable),
+        Command::ControlStatus => print_control_status(),
+        Command::CheckpointStatus => print_checkpoint_status(),
         Command::RestoreCheckpoint => restore_checkpoint(),
         Command::CaptureBaseline => capture_baseline(),
         Command::BaselineStatus => print_baseline_status(),
@@ -139,7 +132,59 @@ fn main() {
 fn repair_policy(iface: Option<String>) -> io::Result<()> {
     let iface = iface.map(Ok).unwrap_or_else(network::active_iface)?;
     let record = policy::repair_policy(&iface)?;
+    if record.success {
+        let mode = network::iface_mode(&iface);
+        if mode != network::IfaceMode::Unknown {
+            let policy = daemon::resolve_policy(&iface, mode)?;
+            checkpoint::persist(&iface, mode, &policy)?;
+        }
+    }
     print_json(&record)
+}
+
+fn print_plan(iface: Option<String>) -> io::Result<()> {
+    let report = plan::build(iface)?;
+    print_json(&report)
+}
+
+fn print_diff(iface: Option<String>) -> io::Result<()> {
+    let report = plan::diff(iface)?;
+    print_json(&report)
+}
+
+fn request_reload() -> io::Result<()> {
+    let state = control::request_reload("cli-reload")?;
+    print_json(&state)
+}
+
+fn pause_runtime() -> io::Result<()> {
+    let state = control::pause("cli-pause")?;
+    print_json(&state)
+}
+
+fn resume_runtime() -> io::Result<()> {
+    let state = control::resume("cli-resume")?;
+    print_json(&state)
+}
+
+fn set_safe_mode(disable: bool) -> io::Result<()> {
+    let state = control::set_safe_mode(
+        !disable,
+        if disable {
+            "cli-leave-safe-mode"
+        } else {
+            "cli-enter-safe-mode"
+        },
+    )?;
+    print_json(&state)
+}
+
+fn print_control_status() -> io::Result<()> {
+    print_json(&control::read()?)
+}
+
+fn print_checkpoint_status() -> io::Result<()> {
+    print_json(&checkpoint::status()?)
 }
 
 fn restore_checkpoint() -> io::Result<()> {
