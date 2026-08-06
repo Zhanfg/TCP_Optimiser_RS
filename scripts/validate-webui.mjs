@@ -97,6 +97,7 @@ if (JSON.stringify(rustQdiscs) !== JSON.stringify(uiQdiscs)) fail('Rust and WebU
 // silently regressing to a syntax-valid but unusable mobile-only shell.
 for (const required of [
 	'webroot/css/product.css',
+	'webroot/css/product-layout.css',
 	'webroot/js/product-ui.js',
 	'webroot/js/settings-ui.js',
 	'webroot/js/baseline-ui.js',
@@ -105,6 +106,7 @@ for (const required of [
 	if (!exists(required)) fail(`missing production WebUI file ${required}`);
 }
 const productCss = read('webroot/css/product.css');
+const productLayout = read('webroot/css/product-layout.css');
 const productUi = read('webroot/js/product-ui.js');
 const settingsUi = read('webroot/js/settings-ui.js');
 const baselineUi = read('webroot/js/baseline-ui.js');
@@ -118,8 +120,12 @@ requireText(productCss, 'grid-template-columns: var(--ui-rail-width)', 'desktop 
 requireText(productCss, '.log-toolbar', 'product CSS must style the functional log toolbar');
 requireText(productCss, '.log-error-state', 'log read failures need a visible error state');
 requireText(productCss, 'env(safe-area-inset-bottom', 'mobile navigation must respect display cutouts and gesture areas');
+requireText(productLayout, 'html.product-ui #home-page', 'desktop Home layout must have a dedicated correction layer');
+requireText(productLayout, 'display: grid', 'desktop Home must use a real two-column grid');
+requireText(productLayout, '#baseline-health-panel', 'baseline health must occupy the desktop status column');
 
 requireText(productUi, "link.href = 'css/product.css'", 'product-ui.js must load the production stylesheet after legacy CSS');
+requireText(productUi, "layout.href = 'css/product-layout.css'", 'product-ui.js must load the final layout correction after product CSS');
 requireText(productUi, 'initModalManagement', 'dialogs must have centralized keyboard and focus management');
 requireText(productUi, "event.key === 'Escape'", 'dialogs must support Escape dismissal');
 requireText(productUi, 'syncNavTabStops', 'navigation must implement roving keyboard focus');
