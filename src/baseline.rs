@@ -179,9 +179,7 @@ pub fn restore() -> io::Result<RestoreReport> {
     for (iface, baseline) in &snapshot.interfaces {
         match restore_interface_qdisc(iface, baseline.root_qdisc.as_deref()) {
             Ok(()) => report.restored_interfaces += 1,
-            Err(error) => report
-                .errors
-                .push(format!("interface {iface}: {error}")),
+            Err(error) => report.errors.push(format!("interface {iface}: {error}")),
         }
     }
 
