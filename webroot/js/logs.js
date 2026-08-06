@@ -4,6 +4,7 @@ import { formatLocalDateTime } from './common.js';
 import router_state from './router.js';
 
 const SOURCE_MARKER = '__TCP_OPTIMISER_SOURCE__:';
+const SOURCE_STATUS_MARKER = '__TCP_OPTIMISER_SOURCE_STATUS__:';
 const MAX_LINES_PER_SOURCE = 800;
 let previousRenderSignature = null;
 let filterText = '';
@@ -41,6 +42,18 @@ function parseCombinedLogs(output, sources) {
 		if (rawLine.startsWith(SOURCE_MARKER)) {
 			currentSource = rawLine.slice(SOURCE_MARKER.length).trim() || currentSource;
 			entries.push({ source: currentSource, sourceLabel: labels.get(currentSource) || currentSource, message: '', type: 'source' });
+			continue;
+		}
+		if (rawLine.startsWith(SOURCE_STATUS_MARKER)) {
+			const status = rawLine.slice(SOURCE_STATUS_MARKER.length).trim();
+			entries.push({
+				source: currentSource,
+				sourceLabel: labels.get(currentSource) || currentSource,
+				message: status === 'missing'
+					? localText('Log file has not been created yet.', '日志文件尚未创建。')
+					: localText('Log file exists but cannot be read.', '日志文件存在，但当前无法读取。'),
+				type: status === 'missing' ? 'info' : 'error',
+			});
 			continue;
 		}
 		if (!rawLine.trim()) continue;
@@ -81,7 +94,7 @@ export async function read_log_file(force = false) {
 	}
 	const command = sources.map(source => {
 		const marker = `${SOURCE_MARKER}${source.key}`;
-		return `if [ -r ${shellQuote(source.path)} ]; then printf '%s\\n' ${shellQuote(marker)}; tail -n ${MAX_LINES_PER_SOURCE} ${shellQuote(source.path)}; fi`;
+		return `printf '%s\\n' ${shellQuote(marker)}; if [ -r ${shellQuote(source.path)} ]; then tail -n ${MAX_LINES_PER_SOURCE} ${shellQuote(source.path)}; elif [ -e ${shellQuote(source.path)} ]; then printf '%s\\n' ${shellQuote(`${SOURCE_STATUS_MARKER}unreadable`)}; else printf '%s\\n' ${shellQuote(`${SOURCE_STATUS_MARKER}missing`)}; fi`;
 	}).join('; ');
 	try {
 		const { stdout } = await exec(command);
@@ -101,10 +114,23 @@ export async function read_log_file(force = false) {
 function filteredEntries() {
 	const query = filterText.trim().toLocaleLowerCase();
 	if (!query) return router_state.logsList;
-	return router_state.logsList.filter(entry =>
-		entry.type === 'source'
-		|| entry.message.toLocaleLowerCase().includes(query)
-		|| entry.sourceLabel.toLocaleLowerCase().includes(query));
+	const result = [];
+	let pendingSource = null;
+	for (const entry of router_state.logsList) {
+		if (entry.type === 'source') {
+			pendingSource = entry;
+			continue;
+		}
+		const matches = entry.message.toLocaleLowerCase().includes(query)
+			|| entry.sourceLabel.toLocaleLowerCase().includes(query);
+		if (!matches) continue;
+		if (pendingSource) {
+			result.push(pendingSource);
+			pendingSource = null;
+		}
+		result.push(entry);
+	}
+	return result;
 }
 
 function addLogToScreen(entry, container) {
@@ -157,6 +183,13 @@ function createEmptyState(container, filtered = false) {
 	container.appendChild(empty);
 }
 
+function syncFollowButton() {
+	const follow = toolbar?.querySelector('#log-follow-btn');
+	if (!follow) return;
+	follow.setAttribute('aria-pressed', String(followTail));
+	follow.classList.toggle('is-active', followTail);
+}
+
 function updateToolbarLanguage() {
 	if (!toolbar) return;
 	const search = toolbar.querySelector('#log-filter-input');
@@ -173,6 +206,7 @@ function updateToolbarLanguage() {
 		follow.textContent = localText('Follow', '跟随');
 		follow.title = localText('Keep the newest log entry visible', '自动保持最新日志可见');
 	}
+	syncFollowButton();
 }
 
 function ensureToolbar() {
@@ -209,20 +243,28 @@ function ensureToolbar() {
 	toolbar.querySelector('#log-copy-btn').addEventListener('click', async () => {
 		const text = exportText(filteredEntries());
 		try {
-			if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
-			else fallbackCopy(text);
+			let copied = false;
+			if (navigator.clipboard?.writeText) {
+				try {
+					await navigator.clipboard.writeText(text);
+					copied = true;
+				} catch (error) {
+					console.warn('Clipboard API unavailable, using fallback:', error);
+				}
+			}
+			if (!copied) fallbackCopy(text);
 			toast(localText('Logs copied', '日志已复制'));
 		} catch (error) {
 			console.error('Log copy failed:', error);
 			toast(localText('Copy failed', '复制失败'));
 		}
 	});
-	toolbar.querySelector('#log-follow-btn').addEventListener('click', event => {
+	toolbar.querySelector('#log-follow-btn').addEventListener('click', () => {
 		followTail = !followTail;
-		event.currentTarget.setAttribute('aria-pressed', String(followTail));
+		syncFollowButton();
 		if (followTail) {
 			const content = document.getElementById('log-content');
-			content.scrollTop = content.scrollHeight;
+			if (content) content.scrollTop = content.scrollHeight;
 		}
 	});
 	return toolbar;
@@ -235,8 +277,11 @@ function fallbackCopy(text) {
 	textarea.style.opacity = '0';
 	document.body.appendChild(textarea);
 	textarea.select();
-	if (!document.execCommand('copy')) throw new Error('copy command failed');
-	textarea.remove();
+	try {
+		if (!document.execCommand('copy')) throw new Error('copy command failed');
+	} finally {
+		textarea.remove();
+	}
 }
 
 function exportText(entries) {
@@ -263,8 +308,6 @@ export function updateLogsUI() {
 	});
 	if (signature === previousRenderSignature) return;
 
-	const distanceFromBottom = logContent.scrollHeight - logContent.scrollTop - logContent.clientHeight;
-	const wasNearBottom = distanceFromBottom < 96;
 	const previousScrollTop = logContent.scrollTop;
 	logContent.replaceChildren();
 	if (router_state.logsError) {
@@ -277,7 +320,7 @@ export function updateLogsUI() {
 	} else {
 		for (const entry of entries) addLogToScreen(entry, logContent);
 	}
-	if (followTail && wasNearBottom) logContent.scrollTop = logContent.scrollHeight;
+	if (followTail) logContent.scrollTop = logContent.scrollHeight;
 	else logContent.scrollTop = Math.min(previousScrollTop, Math.max(0, logContent.scrollHeight - logContent.clientHeight));
 	previousRenderSignature = signature;
 }
@@ -286,6 +329,16 @@ export function initLogs() {
 	if (initialized) return;
 	initialized = true;
 	ensureToolbar();
+	const logContent = document.getElementById('log-content');
+	logContent?.addEventListener('scroll', () => {
+		if (!followTail) return;
+		const distanceFromBottom = logContent.scrollHeight - logContent.scrollTop - logContent.clientHeight;
+		if (distanceFromBottom > 96) {
+			followTail = false;
+			syncFollowButton();
+		}
+	}, { passive: true });
+
 	const clearBtn = document.getElementById('clear-logs-btn');
 	clearBtn?.addEventListener('click', async () => {
 		const confirmed = window.confirm(localText(
@@ -294,6 +347,10 @@ export function initLogs() {
 		));
 		if (!confirmed) return;
 		const sources = sourceDefinitions();
+		if (sources.length === 0) {
+			toast(localText('Module directory is unavailable.', '无法获取模块目录。'));
+			return;
+		}
 		try {
 			const files = sources.map(source => shellQuote(source.path)).join(' ');
 			await exec(`rm -f ${files}; : > ${shellQuote(sources[0].path)}`);
