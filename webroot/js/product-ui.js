@@ -106,6 +106,7 @@ function initNavigationKeyboard() {
 	nav.addEventListener('keydown', event => {
 		if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
 		const items = visibleNavItems();
+		if (items.length === 0) return;
 		const currentIndex = Math.max(0, items.indexOf(document.activeElement));
 		let nextIndex = currentIndex;
 		if (event.key === 'Home') nextIndex = 0;
@@ -227,7 +228,31 @@ function persistDisclosureState() {
 	}
 }
 
-function improveInputs() {
+function syncDebugFabVisibility() {
+	const toggle = document.getElementById('debug-toggle');
+	const fab = document.getElementById('debug-toggle-btn');
+	if (!toggle || !fab) return;
+	const visible = Boolean(toggle.checked || window._debug?.enabled);
+	const expected = visible ? 'flex' : 'none';
+	if (fab.style.getPropertyValue('display') !== expected || fab.style.getPropertyPriority('display') !== 'important') {
+		fab.style.setProperty('display', expected, 'important');
+	}
+}
+
+function initDebugFabVisibility() {
+	const toggle = document.getElementById('debug-toggle');
+	const fab = document.getElementById('debug-toggle-btn');
+	if (!toggle || !fab) return;
+	const deferredSync = () => queueMicrotask(syncDebugFabVisibility);
+	toggle.addEventListener('change', deferredSync);
+	new MutationObserver(deferredSync).observe(fab, { attributes: true, attributeFilter: ['style'] });
+	document.addEventListener('tcp:page-change', deferredSync);
+	window.addEventListener('pageshow', deferredSync);
+	syncDebugFabVisibility();
+	setTimeout(syncDebugFabVisibility, 1000);
+}
+
+function improveInputsAndLinks() {
 	for (const input of document.querySelectorAll('input[type="text"], textarea')) {
 		input.spellcheck = false;
 		input.autocomplete = 'off';
@@ -236,6 +261,8 @@ function improveInputs() {
 	statusChip?.setAttribute('role', 'status');
 	statusChip?.setAttribute('aria-live', 'polite');
 	statusChip?.setAttribute('aria-atomic', 'true');
+	const legacyGithubLink = document.querySelector('.link-chip[data-url="https://github.com/Zhanfg/TCP_Optimiser"]');
+	if (legacyGithubLink) legacyGithubLink.dataset.url = 'https://github.com/Zhanfg/TCP_Optimiser_RS';
 }
 
 export function rememberPageScroll(pageName) {
@@ -244,7 +271,7 @@ export function rememberPageScroll(pageName) {
 
 export function restorePageScroll(pageName, reset = false) {
 	requestAnimationFrame(() => {
-		window.scrollTo({ top: reset ? 0 : (pageScroll.get(pageName) || 0), behavior: 'instant' });
+		window.scrollTo({ top: reset ? 0 : (pageScroll.get(pageName) || 0), behavior: 'auto' });
 	});
 }
 
@@ -278,7 +305,8 @@ export function initProductUI() {
 	initNavigationKeyboard();
 	initModalManagement();
 	persistDisclosureState();
-	improveInputs();
+	improveInputsAndLinks();
+	initDebugFabVisibility();
 	document.addEventListener('i18n-changed', syncProductUILanguage);
 	document.addEventListener('tcp:page-change', syncNavTabStops);
 }
