@@ -58,6 +58,16 @@ TCP Optimiser detects the active Wi-Fi or cellular interface and applies a kerne
 - Baseband partition discovery and backup with an automatically generated restore script.
 - Simplified Chinese and English interfaces with 279 validated translation entries.
 
+### Transactional rollback
+
+- The first installation records every available sysctl value the module can modify instead of assuming generic platform defaults.
+- Upgrades preserve the first snapshot, preventing values written by an older module build from becoming the new baseline.
+- The original root qdisc is journaled separately before each Wi-Fi or cellular interface is modified for the first time.
+- Early boot and the daemon refuse to apply tuning if the snapshot is missing, malformed or uses an unsupported schema version.
+- Uninstall restores and reads back each recorded value. If exact restoration is unavailable, errors are reported and the module does not force `cubic/fq_codel`.
+
+See [`docs/ROLLBACK-SAFETY.md`](docs/ROLLBACK-SAFETY.md) for the lifecycle, trust boundary and restoration scope.
+
 ## Installation
 
 1. Download `TCP_Optimiser_RS-v*.zip` from [Releases](https://github.com/Zhanfg/TCP_Optimiser_RS/releases).
