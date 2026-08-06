@@ -1,7 +1,6 @@
 import I18N from './i18n.js';
 
 let initialized = false;
-let observer = null;
 let advancedSearch = null;
 let forceGuardInstalled = false;
 let syncQueued = false;
@@ -188,6 +187,13 @@ function scheduleSettingsSync() {
 	});
 }
 
+function bindDelegatedSync(root) {
+	if (!root || root.dataset.settingsSyncBound === 'true') return;
+	root.dataset.settingsSyncBound = 'true';
+	root.addEventListener('click', scheduleSettingsSync);
+	root.addEventListener('change', scheduleSettingsSync);
+}
+
 export function initSettingsEnhancements() {
 	if (initialized) {
 		scheduleSettingsSync();
@@ -196,15 +202,8 @@ export function initSettingsEnhancements() {
 	initialized = true;
 	ensureStyles();
 	syncSettingsSemantics();
-	observer = new MutationObserver(scheduleSettingsSync);
-	for (const root of [document.getElementById('settings-page'), document.getElementById('adv-page')]) {
-		if (root) observer.observe(root, {
-			childList: true,
-			subtree: true,
-			attributes: true,
-			attributeFilter: ['class'],
-		});
-	}
+	bindDelegatedSync(document.getElementById('settings-page'));
+	bindDelegatedSync(document.getElementById('adv-page'));
 	document.addEventListener('i18n-changed', () => {
 		syncSelectableState();
 		syncAdvancedSearchLanguage();
