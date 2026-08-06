@@ -40,10 +40,16 @@ chmod 755 "$STAGE/customize.sh" "$STAGE/service.sh" "$STAGE/post-fs-data.sh" "$S
 
 EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$REPO_ROOT" log -1 --format=%ct)}
 if [ "${GITHUB_ACTIONS:-false}" = "true" ]; then
+  BUILD_CHANNEL=${TCP_OPTIMISER_PACKAGE_CHANNEL:-official-github}
+  BUILD_OFFICIAL=${TCP_OPTIMISER_PACKAGE_OFFICIAL:-true}
+  case "$BUILD_OFFICIAL" in
+    true|false) ;;
+    *) printf 'TCP_OPTIMISER_PACKAGE_OFFICIAL must be true or false\n' >&2; exit 1 ;;
+  esac
   cat > "$STAGE/build-info.json" <<EOF
 {
-  "official": true,
-  "channel": "official-github",
+  "official": ${BUILD_OFFICIAL},
+  "channel": "${BUILD_CHANNEL}",
   "repository": "https://github.com/${GITHUB_REPOSITORY}",
   "revision": "${GITHUB_SHA}",
   "sourceDateEpoch": ${EPOCH}
