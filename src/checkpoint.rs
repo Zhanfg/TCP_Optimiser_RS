@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::control::{self, ControlState};
 use crate::network::{self, IfaceMode};
@@ -11,6 +12,7 @@ use crate::{config, daemon, sysctl};
 const CHECKPOINT_FILE: &str = "last-good-policy-v1.json";
 const FAILURE_FILE: &str = "policy-failures-v1.json";
 const FORMAT_VERSION: u32 = 1;
+const DAEMON_QUIESCE_SECONDS: u64 = 6;
 pub const AUTOMATIC_SAFE_MODE_THRESHOLD: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -44,9 +46,20 @@ pub struct CheckpointStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct RestoreCheckpointReport {
     pub success: bool,
+    pub rolled_back: bool,
     pub control: ControlState,
     pub checkpoint: LastGoodPolicy,
     pub errors: Vec<String>,
+    pub rollback_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeKernelState {
+    algorithm: String,
+    default_qdisc: String,
+    interface_qdisc: String,
+    pacing_ca: u32,
+    pacing_ss: u32,
 }
 
 pub fn status() -> io::Result<CheckpointStatus> {
@@ -76,6 +89,7 @@ pub fn persist(
         pacing_ca: policy.pacing_ca,
         pacing_ss: policy.pacing_ss,
     };
+    validate_checkpoint(&checkpoint)?;
     write_json_atomic(&checkpoint_path(), &checkpoint)?;
     clear_failures()?;
     Ok(checkpoint)
@@ -106,9 +120,79 @@ pub fn restore() -> io::Result<RestoreCheckpointReport> {
         )
     })?;
     validate_checkpoint(&checkpoint)?;
-    let control = control::enter_automatic_safe_mode("restoring-last-known-good-policy")?;
-    let mut errors = Vec::new();
+    preflight_checkpoint(&checkpoint)?;
 
+    let control = control::enter_automatic_safe_mode("restoring-last-known-good-policy")?;
+    if daemon::is_running() {
+        thread::sleep(Duration::from_secs(DAEMON_QUIESCE_SECONDS));
+    }
+
+    let previous = capture_runtime_state(&checkpoint.interface)?;
+    let mut errors = apply_checkpoint(&checkpoint);
+    if errors.is_empty() {
+        errors.extend(verify_checkpoint_applied(&checkpoint));
+    }
+
+    let mut rollback_errors = Vec::new();
+    let rolled_back = !errors.is_empty();
+    if rolled_back {
+        rollback_errors = restore_runtime_state(&checkpoint.interface, &previous);
+    }
+
+    Ok(RestoreCheckpointReport {
+        success: errors.is_empty(),
+        rolled_back,
+        control,
+        checkpoint,
+        errors,
+        rollback_errors,
+    })
+}
+
+fn preflight_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
+    match sysctl::algo_available(&checkpoint.algorithm)? {
+        true => {}
+        false => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "checkpoint algorithm {} is unavailable",
+                    checkpoint.algorithm
+                ),
+            ))
+        }
+    }
+    let current_qdisc = network::root_qdisc(&checkpoint.interface)?;
+    if current_qdisc.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "interface {} has no readable root qdisc; transactional rollback cannot be guaranteed",
+                checkpoint.interface
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn capture_runtime_state(iface: &str) -> io::Result<RuntimeKernelState> {
+    let interface_qdisc = network::root_qdisc(iface)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("interface {iface} root qdisc is unavailable"),
+        )
+    })?;
+    Ok(RuntimeKernelState {
+        algorithm: sysctl::current_algorithm()?,
+        default_qdisc: sysctl::default_qdisc()?,
+        interface_qdisc,
+        pacing_ca: read_pacing("/proc/sys/net/ipv4/tcp_pacing_ca_ratio")?,
+        pacing_ss: read_pacing("/proc/sys/net/ipv4/tcp_pacing_ss_ratio")?,
+    })
+}
+
+fn apply_checkpoint(checkpoint: &LastGoodPolicy) -> Vec<String> {
+    let mut errors = Vec::new();
     if let Err(error) = sysctl::set_pacing(checkpoint.pacing_ca, checkpoint.pacing_ss) {
         errors.push(format!("pacing restore failed: {error}"));
     }
@@ -118,24 +202,90 @@ pub fn restore() -> io::Result<RestoreCheckpointReport> {
     if let Err(error) = network::set_qdisc(&checkpoint.interface, &checkpoint.qdisc) {
         errors.push(format!("interface qdisc restore failed: {error}"));
     }
-    match sysctl::algo_available(&checkpoint.algorithm) {
-        Ok(true) => {
-            if let Err(error) = sysctl::set_congestion_control(&checkpoint.algorithm) {
-                errors.push(format!("algorithm restore failed: {error}"));
-            }
-        }
-        Ok(false) => errors.push(format!(
-            "checkpoint algorithm {} is unavailable",
-            checkpoint.algorithm
-        )),
-        Err(error) => errors.push(format!("algorithm capability check failed: {error}")),
+    if let Err(error) = sysctl::set_congestion_control(&checkpoint.algorithm) {
+        errors.push(format!("algorithm restore failed: {error}"));
     }
+    errors
+}
 
-    Ok(RestoreCheckpointReport {
-        success: errors.is_empty(),
-        control,
-        checkpoint,
-        errors,
+fn verify_checkpoint_applied(checkpoint: &LastGoodPolicy) -> Vec<String> {
+    let mut errors = Vec::new();
+    compare_value(
+        &mut errors,
+        "algorithm",
+        sysctl::current_algorithm().ok(),
+        checkpoint.algorithm.clone(),
+    );
+    compare_value(
+        &mut errors,
+        "default qdisc",
+        sysctl::default_qdisc().ok(),
+        checkpoint.qdisc.clone(),
+    );
+    compare_value(
+        &mut errors,
+        "interface qdisc",
+        network::root_qdisc(&checkpoint.interface).ok().flatten(),
+        checkpoint.qdisc.clone(),
+    );
+    compare_value(
+        &mut errors,
+        "pacing CA",
+        read_pacing("/proc/sys/net/ipv4/tcp_pacing_ca_ratio")
+            .ok()
+            .map(|value| value.to_string()),
+        checkpoint.pacing_ca.to_string(),
+    );
+    compare_value(
+        &mut errors,
+        "pacing SS",
+        read_pacing("/proc/sys/net/ipv4/tcp_pacing_ss_ratio")
+            .ok()
+            .map(|value| value.to_string()),
+        checkpoint.pacing_ss.to_string(),
+    );
+    errors
+}
+
+fn restore_runtime_state(iface: &str, previous: &RuntimeKernelState) -> Vec<String> {
+    let mut errors = Vec::new();
+    if let Err(error) = sysctl::set_pacing(previous.pacing_ca, previous.pacing_ss) {
+        errors.push(format!("rollback pacing failed: {error}"));
+    }
+    if let Err(error) = sysctl::set_default_qdisc(&previous.default_qdisc) {
+        errors.push(format!("rollback default qdisc failed: {error}"));
+    }
+    if let Err(error) = network::set_qdisc(iface, &previous.interface_qdisc) {
+        errors.push(format!("rollback interface qdisc failed: {error}"));
+    }
+    if let Err(error) = sysctl::set_congestion_control(&previous.algorithm) {
+        errors.push(format!("rollback algorithm failed: {error}"));
+    }
+    errors
+}
+
+fn compare_value(
+    errors: &mut Vec<String>,
+    name: &str,
+    actual: Option<String>,
+    expected: String,
+) {
+    match actual {
+        Some(value) if value == expected => {}
+        Some(value) => errors.push(format!(
+            "{name} verification failed: expected {expected}, found {value}"
+        )),
+        None => errors.push(format!("{name} verification is unavailable")),
+    }
+}
+
+fn read_pacing(path: &str) -> io::Result<u32> {
+    let value = sysctl::read_sysctl(path)?;
+    value.parse::<u32>().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid pacing value at {path}: {error}"),
+        )
     })
 }
 
@@ -148,11 +298,25 @@ fn failure_path() -> PathBuf {
 }
 
 fn read_checkpoint() -> io::Result<Option<LastGoodPolicy>> {
-    read_optional_json(&checkpoint_path())
+    let checkpoint = read_optional_json(&checkpoint_path())?;
+    if let Some(value) = checkpoint.as_ref() {
+        validate_checkpoint(value)?;
+    }
+    Ok(checkpoint)
 }
 
 fn read_failures() -> io::Result<FailureState> {
-    Ok(read_optional_json(&failure_path())?.unwrap_or_default())
+    let state = read_optional_json(&failure_path())?.unwrap_or_default();
+    if state.format_version != FORMAT_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "unsupported policy failure format {}",
+                state.format_version
+            ),
+        ));
+    }
+    Ok(state)
 }
 
 fn validate_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
@@ -232,7 +396,16 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
 }
 
 fn sanitize_message(message: String) -> String {
-    let mut clean = message.replace(['\0', '\r', '\n'], " ");
+    let mut clean = message
+        .chars()
+        .map(|character| {
+            if matches!(character, '\0' | '\r' | '\n') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
     clean.truncate(320);
     clean.trim().to_string()
 }
@@ -257,7 +430,9 @@ impl Default for FailureState {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_checkpoint, validate_iface_name, LastGoodPolicy};
+    use super::{
+        compare_value, validate_checkpoint, validate_iface_name, LastGoodPolicy,
+    };
 
     #[test]
     fn interface_name_validation_rejects_paths_and_shell_text() {
@@ -282,5 +457,15 @@ mod tests {
         assert!(validate_checkpoint(&checkpoint).is_ok());
         checkpoint.algorithm = "bbr;reboot".to_string();
         assert!(validate_checkpoint(&checkpoint).is_err());
+    }
+
+    #[test]
+    fn readback_comparison_reports_drift_and_unavailable_values() {
+        let mut errors = Vec::new();
+        compare_value(&mut errors, "algo", Some("cubic".into()), "bbr".into());
+        compare_value(&mut errors, "qdisc", None, "fq".into());
+        assert_eq!(errors.len(), 2);
+        assert!(errors[0].contains("expected bbr"));
+        assert!(errors[1].contains("unavailable"));
     }
 }
