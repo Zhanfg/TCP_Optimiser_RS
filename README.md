@@ -28,7 +28,7 @@ TCP Optimiser 会识别当前使用的 Wi-Fi 或蜂窝网络接口，并依据�
 ### Rust 核心
 
 - 自动识别 Wi-Fi 与蜂窝网络接口并切换对应策略。
-- 支持 19 种拥塞控制算法：BBR、BBR2、BBR3、CUBIC、Westwood、Westwood+、Reno、HTCP、TLP、YeAH、Illinois、DCTCP、CDG、BIC、HighSpeed、Hybla、NV、Scalable 和 LP。
+- 支持 19 种拥塞控制算法：BBR、BBR2、BBR3、CUBIC、Westwood、Westwood+、Reno、HTCP、Vegas、YeAH、Illinois、DCTCP、CDG、BIC、HighSpeed、Hybla、NV、Scalable 和 LP。
 - 按算法配置 qdisc、`pacing ca`、`pacing ss`、`initcwnd` 与 `initrwnd`。
 - 在应用 Wi-Fi 策略前检测 VoWiFi 状态。
 - 接口变化后提高检测频率，网络稳定后降低轮询频率。
@@ -82,7 +82,7 @@ TCP Optimiser 会识别当前使用的 Wi-Fi 或蜂窝网络接口，并依据�
 | 均衡 | `CUBIC` | `CUBIC` | `fq_codel` | `150/200` | 日常使用 |
 | 游戏 | `BBR` | `BBR` | `fq` | `200/300` | 低延迟连接 |
 | 流媒体 | `BBR` | `CUBIC` | `fq_codel` | `180/250` | 持续吞吐 |
-| 省电 | `TLP` | `Westwood` | `fq_codel` | `120/180` | 降低后台活动 |
+| 省电 | `Vegas` | `Westwood` | `fq_codel` | `120/180` | 降低后台活动 |
 | 高速 | `BBR3` | `BBR3` | `fq` | `220/320` | 受支持内核上的最大吞吐 |
 
 ## 构建与发行校验
