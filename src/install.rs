@@ -52,7 +52,7 @@ pub fn run() -> io::Result<()> {
         "kill_connections",
         "initcwnd_initrwnd",
         "qdisc",
-        "pacing_top",
+        "pacing",
         "pacing_ss",
         "tcp_ecn",
         "tcp_fastopen",
