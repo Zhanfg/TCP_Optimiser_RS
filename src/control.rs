@@ -136,6 +136,7 @@ fn update(
 ) -> io::Result<ControlState> {
     let mut state = match read() {
         Ok(state) => state,
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => recovery_state(&error),
         Err(error) if error.kind() == io::ErrorKind::NotFound => ControlState::default(),
         Err(error) => return Err(error),
     };
@@ -148,6 +149,17 @@ fn update(
     state.reason = sanitize_reason(reason.into());
     write_atomic(&path(), &state)?;
     Ok(state)
+}
+
+fn recovery_state(error: &io::Error) -> ControlState {
+    ControlState {
+        format_version: FORMAT_VERSION,
+        generation: 0,
+        mode: RuntimeMode::SafeMode,
+        requested_action: RuntimeAction::AutomaticSafeMode,
+        updated_at_epoch: now_epoch(),
+        reason: sanitize_reason(format!("recovered-invalid-control: {error}")),
+    }
 }
 
 fn read_from(path: &Path) -> io::Result<ControlState> {
@@ -187,7 +199,16 @@ fn write_atomic(path: &Path, state: &ControlState) -> io::Result<()> {
 }
 
 fn sanitize_reason(reason: String) -> String {
-    let mut clean = reason.replace(['\0', '\r', '\n'], " ");
+    let mut clean = reason
+        .chars()
+        .map(|character| {
+            if matches!(character, '\0' | '\r' | '\n') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
     clean.truncate(240);
     if clean.trim().is_empty() {
         "unspecified".to_string()
@@ -205,7 +226,9 @@ fn now_epoch() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_from, write_atomic, ControlState, RuntimeAction, RuntimeMode};
+    use super::{
+        read_from, recovery_state, write_atomic, ControlState, RuntimeAction, RuntimeMode,
+    };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -254,5 +277,14 @@ mod tests {
             std::io::ErrorKind::InvalidData
         );
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn corrupt_state_recovery_starts_safe_with_reset_generation() {
+        let error = std::io::Error::new(std::io::ErrorKind::InvalidData, "broken json");
+        let state = recovery_state(&error);
+        assert_eq!(state.mode, RuntimeMode::SafeMode);
+        assert_eq!(state.generation, 0);
+        assert!(state.reason.contains("broken json"));
     }
 }
