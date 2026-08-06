@@ -46,7 +46,8 @@ pub struct CheckpointStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct RestoreCheckpointReport {
     pub success: bool,
-    pub rolled_back: bool,
+    pub rollback_attempted: bool,
+    pub rollback_succeeded: bool,
     pub control: ControlState,
     pub checkpoint: LastGoodPolicy,
     pub errors: Vec<String>,
@@ -133,15 +134,20 @@ pub fn restore() -> io::Result<RestoreCheckpointReport> {
         errors.extend(verify_checkpoint_applied(&checkpoint));
     }
 
+    let rollback_attempted = !errors.is_empty();
     let mut rollback_errors = Vec::new();
-    let rolled_back = !errors.is_empty();
-    if rolled_back {
-        rollback_errors = restore_runtime_state(&checkpoint.interface, &previous);
+    if rollback_attempted {
+        rollback_errors.extend(restore_runtime_state(&checkpoint.interface, &previous));
+        if rollback_errors.is_empty() {
+            rollback_errors.extend(verify_runtime_state(&checkpoint.interface, &previous));
+        }
     }
+    let rollback_succeeded = rollback_attempted && rollback_errors.is_empty();
 
     Ok(RestoreCheckpointReport {
         success: errors.is_empty(),
-        rolled_back,
+        rollback_attempted,
+        rollback_succeeded,
         control,
         checkpoint,
         errors,
@@ -209,42 +215,17 @@ fn apply_checkpoint(checkpoint: &LastGoodPolicy) -> Vec<String> {
 }
 
 fn verify_checkpoint_applied(checkpoint: &LastGoodPolicy) -> Vec<String> {
-    let mut errors = Vec::new();
-    compare_value(
-        &mut errors,
-        "algorithm",
-        sysctl::current_algorithm().ok(),
-        checkpoint.algorithm.clone(),
-    );
-    compare_value(
-        &mut errors,
-        "default qdisc",
-        sysctl::default_qdisc().ok(),
-        checkpoint.qdisc.clone(),
-    );
-    compare_value(
-        &mut errors,
-        "interface qdisc",
-        network::root_qdisc(&checkpoint.interface).ok().flatten(),
-        checkpoint.qdisc.clone(),
-    );
-    compare_value(
-        &mut errors,
-        "pacing CA",
-        read_pacing("/proc/sys/net/ipv4/tcp_pacing_ca_ratio")
-            .ok()
-            .map(|value| value.to_string()),
-        checkpoint.pacing_ca.to_string(),
-    );
-    compare_value(
-        &mut errors,
-        "pacing SS",
-        read_pacing("/proc/sys/net/ipv4/tcp_pacing_ss_ratio")
-            .ok()
-            .map(|value| value.to_string()),
-        checkpoint.pacing_ss.to_string(),
-    );
-    errors
+    let expected = RuntimeKernelState {
+        algorithm: checkpoint.algorithm.clone(),
+        default_qdisc: checkpoint.qdisc.clone(),
+        interface_qdisc: checkpoint.qdisc.clone(),
+        pacing_ca: checkpoint.pacing_ca,
+        pacing_ss: checkpoint.pacing_ss,
+    };
+    verify_runtime_state(&checkpoint.interface, &expected)
+        .into_iter()
+        .map(|error| format!("checkpoint {error}"))
+        .collect()
 }
 
 fn restore_runtime_state(iface: &str, previous: &RuntimeKernelState) -> Vec<String> {
@@ -261,6 +242,45 @@ fn restore_runtime_state(iface: &str, previous: &RuntimeKernelState) -> Vec<Stri
     if let Err(error) = sysctl::set_congestion_control(&previous.algorithm) {
         errors.push(format!("rollback algorithm failed: {error}"));
     }
+    errors
+}
+
+fn verify_runtime_state(iface: &str, expected: &RuntimeKernelState) -> Vec<String> {
+    let mut errors = Vec::new();
+    compare_value(
+        &mut errors,
+        "algorithm",
+        sysctl::current_algorithm().ok(),
+        expected.algorithm.clone(),
+    );
+    compare_value(
+        &mut errors,
+        "default qdisc",
+        sysctl::default_qdisc().ok(),
+        expected.default_qdisc.clone(),
+    );
+    compare_value(
+        &mut errors,
+        "interface qdisc",
+        network::root_qdisc(iface).ok().flatten(),
+        expected.interface_qdisc.clone(),
+    );
+    compare_value(
+        &mut errors,
+        "pacing CA",
+        read_pacing("/proc/sys/net/ipv4/tcp_pacing_ca_ratio")
+            .ok()
+            .map(|value| value.to_string()),
+        expected.pacing_ca.to_string(),
+    );
+    compare_value(
+        &mut errors,
+        "pacing SS",
+        read_pacing("/proc/sys/net/ipv4/tcp_pacing_ss_ratio")
+            .ok()
+            .map(|value| value.to_string()),
+        expected.pacing_ss.to_string(),
+    );
     errors
 }
 
