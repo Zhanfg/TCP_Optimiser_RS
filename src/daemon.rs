@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::checkpoint;
 use crate::config;
+use crate::control::{self, ControlState, RuntimeMode};
 use crate::logging;
 use crate::network::{self, IfaceMode};
 use crate::proxy;
@@ -32,8 +34,19 @@ pub fn run() -> io::Result<()> {
     let _daemon_guard = DaemonGuard::acquire()?;
     logging::ensure_flag();
     reset_description();
-    for error in sysctl::apply_base_sysctls() {
-        logging::log_print(&format!("[WARN] startup sysctl apply failed: {error}"));
+
+    let mut control_state = read_control_state(None);
+    let mut last_control_generation = control_state.generation;
+    let mut last_control_error: Option<String> = None;
+    if control_state.mode.allows_writes() {
+        for error in sysctl::apply_base_sysctls() {
+            logging::log_print(&format!("[WARN] startup sysctl apply failed: {error}"));
+        }
+    } else {
+        logging::log_print(&format!(
+            "[INFO] Runtime starts in {} mode; kernel writes are disabled",
+            control_state.mode.as_str()
+        ));
     }
 
     let mut last_mode = IfaceMode::Unknown;
@@ -46,6 +59,56 @@ pub fn run() -> io::Result<()> {
     let mut route_unavailable = false;
 
     loop {
+        let observed_control = match control::read() {
+            Ok(state) => {
+                if last_control_error.take().is_some() {
+                    logging::log_print("[INFO] Runtime control state is readable again");
+                }
+                state
+            }
+            Err(error) => {
+                let message = error.to_string();
+                if last_control_error.as_deref() != Some(message.as_str()) {
+                    logging::log_print(&format!(
+                        "[ERROR] Runtime control state is invalid; entering read-only safe mode: {message}"
+                    ));
+                    last_control_error = Some(message.clone());
+                }
+                ControlState::safe_fallback(message)
+            }
+        };
+        let control_changed = observed_control.generation != last_control_generation
+            || observed_control.mode != control_state.mode;
+        let control_requests_apply = control_changed
+            && observed_control.mode == RuntimeMode::Active
+            && observed_control.requested_action.requests_apply();
+        if control_changed {
+            logging::log_print(&format!(
+                "[INFO] Runtime control: generation={} mode={} action={:?} reason={}",
+                observed_control.generation,
+                observed_control.mode.as_str(),
+                observed_control.requested_action,
+                observed_control.reason
+            ));
+        }
+        last_control_generation = observed_control.generation;
+        control_state = observed_control;
+
+        if !control_state.mode.allows_writes() {
+            last_mode = IfaceMode::Unknown;
+            last_iface.clear();
+            last_change = None;
+            wifi_pending_since = None;
+            wifi_applied = false;
+            last_qdisc_check = None;
+            thread::sleep(Duration::from_secs(if control_changed {
+                SLEEP_FAST
+            } else {
+                SLEEP_NORMAL
+            }));
+            continue;
+        }
+
         let iface = match network::active_iface() {
             Ok(i) => i,
             Err(e) => {
@@ -74,7 +137,7 @@ pub fn run() -> io::Result<()> {
         }
 
         let new_mode = network::iface_mode(&iface);
-        let force_apply = config::module_dir().join("force_apply").exists();
+        let force_apply = control_requests_apply || config::module_dir().join("force_apply").exists();
         let mut mode_changed = false;
 
         if new_mode != last_mode || iface != last_iface || force_apply {
@@ -227,6 +290,14 @@ pub fn is_running() -> bool {
 
 pub fn run_once() -> io::Result<()> {
     thread::sleep(Duration::from_secs(2));
+    let control_state = read_control_state(None);
+    if !control_state.mode.allows_writes() {
+        logging::log_print(&format!(
+            "[INFO] Once skipped in {} mode",
+            control_state.mode.as_str()
+        ));
+        return Ok(());
+    }
     for error in sysctl::apply_base_sysctls() {
         logging::log_print(&format!("[WARN] sysctl apply failed: {error}"));
     }
@@ -247,11 +318,76 @@ pub fn run_once() -> io::Result<()> {
 fn apply_interface_settings(iface: &str, mode: IfaceMode) {
     match apply_interface_settings_inner(iface, mode, true) {
         Ok(failures) => {
-            for failure in failures {
+            for failure in &failures {
                 logging::log_print(&format!("[WARN] {failure}"));
             }
+            let verification = crate::policy::verify_policy(iface);
+            if verification.summary.drifted == 0 && verification.errors.is_empty() {
+                match resolve_policy(iface, mode)
+                    .and_then(|policy| checkpoint::persist(iface, mode, &policy).map(|_| ()))
+                {
+                    Ok(()) => logging::log_print(&format!(
+                        "[INFO] Last-known-good policy checkpoint updated for {iface}"
+                    )),
+                    Err(error) => logging::log_print(&format!(
+                        "[WARN] Failed to update policy checkpoint: {error}"
+                    )),
+                }
+            } else {
+                let reason = format!(
+                    "policy verification failed on {iface}: {} drifted, {} error(s)",
+                    verification.summary.drifted,
+                    verification.errors.len()
+                );
+                record_policy_failure(&reason);
+            }
         }
-        Err(error) => logging::log_print(&format!("[ERROR] Cannot resolve policy: {error}")),
+        Err(error) => {
+            logging::log_print(&format!("[ERROR] Cannot resolve policy: {error}"));
+            record_policy_failure(&error.to_string());
+        }
+    }
+}
+
+fn record_policy_failure(reason: &str) {
+    match checkpoint::record_failure(reason) {
+        Ok(state) if state.consecutive_failures >= checkpoint::AUTOMATIC_SAFE_MODE_THRESHOLD => {
+            let safe_reason = format!(
+                "{} consecutive policy verification failures: {}",
+                state.consecutive_failures, state.last_error
+            );
+            match control::enter_automatic_safe_mode(&safe_reason) {
+                Ok(_) => logging::log_print(&format!(
+                    "[ERROR] {safe_reason}; persistent safe mode enabled"
+                )),
+                Err(error) => logging::log_print(&format!(
+                    "[ERROR] {safe_reason}; failed to persist safe mode: {error}"
+                )),
+            }
+        }
+        Ok(state) => logging::log_print(&format!(
+            "[WARN] Policy failure count: {}/{}",
+            state.consecutive_failures,
+            checkpoint::AUTOMATIC_SAFE_MODE_THRESHOLD
+        )),
+        Err(error) => logging::log_print(&format!(
+            "[WARN] Failed to persist policy failure state: {error}"
+        )),
+    }
+}
+
+fn read_control_state(previous_error: Option<&str>) -> ControlState {
+    match control::read() {
+        Ok(state) => state,
+        Err(error) => {
+            let message = error.to_string();
+            if previous_error != Some(message.as_str()) {
+                logging::log_print(&format!(
+                    "[ERROR] Runtime control state is invalid; using safe mode: {message}"
+                ));
+            }
+            ControlState::safe_fallback(message)
+        }
     }
 }
 
