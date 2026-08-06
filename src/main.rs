@@ -3,6 +3,7 @@ use std::io;
 use std::process;
 
 mod baseline;
+mod baseline_status;
 mod build_info;
 mod config;
 mod daemon;
@@ -48,6 +49,8 @@ enum Command {
     },
     /// Capture the original managed kernel state without replacing an existing baseline
     CaptureBaseline,
+    /// Read existing baseline health without creating or modifying rollback evidence
+    BaselineStatus,
     /// Restore the original managed kernel state and journaled interface qdiscs
     RestoreBaseline,
     /// Print build provenance embedded in this binary
@@ -72,6 +75,7 @@ fn main() {
         } => print_status(iface, runtime_only),
         Command::Repair { iface } => repair_policy(iface),
         Command::CaptureBaseline => capture_baseline(),
+        Command::BaselineStatus => print_baseline_status(),
         Command::RestoreBaseline => restore_baseline(),
         Command::BuildInfo => print_build_info(),
         Command::VerifyModule { path } => integrity::verify_module(&path),
@@ -92,6 +96,10 @@ fn repair_policy(iface: Option<String>) -> io::Result<()> {
 fn capture_baseline() -> io::Result<()> {
     let summary = baseline::ensure_global_baseline()?;
     print_json(&summary)
+}
+
+fn print_baseline_status() -> io::Result<()> {
+    print_json(&baseline_status::read()?)
 }
 
 fn restore_baseline() -> io::Result<()> {
