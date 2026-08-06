@@ -4,9 +4,16 @@ import process from 'node:process';
 
 const root = process.cwd();
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
+const exists = relative => fs.existsSync(path.join(root, relative));
 const fail = message => {
 	console.error(`webui validation: ${message}`);
 	process.exitCode = 1;
+};
+const requireText = (source, needle, description) => {
+	if (!source.includes(needle)) fail(description);
+};
+const rejectText = (source, needle, description) => {
+	if (source.includes(needle)) fail(description);
 };
 
 function parseFlatLanguageFile(relative) {
@@ -41,10 +48,8 @@ for (const key of Object.keys(english)) if (!(key in chinese)) fail(`zh.json is 
 for (const key of Object.keys(chinese)) if (!(key in english)) fail(`zh.json has unknown key ${key}`);
 
 const html = read('webroot/index.html');
-const javascript = fs.readdirSync(path.join(root, 'webroot/js'))
-	.filter(file => file.endsWith('.js'))
-	.map(file => read(`webroot/js/${file}`))
-	.join('\n');
+const javascriptFiles = fs.readdirSync(path.join(root, 'webroot/js')).filter(file => file.endsWith('.js'));
+const javascript = javascriptFiles.map(file => read(`webroot/js/${file}`)).join('\n');
 const referencedKeys = new Set([
 	...[...html.matchAll(/data-i18n(?:-placeholder|-aria-label)?="([^"]+)"/g)].map(match => match[1]),
 	...[...javascript.matchAll(/I18N\.t\(\s*['"]([A-Za-z0-9_]+)['"]\s*(?:[,\)])/g)].map(match => match[1]),
@@ -61,14 +66,14 @@ for (const match of html.matchAll(/\sid="([^"]+)"/g)) {
 
 for (const match of html.matchAll(/<script[^>]+src="([^"]+)"/g)) {
 	const relative = path.join('webroot', match[1]);
-	if (!fs.existsSync(path.join(root, relative))) fail(`missing script ${relative}`);
+	if (!exists(relative)) fail(`missing script ${relative}`);
 }
 
-for (const file of fs.readdirSync(path.join(root, 'webroot/js')).filter(name => name.endsWith('.js'))) {
+for (const file of javascriptFiles) {
 	const source = read(`webroot/js/${file}`);
 	for (const match of source.matchAll(/(?:import|export)\s+(?:[\s\S]*?\s+from\s+)?['"](\.\.?\/[^'"]+)['"]/g)) {
 		const imported = path.normalize(path.join('webroot/js', path.dirname(file), match[1]));
-		if (!fs.existsSync(path.join(root, imported))) fail(`webroot/js/${file} imports missing ${match[1]}`);
+		if (!exists(imported)) fail(`webroot/js/${file} imports missing ${match[1]}`);
 	}
 }
 
@@ -81,6 +86,42 @@ const rustQdiscs = quotedValues(rust, 'pub const KNOWN_QDISCS');
 const uiQdiscs = quotedValues(capabilities, 'export const ALL_QDISCS');
 if (JSON.stringify(rustQdiscs) !== JSON.stringify(uiQdiscs)) fail('Rust and WebUI qdisc lists differ');
 
+// Production shell invariants. These checks prevent the former WebUI from
+// silently regressing to a syntax-valid but unusable mobile-only shell.
+for (const required of ['webroot/css/product.css', 'webroot/js/product-ui.js']) {
+	if (!exists(required)) fail(`missing production WebUI file ${required}`);
+}
+const productCss = read('webroot/css/product.css');
+const productUi = read('webroot/js/product-ui.js');
+const router = read('webroot/js/router.js');
+const logs = read('webroot/js/logs.js');
+
+requireText(productCss, '@media (min-width: 960px)', 'product CSS must define a real desktop breakpoint');
+requireText(productCss, 'grid-template-columns: var(--ui-rail-width)', 'desktop layout must use a navigation rail');
+requireText(productCss, '.log-toolbar', 'product CSS must style the functional log toolbar');
+requireText(productCss, '.log-error-state', 'log read failures need a visible error state');
+requireText(productCss, 'env(safe-area-inset-bottom', 'mobile navigation must respect display cutouts and gesture areas');
+
+requireText(productUi, "link.href = 'css/product.css'", 'product-ui.js must load the production stylesheet after legacy CSS');
+requireText(productUi, 'initModalManagement', 'dialogs must have centralized keyboard and focus management');
+requireText(productUi, "event.key === 'Escape'", 'dialogs must support Escape dismissal');
+requireText(productUi, 'syncNavTabStops', 'navigation must implement roving keyboard focus');
+requireText(productUi, "document.dispatchEvent(new CustomEvent('tcp:refresh'", 'the app shell must provide an explicit refresh action');
+
+requireText(router, "from './product-ui.js'", 'router must initialize the production WebUI shell');
+requireText(router, 'pageFromLocation()', 'router must restore deep-linked pages');
+requireText(router, "document.addEventListener('visibilitychange'", 'background WebViews must suspend polling');
+requireText(router, "document.addEventListener('tcp:refresh'", 'router must service manual refresh requests');
+requireText(router, 'rememberPageScroll(previousPage)', 'page navigation must preserve reading position');
+rejectText(router, "history.replaceState({ page: 'home' }, '', '#home')", 'router must not force every startup to Home');
+
+requireText(logs, `tail -n \${MAX_LINES_PER_SOURCE}`, 'log reads must be bounded instead of loading unbounded files');
+requireText(logs, 'SOURCE_MARKER', 'logs must preserve source identity across service, debug and restore files');
+requireText(logs, 'log-filter-input', 'logs must provide filtering');
+requireText(logs, 'log-follow-btn', 'logs must provide controllable tail following');
+requireText(logs, 'router_state.logsError', 'log failures must not be represented as an empty list');
+requireText(logs, 'window.confirm', 'destructive log clearing must require confirmation');
+
 if (!process.exitCode) {
-	console.log(`webui validation: ${Object.keys(english).length} translations, ${rustAlgorithms.length} algorithms, ${rustQdiscs.length} qdiscs`);
+	console.log(`webui validation: ${Object.keys(english).length} translations, ${rustAlgorithms.length} algorithms, ${rustQdiscs.length} qdiscs, production shell enforced`);
 }
