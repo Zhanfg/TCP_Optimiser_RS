@@ -1,0 +1,258 @@
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::config;
+
+const CONTROL_FILE: &str = "runtime-control-v1.json";
+const FORMAT_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeMode {
+    Active,
+    Paused,
+    SafeMode,
+}
+
+impl RuntimeMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::SafeMode => "safe_mode",
+        }
+    }
+
+    pub fn allows_writes(self) -> bool {
+        self == Self::Active
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAction {
+    Initial,
+    Reload,
+    Pause,
+    Resume,
+    EnterSafeMode,
+    LeaveSafeMode,
+    AutomaticSafeMode,
+}
+
+impl RuntimeAction {
+    pub fn requests_apply(self) -> bool {
+        matches!(self, Self::Reload | Self::Resume | Self::LeaveSafeMode)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ControlState {
+    pub format_version: u32,
+    pub generation: u64,
+    pub mode: RuntimeMode,
+    pub requested_action: RuntimeAction,
+    pub updated_at_epoch: u64,
+    pub reason: String,
+}
+
+impl Default for ControlState {
+    fn default() -> Self {
+        Self {
+            format_version: FORMAT_VERSION,
+            generation: 0,
+            mode: RuntimeMode::Active,
+            requested_action: RuntimeAction::Initial,
+            updated_at_epoch: now_epoch(),
+            reason: "default-active".to_string(),
+        }
+    }
+}
+
+impl ControlState {
+    pub fn safe_fallback(reason: impl Into<String>) -> Self {
+        Self {
+            format_version: FORMAT_VERSION,
+            generation: u64::MAX,
+            mode: RuntimeMode::SafeMode,
+            requested_action: RuntimeAction::AutomaticSafeMode,
+            updated_at_epoch: now_epoch(),
+            reason: reason.into(),
+        }
+    }
+}
+
+pub fn path() -> PathBuf {
+    config::module_dir().join(CONTROL_FILE)
+}
+
+pub fn read() -> io::Result<ControlState> {
+    read_from(&path())
+}
+
+pub fn request_reload(reason: impl Into<String>) -> io::Result<ControlState> {
+    update(None, RuntimeAction::Reload, reason)
+}
+
+pub fn pause(reason: impl Into<String>) -> io::Result<ControlState> {
+    update(Some(RuntimeMode::Paused), RuntimeAction::Pause, reason)
+}
+
+pub fn resume(reason: impl Into<String>) -> io::Result<ControlState> {
+    update(Some(RuntimeMode::Active), RuntimeAction::Resume, reason)
+}
+
+pub fn set_safe_mode(enabled: bool, reason: impl Into<String>) -> io::Result<ControlState> {
+    if enabled {
+        update(
+            Some(RuntimeMode::SafeMode),
+            RuntimeAction::EnterSafeMode,
+            reason,
+        )
+    } else {
+        update(
+            Some(RuntimeMode::Active),
+            RuntimeAction::LeaveSafeMode,
+            reason,
+        )
+    }
+}
+
+pub fn enter_automatic_safe_mode(reason: impl Into<String>) -> io::Result<ControlState> {
+    update(
+        Some(RuntimeMode::SafeMode),
+        RuntimeAction::AutomaticSafeMode,
+        reason,
+    )
+}
+
+fn update(
+    mode: Option<RuntimeMode>,
+    action: RuntimeAction,
+    reason: impl Into<String>,
+) -> io::Result<ControlState> {
+    let mut state = match read() {
+        Ok(state) => state,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => ControlState::default(),
+        Err(error) => return Err(error),
+    };
+    state.generation = state.generation.saturating_add(1);
+    if let Some(mode) = mode {
+        state.mode = mode;
+    }
+    state.requested_action = action;
+    state.updated_at_epoch = now_epoch();
+    state.reason = sanitize_reason(reason.into());
+    write_atomic(&path(), &state)?;
+    Ok(state)
+}
+
+fn read_from(path: &Path) -> io::Result<ControlState> {
+    let content = match fs::read(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(ControlState::default())
+        }
+        Err(error) => return Err(error),
+    };
+    let state: ControlState = serde_json::from_slice(&content).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid runtime control state: {error}"),
+        )
+    })?;
+    if state.format_version != FORMAT_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "unsupported runtime control format {}",
+                state.format_version
+            ),
+        ));
+    }
+    Ok(state)
+}
+
+fn write_atomic(path: &Path, state: &ControlState) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    let payload = serde_json::to_vec_pretty(state).map_err(io::Error::other)?;
+    fs::write(&temporary, payload)?;
+    fs::rename(&temporary, path)
+}
+
+fn sanitize_reason(reason: String) -> String {
+    let mut clean = reason.replace(['\0', '\r', '\n'], " ");
+    clean.truncate(240);
+    if clean.trim().is_empty() {
+        "unspecified".to_string()
+    } else {
+        clean.trim().to_string()
+    }
+}
+
+fn now_epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_from, write_atomic, ControlState, RuntimeAction, RuntimeMode};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("tcp-optimiser-{name}-{suffix}.json"))
+    }
+
+    #[test]
+    fn missing_control_state_defaults_to_active() {
+        let path = temp_path("missing");
+        let state = read_from(&path).unwrap();
+        assert_eq!(state.mode, RuntimeMode::Active);
+        assert_eq!(state.generation, 0);
+    }
+
+    #[test]
+    fn atomic_round_trip_preserves_generation_and_action() {
+        let path = temp_path("roundtrip");
+        let state = ControlState {
+            format_version: 1,
+            generation: 7,
+            mode: RuntimeMode::Paused,
+            requested_action: RuntimeAction::Pause,
+            updated_at_epoch: 123,
+            reason: "test".to_string(),
+        };
+        write_atomic(&path, &state).unwrap();
+        assert_eq!(read_from(&path).unwrap(), state);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_unknown_control_format() {
+        let path = temp_path("version");
+        fs::write(
+            &path,
+            br#"{"format_version":9,"generation":1,"mode":"active","requested_action":"reload","updated_at_epoch":1,"reason":"test"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_from(&path).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        let _ = fs::remove_file(path);
+    }
+}
