@@ -7,6 +7,7 @@ import { initSettings, syncAdvancedNavVisibility } from './settings.js';
 import { updateStats, initStatsUI } from './stats.js';
 import { initDynamicColorTheme } from './theme.js';
 import { initMotion } from './motion.js';
+import { initBaselineUI } from './baseline-ui.js';
 import {
 	announce,
 	initProductUI,
@@ -60,9 +61,19 @@ const PAGE_TITLE_KEYS = {
 	adv: 'nav_advanced',
 };
 
+function localText(english, chinese) {
+	const language = I18N.currentLang || localStorage.getItem('tcp_lang') || document.documentElement.lang;
+	return String(language).toLowerCase().startsWith('zh') ? chinese : english;
+}
+
 function pageFromLocation() {
-	const candidate = decodeURIComponent(location.hash.replace(/^#/, '').split(/[?&/]/)[0] || 'home');
-	return VALID_PAGES.has(candidate) ? candidate : 'home';
+	try {
+		const candidate = decodeURIComponent(location.hash.replace(/^#/, '').split(/[?&/]/)[0] || 'home');
+		return VALID_PAGES.has(candidate) ? candidate : 'home';
+	} catch (error) {
+		console.warn('Ignoring malformed page hash:', error);
+		return 'home';
+	}
 }
 
 function pageIsAvailable(pageName) {
@@ -188,10 +199,10 @@ async function refreshCurrentPage({ announceResult = false } = {}) {
 			if (router_state.current_active_page === 'logs') await read_log_file(true);
 			else if (router_state.current_active_page === 'stats') await updateStats();
 			else updateHomeUI();
-			if (announceResult) announce(I18N.t('status_loading') === 'Loading' ? 'Refresh complete' : '刷新完成');
+			if (announceResult) announce(localText('Refresh complete', '刷新完成'));
 		} catch (error) {
 			console.error('Manual refresh failed:', error);
-			if (announceResult) announce('Refresh failed');
+			if (announceResult) announce(localText('Refresh failed', '刷新失败'));
 		} finally {
 			setGlobalBusy(false);
 			refreshPromise = null;
@@ -247,6 +258,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 	initMotion();
 	await initDynamicColorTheme();
 	await updateModuleInformation();
+	initBaselineUI();
 
 	document.querySelectorAll('.link-chip').forEach(chip => {
 		chip.addEventListener('click', async event => {
