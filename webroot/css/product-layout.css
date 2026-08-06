@@ -1,4 +1,22 @@
 /* Final layout corrections loaded after the legacy and product stylesheets. */
+
+/*
+ * The generated settings enhancement stylesheet keeps the ordinary Settings
+ * action row above mobile navigation. The Advanced page has many collapsible
+ * controls, however, and a bottom-sticky button is pulled into the viewport
+ * before its normal position. That obscures the first visible controls. Keep
+ * this action in document flow; mobile Advanced groups already use single-open
+ * disclosure behavior, so the action remains reachable without covering data.
+ */
+@media (max-width: 679px) {
+  html.product-ui #adv-page > #apply-advanced-btn {
+    position: static !important;
+    inset: auto !important;
+    width: 100%;
+    margin-block: 4px 10px;
+  }
+}
+
 @media (min-width: 960px) {
   html.product-ui #home-page {
     display: grid;
