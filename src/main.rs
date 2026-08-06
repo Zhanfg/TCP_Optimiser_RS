@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
+use std::io;
 use std::process;
 
+mod baseline;
 mod build_info;
 mod config;
 mod daemon;
@@ -44,6 +46,10 @@ enum Command {
         #[arg(long)]
         iface: Option<String>,
     },
+    /// Capture the original managed kernel state without replacing an existing baseline
+    CaptureBaseline,
+    /// Restore the original managed kernel state and journaled interface qdiscs
+    RestoreBaseline,
     /// Print build provenance embedded in this binary
     BuildInfo,
     /// Verify the signed module payload before installation
@@ -65,6 +71,8 @@ fn main() {
             runtime_only,
         } => print_status(iface, runtime_only),
         Command::Repair { iface } => repair_policy(iface),
+        Command::CaptureBaseline => capture_baseline(),
+        Command::RestoreBaseline => restore_baseline(),
         Command::BuildInfo => print_build_info(),
         Command::VerifyModule { path } => integrity::verify_module(&path),
     };
@@ -75,30 +83,44 @@ fn main() {
     }
 }
 
-fn repair_policy(iface: Option<String>) -> std::io::Result<()> {
+fn repair_policy(iface: Option<String>) -> io::Result<()> {
     let iface = iface.map(Ok).unwrap_or_else(network::active_iface)?;
     let record = policy::repair_policy(&iface)?;
-    println!(
-        "{}",
-        serde_json::to_string(&record).map_err(std::io::Error::other)?
-    );
-    Ok(())
+    print_json(&record)
 }
 
-fn print_build_info() -> std::io::Result<()> {
-    println!(
-        "{}",
-        serde_json::to_string(&build_info::current()).map_err(std::io::Error::other)?
-    );
-    Ok(())
+fn capture_baseline() -> io::Result<()> {
+    let summary = baseline::ensure_global_baseline()?;
+    print_json(&summary)
 }
 
-fn print_status(iface: Option<String>, runtime_only: bool) -> std::io::Result<()> {
+fn restore_baseline() -> io::Result<()> {
+    let report = baseline::restore()?;
+    print_json(&report)?;
+    if report.success {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "baseline restoration completed with {} error(s)",
+            report.errors.len()
+        )))
+    }
+}
+
+fn print_build_info() -> io::Result<()> {
+    print_json(&build_info::current())
+}
+
+fn print_status(iface: Option<String>, runtime_only: bool) -> io::Result<()> {
     let iface = iface.map(Ok).unwrap_or_else(network::active_iface)?;
     let snapshot = stats::network_snapshot(&iface, !runtime_only)?;
+    print_json(&snapshot)
+}
+
+fn print_json<T: serde::Serialize>(value: &T) -> io::Result<()> {
     println!(
         "{}",
-        serde_json::to_string(&snapshot).map_err(std::io::Error::other)?
+        serde_json::to_string(value).map_err(io::Error::other)?
     );
     Ok(())
 }
