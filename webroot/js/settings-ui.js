@@ -88,6 +88,7 @@ function bindSingleOpenDetails(root) {
 				if (sibling !== details && sibling instanceof HTMLDetailsElement && sibling.classList.contains('settings-group')) {
 					sibling.open = false;
 				}
+			}
 		});
 	}
 }
