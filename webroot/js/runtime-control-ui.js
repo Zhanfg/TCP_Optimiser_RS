@@ -83,6 +83,10 @@ function ensureStyles() {
 		.runtime-plan-change { display: grid; grid-template-columns: minmax(90px, 0.7fr) minmax(0, 1.3fr); gap: 10px; padding: 8px 10px; border-radius: 12px; background: var(--md-sys-color-surface-container-low); font-size: .76rem; }
 		.runtime-plan-change code { overflow-wrap: anywhere; text-align: end; }
 		@media (max-width: 419px) { .runtime-control-actions { grid-template-columns: 1fr; } .runtime-control-actions .runtime-control-wide { grid-column: auto; } }
+		@media (min-width: 960px) {
+			html.product-ui #home-page > #runtime-control-panel { grid-column: 2; grid-row: 3; width: 100%; align-self: start; }
+			html.product-ui #home-page > #baseline-health-panel { grid-row: 4; }
+		}
 	`;
 	document.head.appendChild(style);
 }
@@ -309,18 +313,19 @@ async function runAction(subcommand, confirmation = null) {
 	actionBusy = true;
 	lastError = null;
 	render();
+	let accepted = false;
 	try {
 		await readJson(subcommand);
+		accepted = true;
 		toast(localText('Runtime command accepted', '运行命令已接受'));
-		await refreshRuntimeControl(true);
 	} catch (error) {
 		console.error('Runtime command failed:', error);
 		lastError = String(error?.message || error).replace(/^tcp_optimiser:\s*error:\s*/i, '');
 		toast(localText('Runtime command failed', '运行命令失败'));
-	} finally {
-		actionBusy = false;
-		render();
 	}
+	actionBusy = false;
+	if (accepted) await refreshRuntimeControl(true);
+	else render();
 }
 
 function bindActions() {
@@ -350,20 +355,36 @@ function bindActions() {
 }
 
 export async function refreshRuntimeControl(force = false) {
-	if (loading || actionBusy) return;
+	if (loading) return;
 	if (!force && controlStatus && checkpointStatus && policyDiff && !lastError) return;
 	loading = true;
 	lastError = null;
 	render();
 	try {
-		const [control, checkpoint, diff] = await Promise.all([
+		const [controlResult, checkpointResult, diffResult] = await Promise.allSettled([
 			readJson('control-status'),
 			readJson('checkpoint-status'),
 			readJson('diff'),
 		]);
-		controlStatus = control;
-		checkpointStatus = checkpoint;
-		policyDiff = diff;
+		if (controlResult.status !== 'fulfilled') throw controlResult.reason;
+		controlStatus = controlResult.value;
+		checkpointStatus = checkpointResult.status === 'fulfilled'
+			? checkpointResult.value
+			: {
+				available: false,
+				checkpoint: null,
+				consecutive_failures: 0,
+				automatic_safe_mode_threshold: 3,
+			};
+		policyDiff = diffResult.status === 'fulfilled'
+			? diffResult.value
+			: {
+				changes: [],
+				warnings: [localText(
+					'Policy difference is unavailable until an active physical route exists.',
+					'存在活动物理网络路由后才能读取策略差异。',
+				)],
+			};
 	} catch (error) {
 		if (previewAllowed()) {
 			const preview = previewData();
