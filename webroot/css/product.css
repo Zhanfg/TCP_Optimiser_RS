@@ -720,6 +720,7 @@ html.product-ui .debug-fab[style*="display: flex"] {
   }
 
   html.product-ui #home-page {
+    display: grid;
     grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr);
     align-items: start;
   }
