@@ -5,12 +5,15 @@ use std::process;
 mod baseline;
 mod baseline_status;
 mod build_info;
+mod checkpoint;
 mod config;
+mod control;
 mod daemon;
 mod install;
 mod integrity;
 mod logging;
 mod network;
+mod plan;
 mod policy;
 mod proxy;
 mod stats;
@@ -47,6 +50,36 @@ enum Command {
         #[arg(long)]
         iface: Option<String>,
     },
+    /// Preview the configured policy without writing kernel state
+    Plan {
+        /// Interface to evaluate; defaults to the active route interface
+        #[arg(long)]
+        iface: Option<String>,
+    },
+    /// Print only policy values that differ from the current kernel state
+    Diff {
+        /// Interface to evaluate; defaults to the active route interface
+        #[arg(long)]
+        iface: Option<String>,
+    },
+    /// Request a hot policy reload from the running daemon
+    Reload,
+    /// Pause all daemon policy writes while preserving monitoring
+    Pause,
+    /// Resume daemon policy writes and immediately reapply the configured policy
+    Resume,
+    /// Enter persistent read-only safe mode; pass --disable to leave it
+    SafeMode {
+        /// Leave safe mode and request an immediate policy reload
+        #[arg(long)]
+        disable: bool,
+    },
+    /// Print persistent runtime control mode and generation
+    ControlStatus,
+    /// Print the last-known-good runtime policy checkpoint
+    CheckpointStatus,
+    /// Enter safe mode and restore the last-known-good runtime policy
+    RestoreCheckpoint,
     /// Capture the original managed kernel state without replacing an existing baseline
     CaptureBaseline,
     /// Read existing baseline health without creating or modifying rollback evidence
@@ -74,6 +107,22 @@ fn main() {
             runtime_only,
         } => print_status(iface, runtime_only),
         Command::Repair { iface } => repair_policy(iface),
+        Command::Plan { iface } => print_json(&plan::build(iface)?),
+        Command::Diff { iface } => print_json(&plan::diff(iface)?),
+        Command::Reload => print_json(&control::request_reload("cli-reload")?),
+        Command::Pause => print_json(&control::pause("cli-pause")?),
+        Command::Resume => print_json(&control::resume("cli-resume")?),
+        Command::SafeMode { disable } => print_json(&control::set_safe_mode(
+            !disable,
+            if disable {
+                "cli-leave-safe-mode"
+            } else {
+                "cli-enter-safe-mode"
+            },
+        )?),
+        Command::ControlStatus => print_json(&control::read()?),
+        Command::CheckpointStatus => print_json(&checkpoint::status()?),
+        Command::RestoreCheckpoint => restore_checkpoint(),
         Command::CaptureBaseline => capture_baseline(),
         Command::BaselineStatus => print_baseline_status(),
         Command::RestoreBaseline => restore_baseline(),
@@ -91,6 +140,19 @@ fn repair_policy(iface: Option<String>) -> io::Result<()> {
     let iface = iface.map(Ok).unwrap_or_else(network::active_iface)?;
     let record = policy::repair_policy(&iface)?;
     print_json(&record)
+}
+
+fn restore_checkpoint() -> io::Result<()> {
+    let report = checkpoint::restore()?;
+    print_json(&report)?;
+    if report.success {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "checkpoint restoration completed with {} error(s)",
+            report.errors.len()
+        )))
+    }
 }
 
 fn capture_baseline() -> io::Result<()> {
