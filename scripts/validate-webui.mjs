@@ -140,6 +140,9 @@ requireText(settingsUi, 'advanced-settings-search', 'advanced controls must prov
 requireText(settingsUi, "window.confirm", 'immediate policy application must require confirmation');
 requireText(settingsUi, "aria-pressed", 'selectable settings controls must expose semantic state');
 requireText(settingsUi, 'position: sticky', 'mobile settings actions must remain reachable above bottom navigation');
+requireText(settingsUi, 'scheduleSettingsSync', 'dynamic settings synchronization must be coalesced');
+requireText(settingsUi, "attributeFilter: ['class']", 'settings observer must watch only external class changes');
+rejectText(settingsUi, "attributeFilter: ['class', 'hidden']", 'settings observer must not watch hidden attributes written by its own filter');
 
 requireText(mainRust, 'mod baseline_status;', 'Rust CLI must include read-only baseline status support');
 requireText(mainRust, 'BaselineStatus', 'Rust CLI must expose the baseline-status command');
