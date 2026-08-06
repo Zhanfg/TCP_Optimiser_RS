@@ -10,12 +10,20 @@ let initialized = false;
 
 function ensureProductStyles() {
 	document.documentElement.classList.add('product-ui');
-	if (document.getElementById('product-ui-styles')) return;
-	const link = document.createElement('link');
-	link.id = 'product-ui-styles';
-	link.rel = 'stylesheet';
-	link.href = 'css/product.css';
-	document.head.appendChild(link);
+	if (!document.getElementById('product-ui-styles')) {
+		const link = document.createElement('link');
+		link.id = 'product-ui-styles';
+		link.rel = 'stylesheet';
+		link.href = 'css/product.css';
+		document.head.appendChild(link);
+	}
+	if (!document.getElementById('product-layout-styles')) {
+		const layout = document.createElement('link');
+		layout.id = 'product-layout-styles';
+		layout.rel = 'stylesheet';
+		layout.href = 'css/product-layout.css';
+		document.head.appendChild(layout);
+	}
 }
 
 ensureProductStyles();

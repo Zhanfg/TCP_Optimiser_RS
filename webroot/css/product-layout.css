@@ -1,0 +1,50 @@
+/* Final layout corrections loaded after the legacy and product stylesheets. */
+@media (min-width: 960px) {
+  html.product-ui #home-page {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.55fr);
+    grid-template-rows: auto auto auto auto;
+    column-gap: 24px;
+    align-items: start;
+  }
+
+  html.product-ui #home-page > .page-intro {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  html.product-ui #home-page > .dashboard-hero {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  html.product-ui #home-page > .network-panel {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  html.product-ui #home-page > .pull-indicator {
+    grid-column: 1;
+    grid-row: 4;
+  }
+
+  html.product-ui #home-page > #verification-panel {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  html.product-ui #home-page > #home-capability-panel {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  html.product-ui #home-page > #baseline-health-panel {
+    grid-column: 2;
+    grid-row: 3;
+  }
+
+  html.product-ui #home-page > :is(#verification-panel, #home-capability-panel, #baseline-health-panel) {
+    width: 100%;
+    align-self: start;
+  }
+}
