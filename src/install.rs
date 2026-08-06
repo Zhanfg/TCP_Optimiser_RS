@@ -2,9 +2,12 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::baseline;
 use crate::config;
 use crate::logging;
 use crate::sysctl;
+
+const BASELINE_FILE: &str = "baseline-v1.json";
 
 /// Run module installation / upgrade logic (replaces customize.sh).
 /// `MODPATH` or `TCP_OPTIMISER_MODULE_DIR` identifies the staging directory.
@@ -14,6 +17,18 @@ pub fn run() -> io::Result<()> {
     fs::create_dir_all(&staging_dir)?;
     logging::log_print("Starting module customization (Rust)...");
     let live_dir = config::live_module_dir();
+
+    // Releases predating transactional baselines may already have modified the
+    // live kernel. Capturing during such an upgrade would mislabel tuned values
+    // as vendor defaults, so that one-time migration must start after a clean
+    // uninstall and reboot.
+    ensure_upgrade_has_baseline(&staging_dir, &live_dir)?;
+    preserve_exact_config(&staging_dir, &live_dir, BASELINE_FILE)?;
+    let baseline = baseline::ensure_global_baseline()?;
+    logging::log_print(&format!(
+        "Kernel baseline ready (sysctls={}, interfaces={}, captured_at={}).",
+        baseline.sysctl_count, baseline.interface_count, baseline.captured_at_epoch
+    ));
 
     let available = sysctl::available_algorithms().unwrap_or_else(|error| {
         logging::log_print(&format!(
@@ -42,7 +57,7 @@ pub fn run() -> io::Result<()> {
         "kill_connections",
         "initcwnd_initrwnd",
         "qdisc",
-        "pacing_ca",
+        "pacing",
         "pacing_ss",
         "tcp_ecn",
         "tcp_fastopen",
@@ -56,6 +71,19 @@ pub fn run() -> io::Result<()> {
         available.join(" ")
     ));
     Ok(())
+}
+
+fn ensure_upgrade_has_baseline(staging_dir: &Path, live_dir: &Path) -> io::Result<()> {
+    if staging_dir == live_dir || !live_dir.join("module.prop").is_file() {
+        return Ok(());
+    }
+    if live_dir.join(BASELINE_FILE).is_file() {
+        return Ok(());
+    }
+
+    Err(io::Error::other(
+        "legacy TCP Optimiser installation has no exact kernel baseline; uninstall the current module, reboot once, then install this build",
+    ))
 }
 
 fn safe_fallback_algorithm(available: &[String]) -> &str {
@@ -149,9 +177,25 @@ fn preserve_exact_config(staging_dir: &Path, live_dir: &Path, name: &str) -> io:
 
 #[cfg(test)]
 mod tests {
-    use super::{preserve_exact_config, safe_fallback_algorithm};
+    use super::{
+        ensure_upgrade_has_baseline, preserve_exact_config, safe_fallback_algorithm, BASELINE_FILE,
+    };
     use std::fs;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_dirs(label: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("tcp-optimiser-{label}-{unique}"));
+        let live = root.join("live");
+        let staging = root.join("staging");
+        fs::create_dir_all(&live).unwrap();
+        fs::create_dir_all(&staging).unwrap();
+        (root, live, staging)
+    }
 
     #[test]
     fn installer_fallback_is_available_on_non_cubic_kernels() {
@@ -161,15 +205,7 @@ mod tests {
 
     #[test]
     fn upgrade_preserves_advanced_config() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("tcp-optimiser-install-{unique}"));
-        let live = root.join("live");
-        let staging = root.join("staging");
-        fs::create_dir_all(&live).unwrap();
-        fs::create_dir_all(&staging).unwrap();
+        let (root, live, staging) = temporary_dirs("install");
         fs::write(live.join("advanced.conf"), "tcp_fin_timeout=30\n").unwrap();
 
         preserve_exact_config(&staging, &live, "advanced.conf").unwrap();
@@ -178,6 +214,43 @@ mod tests {
             fs::read_to_string(staging.join("advanced.conf")).unwrap(),
             "tcp_fin_timeout=30\n"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn upgrade_preserves_original_kernel_baseline() {
+        let (root, live, staging) = temporary_dirs("baseline");
+        fs::write(live.join(BASELINE_FILE), "{\"version\":1}\n").unwrap();
+
+        preserve_exact_config(&staging, &live, BASELINE_FILE).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(staging.join(BASELINE_FILE)).unwrap(),
+            "{\"version\":1}\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_upgrade_without_baseline_is_rejected() {
+        let (root, live, staging) = temporary_dirs("legacy");
+        fs::write(live.join("module.prop"), "id=tcp_optimiser\n").unwrap();
+
+        let error = ensure_upgrade_has_baseline(&staging, &live).unwrap_err();
+
+        assert!(error.to_string().contains("uninstall"));
+        assert!(error.to_string().contains("reboot"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn transactional_upgrade_with_baseline_is_allowed() {
+        let (root, live, staging) = temporary_dirs("transactional");
+        fs::write(live.join("module.prop"), "id=tcp_optimiser\n").unwrap();
+        fs::write(live.join(BASELINE_FILE), "{\"version\":1}\n").unwrap();
+
+        ensure_upgrade_has_baseline(&staging, &live).unwrap();
+
         fs::remove_dir_all(root).unwrap();
     }
 }

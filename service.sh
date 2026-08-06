@@ -16,4 +16,11 @@ fi
 
 export TCP_OPTIMISER_MODULE_DIR="$MODDIR"
 export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:$PATH"
+
+# Never apply kernel tuning unless an exact, parseable rollback baseline exists.
+if ! "$RUST_BIN" capture-baseline >/dev/null 2>> "$MODDIR/service.log"; then
+    printf '%s - [ERROR] Kernel baseline is unavailable; daemon startup refused\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> "$MODDIR/service.log"
+    exit 1
+fi
+
 exec "$RUST_BIN" daemon

@@ -44,8 +44,12 @@ jobs:
           cargo clippy --all-targets --locked -- -D warnings
 
       - name: Validate WebUI and release metadata
+        shell: bash
         run: |
-          find webroot/js -name '*.js' -print0 | xargs -0 -n1 node --check
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            node --input-type=module --check < "$file"
+          done < <(find webroot/js -name '*.js' -print0)
           node scripts/validate-webui.mjs
           node scripts/validate-release.mjs
 
@@ -124,7 +128,7 @@ jobs:
 
   package:
     name: Assemble module
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [validate, build-android]
     runs-on: ubuntu-latest
     permissions:
@@ -150,13 +154,23 @@ jobs:
         run: |
           version=$(sed -n 's/^version=//p' module.prop | head -n1)
           test -n "$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "zip_name=TCP_Optimiser_RS-v$version.zip" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=TCP_Optimiser_RS-v$version-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          short_sha=${GITHUB_SHA::12}
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            pr_number='${{ github.event.pull_request.number }}'
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "zip_name=TCP_Optimiser_RS-v$version-pr$pr_number-$short_sha.zip" >> "$GITHUB_OUTPUT"
+            echo "artifact_name=TCP_Optimiser_RS-v$version-pr$pr_number-$short_sha-candidate" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "zip_name=TCP_Optimiser_RS-v$version.zip" >> "$GITHUB_OUTPUT"
+            echo "artifact_name=TCP_Optimiser_RS-v$version-$short_sha" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build reproducible module ZIP
         env:
           MODULE_SIGNING_KEY: ${{ secrets.MODULE_SIGNING_KEY }}
+          TCP_OPTIMISER_PACKAGE_CHANNEL: ${{ github.event_name == 'pull_request' && 'pull-request-candidate' || 'official-github' }}
+          TCP_OPTIMISER_PACKAGE_OFFICIAL: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
         run: |
           export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
           bash scripts/package-module.sh "dist/${{ steps.metadata.outputs.zip_name }}" binary-input/bin
@@ -165,7 +179,7 @@ jobs:
           sha256sum "${{ steps.metadata.outputs.zip_name }}" > "${{ steps.metadata.outputs.zip_name }}.sha256"
 
       - name: Attest official public build
-        if: github.event.repository.visibility == 'public'
+        if: github.event_name != 'pull_request' && github.event.repository.visibility == 'public'
         uses: actions/attest@v4
         with:
           subject-path: dist/${{ steps.metadata.outputs.zip_name }}

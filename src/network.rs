@@ -174,6 +174,12 @@ pub fn set_qdisc(iface: &str, qdisc: &str) -> io::Result<()> {
             format!("unsupported qdisc: {qdisc}"),
         ));
     }
+
+    // The interface may appear long after installation (for example cellular
+    // data after boot). Journal its original qdisc immediately before the first
+    // replacement so uninstall can restore the exact per-interface baseline.
+    crate::baseline::ensure_interface_baseline(iface)?;
+
     let options = qdisc_options(qdisc);
     let mut args = vec!["qdisc", "replace", "dev", iface, "root", qdisc];
     args.extend_from_slice(options);
