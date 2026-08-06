@@ -132,14 +132,21 @@ fn main() {
 fn repair_policy(iface: Option<String>) -> io::Result<()> {
     let iface = iface.map(Ok).unwrap_or_else(network::active_iface)?;
     let record = policy::repair_policy(&iface)?;
+    print_json(&record)?;
     if record.success {
         let mode = network::iface_mode(&iface);
         if mode != network::IfaceMode::Unknown {
-            let policy = daemon::resolve_policy(&iface, mode)?;
-            checkpoint::persist(&iface, mode, &policy)?;
+            match daemon::resolve_policy(&iface, mode)
+                .and_then(|policy| checkpoint::persist(&iface, mode, &policy).map(|_| ()))
+            {
+                Ok(()) => {}
+                Err(error) => eprintln!(
+                    "tcp_optimiser: warning: repair succeeded but checkpoint persistence failed: {error}"
+                ),
+            }
         }
     }
-    print_json(&record)
+    Ok(())
 }
 
 fn print_plan(iface: Option<String>) -> io::Result<()> {
