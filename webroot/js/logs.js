@@ -392,7 +392,7 @@ export function initLogs() {
 	document.addEventListener('i18n-changed', () => {
 		updateToolbarLanguage();
 		previousRenderSignature = null;
-		updateLogsUI();
+		void read_log_file(true).then(updateLogsUI);
 	});
 	document.addEventListener('tcp:page-change', event => {
 		if (event.detail?.page !== 'logs') return;
