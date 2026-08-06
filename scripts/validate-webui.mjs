@@ -88,11 +88,21 @@ if (JSON.stringify(rustQdiscs) !== JSON.stringify(uiQdiscs)) fail('Rust and WebU
 
 // Production shell invariants. These checks prevent the former WebUI from
 // silently regressing to a syntax-valid but unusable mobile-only shell.
-for (const required of ['webroot/css/product.css', 'webroot/js/product-ui.js']) {
+for (const required of [
+	'webroot/css/product.css',
+	'webroot/js/product-ui.js',
+	'webroot/js/settings-ui.js',
+	'webroot/js/baseline-ui.js',
+	'src/baseline_status.rs',
+]) {
 	if (!exists(required)) fail(`missing production WebUI file ${required}`);
 }
 const productCss = read('webroot/css/product.css');
 const productUi = read('webroot/js/product-ui.js');
+const settingsUi = read('webroot/js/settings-ui.js');
+const baselineUi = read('webroot/js/baseline-ui.js');
+const baselineStatus = read('src/baseline_status.rs');
+const mainRust = read('src/main.rs');
 const router = read('webroot/js/router.js');
 const logs = read('webroot/js/logs.js');
 
@@ -107,8 +117,12 @@ requireText(productUi, 'initModalManagement', 'dialogs must have centralized key
 requireText(productUi, "event.key === 'Escape'", 'dialogs must support Escape dismissal');
 requireText(productUi, 'syncNavTabStops', 'navigation must implement roving keyboard focus');
 requireText(productUi, "document.dispatchEvent(new CustomEvent('tcp:refresh'", 'the app shell must provide an explicit refresh action');
+requireText(productUi, 'syncDebugFabVisibility', 'debug FAB visibility must be synchronized after legacy CSS and settings updates');
+requireText(productUi, 'TCP_Optimiser_RS', 'the live repository link must point to the Rust project');
 
 requireText(router, "from './product-ui.js'", 'router must initialize the production WebUI shell');
+requireText(router, "from './settings-ui.js'", 'router must initialize settings enhancements');
+requireText(router, "from './baseline-ui.js'", 'router must initialize baseline health UI');
 requireText(router, 'pageFromLocation()', 'router must restore deep-linked pages');
 requireText(router, "document.addEventListener('visibilitychange'", 'background WebViews must suspend polling');
 requireText(router, "document.addEventListener('tcp:refresh'", 'router must service manual refresh requests');
@@ -121,6 +135,19 @@ requireText(logs, 'log-filter-input', 'logs must provide filtering');
 requireText(logs, 'log-follow-btn', 'logs must provide controllable tail following');
 requireText(logs, 'router_state.logsError', 'log failures must not be represented as an empty list');
 requireText(logs, 'window.confirm', 'destructive log clearing must require confirmation');
+
+requireText(settingsUi, 'advanced-settings-search', 'advanced controls must provide a searchable index');
+requireText(settingsUi, "window.confirm", 'immediate policy application must require confirmation');
+requireText(settingsUi, "aria-pressed", 'selectable settings controls must expose semantic state');
+requireText(settingsUi, 'position: sticky', 'mobile settings actions must remain reachable above bottom navigation');
+
+requireText(mainRust, 'mod baseline_status;', 'Rust CLI must include read-only baseline status support');
+requireText(mainRust, 'BaselineStatus', 'Rust CLI must expose the baseline-status command');
+requireText(baselineStatus, 'without creating or modifying', 'baseline status must remain read-only');
+requireText(baselineUi, 'baseline-status', 'WebUI baseline card must call the read-only command');
+rejectText(baselineUi, 'capture-baseline', 'opening the WebUI must never create rollback evidence');
+requireText(baselineUi, 'captured_at_epoch', 'baseline UI must surface capture time');
+requireText(baselineUi, 'sysctl_count', 'baseline UI must surface managed sysctl count');
 
 if (!process.exitCode) {
 	console.log(`webui validation: ${Object.keys(english).length} translations, ${rustAlgorithms.length} algorithms, ${rustQdiscs.length} qdiscs, production shell enforced`);
