@@ -129,7 +129,8 @@ requireText(productCss, 'grid-template-columns: var(--ui-rail-width)', 'desktop 
 requireText(productCss, '.log-toolbar', 'product CSS must style the functional log toolbar');
 requireText(productCss, '.log-error-state', 'log read failures need a visible error state');
 requireText(productCss, 'env(safe-area-inset-bottom', 'mobile navigation must respect display cutouts and gesture areas');
-requireText(productLayout, 'html.product-ui #home-page', 'desktop Home layout must have a dedicated correction layer');
+requireText(productLayout, '#pages > section[hidden]', 'final layout must preserve router-hidden pages');
+requireText(productLayout, '#home-page:not([hidden])', 'desktop Home grid must only apply while Home is visible');
 requireText(productLayout, 'display: grid', 'desktop Home must use a real two-column grid');
 requireText(productLayout, '#baseline-health-panel', 'baseline health must occupy the desktop status column');
 
