@@ -52,6 +52,7 @@ jobs:
           done < <(find webroot/js -name '*.js' -print0)
           node scripts/validate-webui.mjs
           node scripts/validate-runtime-transaction.mjs
+          node scripts/validate-upgrade.mjs
           node scripts/validate-release.mjs
 
       - name: Validate module scripts
