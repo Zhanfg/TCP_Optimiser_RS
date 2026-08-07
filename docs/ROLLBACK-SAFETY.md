@@ -42,8 +42,9 @@ Some legacy releases have no `baseline-v1.json`. Direct replacement is still sup
 For such an upgrade it:
 
 1. stops the old daemon before capture;
-2. captures the complete managed state immediately before replacement;
-3. writes `baseline-provenance-v1.json` with:
+2. deletes any stale staged `baseline-v1.json` and orphan provenance left by an interrupted installation;
+3. captures the complete managed state immediately before replacement;
+4. writes `baseline-provenance-v1.json` with:
 
 ```json
 {
@@ -53,7 +54,7 @@ For such an upgrade it:
 }
 ```
 
-4. continues installation under the same module ID and display name.
+5. continues installation under the same module ID and display name.
 
 This snapshot makes the new upgrade transaction reversible to the state that existed immediately before the upgrade. It is **not** guaranteed to represent the vendor or clean-boot defaults. `baseline-status` and uninstall logs expose this distinction explicitly.
 
