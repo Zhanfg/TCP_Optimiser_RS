@@ -43,10 +43,15 @@ pub fn run() -> io::Result<()> {
     }
     let mut last_control_generation = control_state.generation;
     let mut last_control_error: Option<String> = None;
-    if control_state.mode.allows_writes() {
+    let restore_locked = control::restore_in_progress();
+    if control_state.mode.allows_writes() && !restore_locked {
         for error in sysctl::apply_base_sysctls() {
             logging::log_print(&format!("[WARN] startup sysctl apply failed: {error}"));
         }
+    } else if restore_locked {
+        logging::log_print(
+            "[INFO] Runtime restoration is active; startup kernel writes are disabled",
+        );
     } else {
         logging::log_print(&format!(
             "[INFO] Runtime starts in {} mode; kernel writes are disabled",
@@ -62,6 +67,7 @@ pub fn run() -> io::Result<()> {
     let mut adaptive_count: u32 = 0;
     let mut last_qdisc_check: Option<Instant> = None;
     let mut route_unavailable = false;
+    let mut restore_barrier_logged = restore_locked;
 
     loop {
         let observed_control = match control::read() {
@@ -108,14 +114,25 @@ pub fn run() -> io::Result<()> {
         last_control_generation = observed_control.generation;
         control_state = observed_control;
 
-        if !control_state.mode.allows_writes() {
+        let restore_locked = control::restore_in_progress();
+        if restore_locked && !restore_barrier_logged {
+            logging::log_print(
+                "[INFO] Runtime restoration lock detected; daemon kernel writes are suspended",
+            );
+            restore_barrier_logged = true;
+        } else if !restore_locked && restore_barrier_logged {
+            logging::log_print("[INFO] Runtime restoration lock released");
+            restore_barrier_logged = false;
+        }
+
+        if restore_locked || !control_state.mode.allows_writes() {
             last_mode = IfaceMode::Unknown;
             last_iface.clear();
             last_change = None;
             wifi_pending_since = None;
             wifi_applied = false;
             last_qdisc_check = None;
-            thread::sleep(Duration::from_secs(if control_changed {
+            thread::sleep(Duration::from_secs(if control_changed || restore_locked {
                 SLEEP_FAST
             } else {
                 SLEEP_NORMAL
@@ -310,6 +327,10 @@ pub fn is_running() -> bool {
 
 pub fn run_once() -> io::Result<()> {
     thread::sleep(Duration::from_secs(2));
+    if control::restore_in_progress() {
+        logging::log_print("[INFO] Once skipped while a runtime restoration is active");
+        return Ok(());
+    }
     let control_state = read_control_state(None);
     if !control_state.mode.allows_writes() {
         logging::log_print(&format!(
