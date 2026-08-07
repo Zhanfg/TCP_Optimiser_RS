@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -9,11 +10,19 @@ use crate::control::{self, ControlState};
 use crate::network::{self, IfaceMode};
 use crate::{config, daemon, sysctl};
 
-const CHECKPOINT_FILE: &str = "last-good-policy-v1.json";
+const CHECKPOINT_FILE: &str = "last-good-policy-v2.json";
 const FAILURE_FILE: &str = "policy-failures-v1.json";
-const FORMAT_VERSION: u32 = 1;
+const CHECKPOINT_FORMAT_VERSION: u32 = 2;
+const FAILURE_FORMAT_VERSION: u32 = 1;
 const DAEMON_QUIESCE_SECONDS: u64 = 6;
 pub const AUTOMATIC_SAFE_MODE_THRESHOLD: u32 = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct CheckpointSysctl {
+    pub key: String,
+    pub path: String,
+    pub value: u32,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LastGoodPolicy {
@@ -25,6 +34,7 @@ pub struct LastGoodPolicy {
     pub qdisc: String,
     pub pacing_ca: u32,
     pub pacing_ss: u32,
+    pub advanced_sysctls: Vec<CheckpointSysctl>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -41,6 +51,7 @@ pub struct CheckpointStatus {
     pub checkpoint: Option<LastGoodPolicy>,
     pub consecutive_failures: u32,
     pub automatic_safe_mode_threshold: u32,
+    pub failure_state_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -55,22 +66,34 @@ pub struct RestoreCheckpointReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeSysctlValue {
+    key: String,
+    path: String,
+    value: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct RuntimeKernelState {
     algorithm: String,
     default_qdisc: String,
     interface_qdisc: String,
     pacing_ca: u32,
     pacing_ss: u32,
+    advanced_sysctls: Vec<RuntimeSysctlValue>,
 }
 
 pub fn status() -> io::Result<CheckpointStatus> {
     let checkpoint = read_checkpoint()?;
-    let failures = read_failures().unwrap_or_else(|_| FailureState::default());
+    let (consecutive_failures, failure_state_error) = match read_failures() {
+        Ok(state) => (state.consecutive_failures, None),
+        Err(error) => (0, Some(error.to_string())),
+    };
     Ok(CheckpointStatus {
         available: checkpoint.is_some(),
         checkpoint,
-        consecutive_failures: failures.consecutive_failures,
+        consecutive_failures,
         automatic_safe_mode_threshold: AUTOMATIC_SAFE_MODE_THRESHOLD,
+        failure_state_error,
     })
 }
 
@@ -80,8 +103,18 @@ pub fn persist(
     policy: &daemon::ResolvedPolicy,
 ) -> io::Result<LastGoodPolicy> {
     validate_iface_name(iface)?;
+    let (advanced, parse_errors) = sysctl::configured_advanced_overrides();
+    if !parse_errors.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "cannot checkpoint invalid advanced.conf: {}",
+                parse_errors.join("; ")
+            ),
+        ));
+    }
     let checkpoint = LastGoodPolicy {
-        format_version: FORMAT_VERSION,
+        format_version: CHECKPOINT_FORMAT_VERSION,
         captured_at_epoch: now_epoch(),
         interface: iface.to_string(),
         interface_mode: mode.as_str().to_string(),
@@ -89,6 +122,14 @@ pub fn persist(
         qdisc: policy.qdisc.clone(),
         pacing_ca: policy.pacing_ca,
         pacing_ss: policy.pacing_ss,
+        advanced_sysctls: advanced
+            .into_iter()
+            .map(|item| CheckpointSysctl {
+                key: item.key.to_string(),
+                path: item.path.to_string(),
+                value: item.value,
+            })
+            .collect(),
     };
     validate_checkpoint(&checkpoint)?;
     write_json_atomic(&checkpoint_path(), &checkpoint)?;
@@ -97,7 +138,7 @@ pub fn persist(
 }
 
 pub fn record_failure(message: impl Into<String>) -> io::Result<FailureState> {
-    let mut state = read_failures().unwrap_or_else(|_| FailureState::default());
+    let mut state = read_failures()?;
     state.consecutive_failures = state.consecutive_failures.saturating_add(1);
     state.updated_at_epoch = now_epoch();
     state.last_error = sanitize_message(message.into());
@@ -128,7 +169,7 @@ pub fn restore() -> io::Result<RestoreCheckpointReport> {
         thread::sleep(Duration::from_secs(DAEMON_QUIESCE_SECONDS));
     }
 
-    let previous = capture_runtime_state(&checkpoint.interface)?;
+    let previous = capture_runtime_state(&checkpoint)?;
     let mut errors = apply_checkpoint(&checkpoint);
     if errors.is_empty() {
         errors.extend(verify_checkpoint_applied(&checkpoint));
@@ -156,17 +197,25 @@ pub fn restore() -> io::Result<RestoreCheckpointReport> {
 }
 
 fn preflight_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
-    match sysctl::algo_available(&checkpoint.algorithm)? {
-        true => {}
-        false => {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!(
-                    "checkpoint algorithm {} is unavailable",
-                    checkpoint.algorithm
-                ),
-            ))
-        }
+    if !sysctl::algo_available(&checkpoint.algorithm)? {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "checkpoint algorithm {} is unavailable",
+                checkpoint.algorithm
+            ),
+        ));
+    }
+    let current_mode = network::iface_mode(&checkpoint.interface);
+    if current_mode.as_str() != checkpoint.interface_mode {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "checkpoint interface mode changed: expected {}, found {}",
+                checkpoint.interface_mode,
+                current_mode.as_str()
+            ),
+        ));
     }
     let current_qdisc = network::root_qdisc(&checkpoint.interface)?;
     if current_qdisc.is_none() {
@@ -178,22 +227,42 @@ fn preflight_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
             ),
         ));
     }
+    for item in &checkpoint.advanced_sysctls {
+        read_u32(&item.path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("checkpoint sysctl {} is unavailable: {error}", item.key),
+            )
+        })?;
+    }
     Ok(())
 }
 
-fn capture_runtime_state(iface: &str) -> io::Result<RuntimeKernelState> {
-    let interface_qdisc = network::root_qdisc(iface)?.ok_or_else(|| {
+fn capture_runtime_state(checkpoint: &LastGoodPolicy) -> io::Result<RuntimeKernelState> {
+    let interface_qdisc = network::root_qdisc(&checkpoint.interface)?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::Unsupported,
-            format!("interface {iface} root qdisc is unavailable"),
+            format!(
+                "interface {} root qdisc is unavailable",
+                checkpoint.interface
+            ),
         )
     })?;
+    let mut advanced_sysctls = Vec::with_capacity(checkpoint.advanced_sysctls.len());
+    for item in &checkpoint.advanced_sysctls {
+        advanced_sysctls.push(RuntimeSysctlValue {
+            key: item.key.clone(),
+            path: item.path.clone(),
+            value: read_u32(&item.path)?,
+        });
+    }
     Ok(RuntimeKernelState {
         algorithm: sysctl::current_algorithm()?,
         default_qdisc: sysctl::default_qdisc()?,
         interface_qdisc,
         pacing_ca: read_pacing("/proc/sys/net/ipv4/tcp_pacing_ca_ratio")?,
         pacing_ss: read_pacing("/proc/sys/net/ipv4/tcp_pacing_ss_ratio")?,
+        advanced_sysctls,
     })
 }
 
@@ -211,6 +280,11 @@ fn apply_checkpoint(checkpoint: &LastGoodPolicy) -> Vec<String> {
     if let Err(error) = sysctl::set_congestion_control(&checkpoint.algorithm) {
         errors.push(format!("algorithm restore failed: {error}"));
     }
+    for item in &checkpoint.advanced_sysctls {
+        if let Err(error) = sysctl::write_sysctl(&item.path, &item.value.to_string()) {
+            errors.push(format!("advanced sysctl {} restore failed: {error}", item.key));
+        }
+    }
     errors
 }
 
@@ -221,6 +295,15 @@ fn verify_checkpoint_applied(checkpoint: &LastGoodPolicy) -> Vec<String> {
         interface_qdisc: checkpoint.qdisc.clone(),
         pacing_ca: checkpoint.pacing_ca,
         pacing_ss: checkpoint.pacing_ss,
+        advanced_sysctls: checkpoint
+            .advanced_sysctls
+            .iter()
+            .map(|item| RuntimeSysctlValue {
+                key: item.key.clone(),
+                path: item.path.clone(),
+                value: item.value,
+            })
+            .collect(),
     };
     verify_runtime_state(&checkpoint.interface, &expected)
         .into_iter()
@@ -241,6 +324,11 @@ fn restore_runtime_state(iface: &str, previous: &RuntimeKernelState) -> Vec<Stri
     }
     if let Err(error) = sysctl::set_congestion_control(&previous.algorithm) {
         errors.push(format!("rollback algorithm failed: {error}"));
+    }
+    for item in &previous.advanced_sysctls {
+        if let Err(error) = sysctl::write_sysctl(&item.path, &item.value.to_string()) {
+            errors.push(format!("rollback advanced sysctl {} failed: {error}", item.key));
+        }
     }
     errors
 }
@@ -281,6 +369,14 @@ fn verify_runtime_state(iface: &str, expected: &RuntimeKernelState) -> Vec<Strin
             .map(|value| value.to_string()),
         expected.pacing_ss.to_string(),
     );
+    for item in &expected.advanced_sysctls {
+        compare_value(
+            &mut errors,
+            &format!("advanced sysctl {}", item.key),
+            read_u32(&item.path).ok().map(|value| value.to_string()),
+            item.value.to_string(),
+        );
+    }
     errors
 }
 
@@ -295,11 +391,20 @@ fn compare_value(errors: &mut Vec<String>, name: &str, actual: Option<String>, e
 }
 
 fn read_pacing(path: &str) -> io::Result<u32> {
+    read_u32(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("invalid pacing value at {path}: {error}"),
+        )
+    })
+}
+
+fn read_u32(path: &str) -> io::Result<u32> {
     let value = sysctl::read_sysctl(path)?;
     value.parse::<u32>().map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid pacing value at {path}: {error}"),
+            format!("invalid numeric sysctl value at {path}: {error}"),
         )
     })
 }
@@ -321,8 +426,22 @@ fn read_checkpoint() -> io::Result<Option<LastGoodPolicy>> {
 }
 
 fn read_failures() -> io::Result<FailureState> {
-    let state: FailureState = read_optional_json(&failure_path())?.unwrap_or_default();
-    if state.format_version != FORMAT_VERSION {
+    let bytes = match fs::read(failure_path()) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(FailureState::default()),
+        Err(error) => return Err(error),
+    };
+    decode_failure_state(&bytes)
+}
+
+fn decode_failure_state(bytes: &[u8]) -> io::Result<FailureState> {
+    let state: FailureState = serde_json::from_slice(bytes).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid policy failure state: {error}"),
+        )
+    })?;
+    if state.format_version != FAILURE_FORMAT_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unsupported policy failure format {}", state.format_version),
@@ -332,7 +451,7 @@ fn read_failures() -> io::Result<FailureState> {
 }
 
 fn validate_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
-    if checkpoint.format_version != FORMAT_VERSION {
+    if checkpoint.format_version != CHECKPOINT_FORMAT_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
@@ -342,6 +461,12 @@ fn validate_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
         ));
     }
     validate_iface_name(&checkpoint.interface)?;
+    if !matches!(checkpoint.interface_mode.as_str(), "Wi-Fi" | "Cellular") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid checkpoint interface mode {}", checkpoint.interface_mode),
+        ));
+    }
     if !config::is_known_algorithm(&checkpoint.algorithm) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -359,6 +484,42 @@ fn validate_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
             io::ErrorKind::InvalidData,
             "checkpoint pacing values are out of range",
         ));
+    }
+
+    let (configured, parse_errors) = sysctl::configured_advanced_overrides();
+    if !parse_errors.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("advanced.conf is invalid: {}", parse_errors.join("; ")),
+        ));
+    }
+    if checkpoint.advanced_sysctls.len() != configured.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "checkpoint advanced sysctl set does not match the configured policy",
+        ));
+    }
+    let mut seen = HashSet::new();
+    for item in &checkpoint.advanced_sysctls {
+        if !seen.insert(item.key.as_str()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("duplicate checkpoint sysctl {}", item.key),
+            ));
+        }
+        let Some(configured_item) = configured.iter().find(|candidate| candidate.key == item.key)
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown checkpoint sysctl {}", item.key),
+            ));
+        };
+        if configured_item.path != item.path || configured_item.value != item.value {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("checkpoint sysctl {} does not match advanced.conf", item.key),
+            ));
+        }
     }
     Ok(())
 }
@@ -430,7 +591,7 @@ fn now_epoch() -> u64 {
 impl Default for FailureState {
     fn default() -> Self {
         Self {
-            format_version: FORMAT_VERSION,
+            format_version: FAILURE_FORMAT_VERSION,
             consecutive_failures: 0,
             updated_at_epoch: 0,
             last_error: String::new(),
@@ -440,7 +601,24 @@ impl Default for FailureState {
 
 #[cfg(test)]
 mod tests {
-    use super::{compare_value, validate_checkpoint, validate_iface_name, LastGoodPolicy};
+    use super::{
+        compare_value, decode_failure_state, validate_checkpoint, validate_iface_name,
+        LastGoodPolicy,
+    };
+
+    fn checkpoint() -> LastGoodPolicy {
+        LastGoodPolicy {
+            format_version: 2,
+            captured_at_epoch: 1,
+            interface: "wlan0".to_string(),
+            interface_mode: "Wi-Fi".to_string(),
+            algorithm: "bbr".to_string(),
+            qdisc: "fq".to_string(),
+            pacing_ca: 200,
+            pacing_ss: 300,
+            advanced_sysctls: Vec::new(),
+        }
+    }
 
     #[test]
     fn interface_name_validation_rejects_paths_and_shell_text() {
@@ -452,19 +630,18 @@ mod tests {
 
     #[test]
     fn checkpoint_validation_rejects_unknown_kernel_tokens() {
-        let mut checkpoint = LastGoodPolicy {
-            format_version: 1,
-            captured_at_epoch: 1,
-            interface: "wlan0".to_string(),
-            interface_mode: "Wi-Fi".to_string(),
-            algorithm: "bbr".to_string(),
-            qdisc: "fq".to_string(),
-            pacing_ca: 200,
-            pacing_ss: 300,
-        };
+        let mut checkpoint = checkpoint();
         assert!(validate_checkpoint(&checkpoint).is_ok());
         checkpoint.algorithm = "bbr;reboot".to_string();
         assert!(validate_checkpoint(&checkpoint).is_err());
+    }
+
+    #[test]
+    fn corrupted_failure_state_is_not_reset() {
+        assert!(decode_failure_state(br#"{"format_version":1,"consecutive_failures":"bad"}"#)
+            .is_err());
+        assert!(decode_failure_state(br#"{"format_version":9,"consecutive_failures":1,"updated_at_epoch":1,"last_error":"x"}"#)
+            .is_err());
     }
 
     #[test]
