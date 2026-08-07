@@ -165,8 +165,8 @@ requireText(logs, 'router_state.logsError', 'log failures must not be represente
 requireText(logs, 'window.confirm', 'destructive log clearing must require confirmation');
 
 requireText(settingsUi, 'advanced-settings-search', 'advanced controls must provide a searchable index');
-requireText(settingsUi, "window.confirm", 'immediate policy application must require confirmation');
-requireText(settingsUi, "aria-pressed", 'selectable settings controls must expose semantic state');
+requireText(settingsUi, 'window.confirm', 'immediate policy application must require confirmation');
+requireText(settingsUi, 'aria-pressed', 'selectable settings controls must expose semantic state');
 requireText(settingsUi, 'position: sticky', 'mobile settings actions must remain reachable above bottom navigation');
 requireText(settingsUi, 'scheduleSettingsSync', 'dynamic settings synchronization must be coalesced');
 requireText(settingsUi, 'bindDelegatedSync', 'settings state must resynchronize from bounded user events');
@@ -179,6 +179,8 @@ requireText(baselineUi, 'baseline-status', 'WebUI baseline card must call the re
 rejectText(baselineUi, 'capture-baseline', 'opening the WebUI must never create rollback evidence');
 requireText(baselineUi, 'captured_at_epoch', 'baseline UI must surface capture time');
 requireText(baselineUi, 'sysctl_count', 'baseline UI must surface managed sysctl count');
+requireText(baselineUi, "['http:', 'https:']", 'baseline preview data must be restricted to local HTTP preview');
+rejectText(baselineUi, 'requested ||', 'a query parameter must not enable fake baseline data on production hosts');
 
 requireText(baselineUi, "from './runtime-control-ui.js'", 'baseline bootstrap must initialize runtime control UI');
 requireText(runtimeControlUi, "'control-status'", 'runtime UI must read the persistent control state');
@@ -189,6 +191,13 @@ requireText(runtimeControlUi, 'Promise.allSettled', 'missing routes must not hid
 requireText(runtimeControlUi, 'window.confirm', 'runtime write controls must require confirmation where appropriate');
 requireText(runtimeControlUi, 'runtime-control-panel', 'runtime controls must be visible on the Home page');
 requireText(runtimeControlUi, 'actionBusy = false', 'runtime actions must release their busy state before refreshing');
+requireText(runtimeControlUi, 'STATUS_MARKER', 'nonzero runtime commands must preserve structured JSON reports');
+requireText(runtimeControlUi, 'error.report = result.payload', 'restore failures must preserve rollback reports');
+requireText(runtimeControlUi, 'await refreshRuntimeControl(true)', 'failed runtime actions must refresh the real control state');
+requireText(runtimeControlUi, 'failure_state_error', 'failure journal corruption must remain visible in the WebUI');
+requireText(runtimeControlUi, "['http:', 'https:']", 'runtime preview data must be restricted to local HTTP preview');
+rejectText(runtimeControlUi, 'requested ||', 'a query parameter must not enable fake runtime data on production hosts');
+rejectText(runtimeControlUi, 'findLastIndex', 'runtime command parsing must support older Android WebViews');
 
 for (const command of [
 	'Plan',
@@ -204,15 +213,25 @@ for (const command of [
 	requireText(mainRust, command, `Rust CLI must expose ${command}`);
 }
 requireText(runtimeControl, 'runtime-control-v1.json', 'runtime mode must use a versioned persistent state file');
+requireText(runtimeControl, 'runtime-control-ack-v1.json', 'daemon control acknowledgement must be versioned');
 requireText(runtimeControl, 'pub fn safe_fallback', 'invalid runtime state must fail closed');
 requireText(runtimeControl, 'recovery_state', 'explicit commands must recover from a corrupt control file');
-requireText(checkpoint, 'last-good-policy-v1.json', 'last-known-good policy must use a versioned checkpoint');
+requireText(runtimeControl, 'pub fn acknowledge', 'daemon must persist consumed control generations');
+requireText(runtimeControl, 'pub fn ack_matches', 'restore must match acknowledgement generation, mode and PID');
+requireText(checkpoint, 'last-good-policy-v2.json', 'last-known-good policy must use the complete v2 checkpoint');
+requireText(checkpoint, 'advanced_sysctls', 'runtime checkpoints must include advanced sysctls verified by policy health');
+requireText(checkpoint, 'CHECKPOINT_SYSCTLS', 'restored sysctl paths and ranges must be independently allowlisted');
+requireText(checkpoint, 'failure_state_error', 'corrupt failure state must not be silently reset');
+requireText(checkpoint, 'enter_automatic_safe_mode', 'failure-state corruption must request persistent safe mode');
+requireText(checkpoint, 'wait_for_daemon_ack', 'runtime restoration must wait for exact daemon safe-mode acknowledgement');
 requireText(checkpoint, 'AUTOMATIC_SAFE_MODE_THRESHOLD', 'checkpoint failures must have an explicit safe-mode threshold');
 requireText(checkpoint, 'validate_checkpoint', 'checkpoint restoration must validate all stored kernel tokens');
-requireText(plan, 'write_allowed', 'read-only policy plans must report whether writes are allowed');
+requireText(plan, '&& policy_resolved', 'policy planning must not allow writes when policy resolution failed');
 requireText(plan, 'network::root_qdisc', 'policy plans must compare the interface qdisc');
 requireText(daemon, 'requested_action.requests_apply()', 'daemon must consume hot reload generations');
 requireText(daemon, '!control_state.mode.allows_writes()', 'paused and safe modes must block daemon writes');
+requireText(daemon, 'control::acknowledge', 'daemon must acknowledge a control state before acting on it');
+requireText(daemon, 'pub fn running_pid()', 'checkpoint restoration must bind acknowledgement to a live daemon PID');
 requireText(daemon, 'checkpoint::record_failure', 'daemon must journal failed policy verification');
 requireText(daemon, 'checkpoint::persist', 'daemon must persist verified last-known-good policy');
 
