@@ -251,11 +251,21 @@ pub fn enter_automatic_safe_mode(reason: impl Into<String>) -> io::Result<Contro
     )
 }
 
+fn action_allowed_while_restoring(action: RuntimeAction) -> bool {
+    action == RuntimeAction::AutomaticSafeMode
+}
+
 fn update(
     mode: Option<RuntimeMode>,
     action: RuntimeAction,
     reason: impl Into<String>,
 ) -> io::Result<ControlState> {
+    if restore_in_progress() && !action_allowed_while_restoring(action) {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "runtime restoration is active; control changes are temporarily blocked",
+        ));
+    }
     let mut state = match read() {
         Ok(state) => state,
         Err(error) if error.kind() == io::ErrorKind::InvalidData => recovery_state(&error),
@@ -347,8 +357,8 @@ fn now_epoch() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ack_matches, read_from, recovery_state, state_matches, write_json_atomic, ControlAck,
-        ControlState, RuntimeAction, RuntimeMode,
+        ack_matches, action_allowed_while_restoring, read_from, recovery_state, state_matches,
+        write_json_atomic, ControlAck, ControlState, RuntimeAction, RuntimeMode,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -419,6 +429,15 @@ mod tests {
         let mut active = safe_state(7);
         active.mode = RuntimeMode::Active;
         assert!(!state_matches(&state, &active));
+    }
+
+    #[test]
+    fn only_automatic_safe_mode_may_change_control_during_restore() {
+        assert!(action_allowed_while_restoring(
+            RuntimeAction::AutomaticSafeMode
+        ));
+        assert!(!action_allowed_while_restoring(RuntimeAction::Resume));
+        assert!(!action_allowed_while_restoring(RuntimeAction::Reload));
     }
 
     #[test]
