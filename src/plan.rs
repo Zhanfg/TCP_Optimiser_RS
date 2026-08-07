@@ -85,14 +85,8 @@ pub fn build(iface: Option<String>) -> io::Result<PolicyPlan> {
     let current_algorithm = sysctl::current_algorithm().ok();
     let current_default_qdisc = sysctl::default_qdisc().ok();
     let current_interface_qdisc = network::root_qdisc(&interface).ok().flatten();
-    let current_pacing_ca = sysctl::read_sysctl(
-        "/proc/sys/net/ipv4/tcp_pacing_ca_ratio",
-    )
-    .ok();
-    let current_pacing_ss = sysctl::read_sysctl(
-        "/proc/sys/net/ipv4/tcp_pacing_ss_ratio",
-    )
-    .ok();
+    let current_pacing_ca = sysctl::read_sysctl("/proc/sys/net/ipv4/tcp_pacing_ca_ratio").ok();
+    let current_pacing_ss = sysctl::read_sysctl("/proc/sys/net/ipv4/tcp_pacing_ss_ratio").ok();
 
     let algorithm = value(
         current_algorithm,
@@ -108,15 +102,11 @@ pub fn build(iface: Option<String>) -> io::Result<PolicyPlan> {
     );
     let pacing_ca = value(
         current_pacing_ca,
-        planned
-            .as_ref()
-            .map(|policy| policy.pacing_ca.to_string()),
+        planned.as_ref().map(|policy| policy.pacing_ca.to_string()),
     );
     let pacing_ss = value(
         current_pacing_ss,
-        planned
-            .as_ref()
-            .map(|policy| policy.pacing_ss.to_string()),
+        planned.as_ref().map(|policy| policy.pacing_ss.to_string()),
     );
 
     let mut changes = Vec::new();
@@ -150,11 +140,7 @@ pub fn diff(iface: Option<String>) -> io::Result<PolicyDiff> {
     let mut changes = Vec::new();
     collect_change(&mut changes, "algorithm", &plan.algorithm);
     collect_change(&mut changes, "default_qdisc", &plan.default_qdisc);
-    collect_change(
-        &mut changes,
-        "interface_qdisc",
-        &plan.interface_qdisc,
-    );
+    collect_change(&mut changes, "interface_qdisc", &plan.interface_qdisc);
     collect_change(&mut changes, "pacing_ca", &plan.pacing_ca);
     collect_change(&mut changes, "pacing_ss", &plan.pacing_ss);
     Ok(PolicyDiff {
