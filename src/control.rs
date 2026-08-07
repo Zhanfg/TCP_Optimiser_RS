@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io;
+use std::fs::OpenOptions;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -8,6 +9,7 @@ use crate::config;
 
 const CONTROL_FILE: &str = "runtime-control-v1.json";
 const ACK_FILE: &str = "runtime-control-ack-v1.json";
+const RESTORE_LOCK_FILE: &str = "runtime-restore-v1.lock";
 const FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -69,6 +71,10 @@ pub struct ControlAck {
     pub acknowledged_at_epoch: u64,
 }
 
+pub struct RestoreGuard {
+    path: PathBuf,
+}
+
 impl Default for ControlState {
     fn default() -> Self {
         Self {
@@ -95,12 +101,22 @@ impl ControlState {
     }
 }
 
+impl Drop for RestoreGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 pub fn path() -> PathBuf {
     config::module_dir().join(CONTROL_FILE)
 }
 
 fn ack_path() -> PathBuf {
     config::module_dir().join(ACK_FILE)
+}
+
+fn restore_lock_path() -> PathBuf {
+    config::module_dir().join(RESTORE_LOCK_FILE)
 }
 
 pub fn read() -> io::Result<ControlState> {
@@ -144,6 +160,59 @@ pub fn ack_matches(ack: &ControlAck, state: &ControlState, daemon_pid: u32) -> b
         && ack.generation == state.generation
         && ack.mode == state.mode
         && ack.daemon_pid == daemon_pid
+}
+
+pub fn state_matches(left: &ControlState, right: &ControlState) -> bool {
+    left.format_version == right.format_version
+        && left.generation == right.generation
+        && left.mode == right.mode
+}
+
+pub fn restore_in_progress() -> bool {
+    restore_lock_path().exists()
+}
+
+pub fn acquire_restore_guard() -> io::Result<RestoreGuard> {
+    let path = restore_lock_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match create_restore_lock(&path) {
+        Ok(()) => Ok(RestoreGuard { path }),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            if restore_lock_owner_is_live(&path)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "another runtime restoration is already active",
+                ));
+            }
+            fs::remove_file(&path)?;
+            create_restore_lock(&path)?;
+            Ok(RestoreGuard { path })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn create_restore_lock(path: &Path) -> io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    writeln!(file, "{}", std::process::id())?;
+    file.sync_all()
+}
+
+fn restore_lock_owner_is_live(path: &Path) -> io::Result<bool> {
+    let pid = fs::read_to_string(path)?
+        .trim()
+        .parse::<u32>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let command_line = match fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(command_line) => command_line,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    Ok(command_line
+        .split(|byte| *byte == 0)
+        .any(|argument| argument == b"restore-checkpoint"))
 }
 
 pub fn request_reload(reason: impl Into<String>) -> io::Result<ControlState> {
@@ -278,8 +347,8 @@ fn now_epoch() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ack_matches, read_from, recovery_state, write_json_atomic, ControlAck, ControlState,
-        RuntimeAction, RuntimeMode,
+        ack_matches, read_from, recovery_state, state_matches, write_json_atomic, ControlAck,
+        ControlState, RuntimeAction, RuntimeMode,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -290,6 +359,17 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("tcp-optimiser-{name}-{suffix}.json"))
+    }
+
+    fn safe_state(generation: u64) -> ControlState {
+        ControlState {
+            format_version: 1,
+            generation,
+            mode: RuntimeMode::SafeMode,
+            requested_action: RuntimeAction::AutomaticSafeMode,
+            updated_at_epoch: 123,
+            reason: "test".to_string(),
+        }
     }
 
     #[test]
@@ -318,14 +398,7 @@ mod tests {
 
     #[test]
     fn acknowledgement_must_match_generation_mode_and_pid() {
-        let state = ControlState {
-            format_version: 1,
-            generation: 7,
-            mode: RuntimeMode::SafeMode,
-            requested_action: RuntimeAction::AutomaticSafeMode,
-            updated_at_epoch: 123,
-            reason: "test".to_string(),
-        };
+        let state = safe_state(7);
         let mut ack = ControlAck {
             format_version: 1,
             generation: 7,
@@ -336,6 +409,16 @@ mod tests {
         assert!(ack_matches(&ack, &state, 42));
         ack.generation = 6;
         assert!(!ack_matches(&ack, &state, 42));
+    }
+
+    #[test]
+    fn transaction_state_requires_the_same_generation_and_mode() {
+        let state = safe_state(7);
+        assert!(state_matches(&state, &safe_state(7)));
+        assert!(!state_matches(&state, &safe_state(8)));
+        let mut active = safe_state(7);
+        active.mode = RuntimeMode::Active;
+        assert!(!state_matches(&state, &active));
     }
 
     #[test]
