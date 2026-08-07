@@ -359,6 +359,7 @@ pub fn clear_failures() -> io::Result<()> {
 }
 
 pub fn restore() -> io::Result<RestoreCheckpointReport> {
+    let _restore_guard = control::acquire_restore_guard()?;
     let checkpoint = read_checkpoint()?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -372,12 +373,14 @@ pub fn restore() -> io::Result<RestoreCheckpointReport> {
     if let Some(daemon_pid) = daemon::running_pid() {
         wait_for_daemon_ack(&control, daemon_pid)?;
     }
+    ensure_control_unchanged(&control)?;
 
     let previous = capture_runtime_state(&checkpoint)?;
     let mut errors = apply_checkpoint(&checkpoint);
     if errors.is_empty() {
         errors.extend(verify_checkpoint_applied(&checkpoint));
     }
+    errors.extend(control_state_errors(&control));
 
     let rollback_attempted = !errors.is_empty();
     let mut rollback_errors = Vec::new();
@@ -419,6 +422,31 @@ fn wait_for_daemon_ack(state: &ControlState, daemon_pid: u32) -> io::Result<()> 
         }
         thread::sleep(DAEMON_ACK_POLL);
     }
+}
+
+fn ensure_control_unchanged(expected: &ControlState) -> io::Result<()> {
+    let current = control::read()?;
+    if control::state_matches(&current, expected) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            format!(
+                "runtime control changed during restoration: expected generation {} {}, found generation {} {}",
+                expected.generation,
+                expected.mode.as_str(),
+                current.generation,
+                current.mode.as_str()
+            ),
+        ))
+    }
+}
+
+fn control_state_errors(expected: &ControlState) -> Vec<String> {
+    ensure_control_unchanged(expected)
+        .err()
+        .map(|error| vec![error.to_string()])
+        .unwrap_or_default()
 }
 
 fn preflight_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
