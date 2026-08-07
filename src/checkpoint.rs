@@ -321,7 +321,7 @@ fn read_checkpoint() -> io::Result<Option<LastGoodPolicy>> {
 }
 
 fn read_failures() -> io::Result<FailureState> {
-    let state = read_optional_json(&failure_path())?.unwrap_or_default();
+    let state: FailureState = read_optional_json(&failure_path())?.unwrap_or_default();
     if state.format_version != FORMAT_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
