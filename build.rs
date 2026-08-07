@@ -1,32 +1,42 @@
 use std::env;
 
+const OFFICIAL_CHANNEL: &str = "official-github";
+const CANDIDATE_CHANNEL: &str = "pull-request-candidate";
+const LOCAL_CHANNEL: &str = "local-development";
+
 fn main() {
     for key in [
         "TCP_OPTIMISER_OFFICIAL_BUILD",
+        "TCP_OPTIMISER_BUILD_CHANNEL",
         "TCP_OPTIMISER_BUILD_REPOSITORY",
         "TCP_OPTIMISER_BUILD_REVISION",
     ] {
         println!("cargo:rerun-if-env-changed={key}");
     }
 
-    let official = env::var("TCP_OPTIMISER_OFFICIAL_BUILD").as_deref() == Ok("1");
-    let channel = if official {
-        "official-github"
+    let trusted_ci_source = env::var("TCP_OPTIMISER_OFFICIAL_BUILD").as_deref() == Ok("1");
+    let channel = if trusted_ci_source {
+        let requested = env::var("TCP_OPTIMISER_BUILD_CHANNEL")
+            .unwrap_or_else(|_| OFFICIAL_CHANNEL.to_string());
+        match requested.as_str() {
+            OFFICIAL_CHANNEL | CANDIDATE_CHANNEL => requested,
+            other => panic!("unsupported TCP_OPTIMISER_BUILD_CHANNEL: {other}"),
+        }
     } else {
-        "local-development"
+        LOCAL_CHANNEL.to_string()
     };
-    let repository = if official {
+    let repository = if trusted_ci_source {
         env::var("TCP_OPTIMISER_BUILD_REPOSITORY")
             .unwrap_or_else(|_| "Zhanfg/TCP_Optimiser_RS".to_string())
     } else {
         "local".to_string()
     };
-    let revision = if official {
+    let revision = if trusted_ci_source {
         env::var("TCP_OPTIMISER_BUILD_REVISION").unwrap_or_else(|_| "unknown".to_string())
     } else {
         "uncommitted".to_string()
     };
-    let source = if official {
+    let source = if trusted_ci_source {
         format!("https://github.com/{repository}")
     } else {
         "local source tree".to_string()

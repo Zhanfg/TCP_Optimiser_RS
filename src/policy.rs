@@ -114,8 +114,18 @@ pub fn verify_policy(iface: &str) -> VerificationSnapshot {
         )
     }));
 
+    let summary = summarize(&checks);
+    if summary.unavailable > 0 {
+        errors.push(format!(
+            "{} verification value(s) are unavailable",
+            summary.unavailable
+        ));
+    }
+    errors.sort();
+    errors.dedup();
+
     VerificationSnapshot {
-        summary: summarize(&checks),
+        summary,
         checks,
         errors,
         last_repair: last_repair_record(),
@@ -140,12 +150,6 @@ pub fn repair_policy(iface: &str) -> io::Result<RepairRecord> {
         errors.push(format!(
             "{} configured value(s) still differ after repair",
             verification.summary.drifted
-        ));
-    }
-    if verification.summary.unavailable > 0 {
-        errors.push(format!(
-            "{} verification value(s) are unavailable",
-            verification.summary.unavailable
         ));
     }
     errors.extend(verification.errors);

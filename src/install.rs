@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -8,6 +9,23 @@ use crate::logging;
 use crate::sysctl;
 
 const BASELINE_FILE: &str = "baseline-v1.json";
+const BASELINE_PROVENANCE_FILE: &str = "baseline-provenance-v1.json";
+const BASELINE_PROVENANCE_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallBaselineMode {
+    ExactPreModule,
+    PreserveExisting,
+    LegacyUpgradeSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+struct BaselineProvenance {
+    format_version: u32,
+    provenance: String,
+    exact_pre_module: bool,
+    note: String,
+}
 
 /// Run module installation / upgrade logic (replaces customize.sh).
 /// `MODPATH` or `TCP_OPTIMISER_MODULE_DIR` identifies the staging directory.
@@ -17,18 +35,24 @@ pub fn run() -> io::Result<()> {
     fs::create_dir_all(&staging_dir)?;
     logging::log_print("Starting module customization (Rust)...");
     let live_dir = config::live_module_dir();
+    let baseline_mode = classify_baseline_mode(&staging_dir, &live_dir);
 
-    // Releases predating transactional baselines may already have modified the
-    // live kernel. Capturing during such an upgrade would mislabel tuned values
-    // as vendor defaults, so that one-time migration must start after a clean
-    // uninstall and reboot.
-    ensure_upgrade_has_baseline(&staging_dir, &live_dir)?;
-    preserve_exact_config(&staging_dir, &live_dir, BASELINE_FILE)?;
+    prepare_baseline_snapshot(&staging_dir, &live_dir, baseline_mode)?;
+    prepare_baseline_provenance(&staging_dir, &live_dir, baseline_mode)?;
+
     let baseline = baseline::ensure_global_baseline()?;
     logging::log_print(&format!(
-        "Kernel baseline ready (sysctls={}, interfaces={}, captured_at={}).",
-        baseline.sysctl_count, baseline.interface_count, baseline.captured_at_epoch
+        "Kernel baseline ready (sysctls={}, interfaces={}, captured_at={}, provenance={}).",
+        baseline.sysctl_count,
+        baseline.interface_count,
+        baseline.captured_at_epoch,
+        baseline_mode_name(baseline_mode)
     ));
+    if baseline_mode == InstallBaselineMode::LegacyUpgradeSnapshot {
+        logging::log_print(
+            "[WARN] Direct legacy upgrade uses a pre-upgrade compatibility snapshot, not a verified vendor-default baseline.",
+        );
+    }
 
     let available = sysctl::available_algorithms().unwrap_or_else(|error| {
         logging::log_print(&format!(
@@ -57,12 +81,15 @@ pub fn run() -> io::Result<()> {
         "kill_connections",
         "initcwnd_initrwnd",
         "qdisc",
-        "pacing",
+        "pacing_ca",
         "pacing_ss",
         "tcp_ecn",
         "tcp_fastopen",
         "advanced.conf",
         "debug_mode",
+        "runtime-control-v1.json",
+        "last-good-policy-v2.json",
+        "policy-failures-v1.json",
     ] {
         preserve_exact_config(&staging_dir, &live_dir, name)?;
     }
@@ -73,17 +100,140 @@ pub fn run() -> io::Result<()> {
     Ok(())
 }
 
-fn ensure_upgrade_has_baseline(staging_dir: &Path, live_dir: &Path) -> io::Result<()> {
+fn classify_baseline_mode(staging_dir: &Path, live_dir: &Path) -> InstallBaselineMode {
     if staging_dir == live_dir || !live_dir.join("module.prop").is_file() {
-        return Ok(());
+        return InstallBaselineMode::ExactPreModule;
     }
     if live_dir.join(BASELINE_FILE).is_file() {
+        InstallBaselineMode::PreserveExisting
+    } else {
+        InstallBaselineMode::LegacyUpgradeSnapshot
+    }
+}
+
+fn baseline_mode_name(mode: InstallBaselineMode) -> &'static str {
+    match mode {
+        InstallBaselineMode::ExactPreModule => "exact_pre_module",
+        InstallBaselineMode::PreserveExisting => "preserved_existing",
+        InstallBaselineMode::LegacyUpgradeSnapshot => "legacy_upgrade_snapshot",
+    }
+}
+
+fn prepare_baseline_snapshot(
+    staging_dir: &Path,
+    live_dir: &Path,
+    mode: InstallBaselineMode,
+) -> io::Result<()> {
+    let staged = staging_dir.join(BASELINE_FILE);
+    if mode == InstallBaselineMode::LegacyUpgradeSnapshot {
+        match fs::remove_file(&staged) {
+            Ok(()) => logging::log_print(
+                "[WARN] Removed stale staged baseline before capturing legacy upgrade state.",
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        return Ok(());
+    }
+    preserve_exact_config(staging_dir, live_dir, BASELINE_FILE)
+}
+
+fn prepare_baseline_provenance(
+    staging_dir: &Path,
+    live_dir: &Path,
+    mode: InstallBaselineMode,
+) -> io::Result<()> {
+    let staged = staging_dir.join(BASELINE_PROVENANCE_FILE);
+    if mode == InstallBaselineMode::LegacyUpgradeSnapshot {
+        match fs::remove_file(&staged) {
+            Ok(()) => logging::log_print(
+                "[WARN] Removed orphan baseline provenance because no baseline file was available.",
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    } else {
+        preserve_exact_config(staging_dir, live_dir, BASELINE_PROVENANCE_FILE)?;
+    }
+    ensure_baseline_provenance(staging_dir, mode)
+}
+
+fn ensure_baseline_provenance(staging_dir: &Path, mode: InstallBaselineMode) -> io::Result<()> {
+    let path = staging_dir.join(BASELINE_PROVENANCE_FILE);
+    if path.is_file() {
+        validate_baseline_provenance(&path)?;
         return Ok(());
     }
 
-    Err(io::Error::other(
-        "legacy TCP Optimiser installation has no exact kernel baseline; uninstall the current module, reboot once, then install this build",
-    ))
+    let (provenance, exact_pre_module, note) = match mode {
+        InstallBaselineMode::ExactPreModule => (
+            "exact_pre_module",
+            true,
+            "Captured before this module first applied managed kernel changes.",
+        ),
+        InstallBaselineMode::PreserveExisting => (
+            "exact_pre_module",
+            true,
+            "Preserved from an earlier transactional TCP Optimiser installation.",
+        ),
+        InstallBaselineMode::LegacyUpgradeSnapshot => (
+            "legacy_upgrade_snapshot",
+            false,
+            "Captured immediately before replacing a legacy TCP Optimiser installation; restores the pre-upgrade state but is not guaranteed to be the vendor default.",
+        ),
+    };
+    let document = BaselineProvenance {
+        format_version: BASELINE_PROVENANCE_VERSION,
+        provenance: provenance.to_string(),
+        exact_pre_module,
+        note: note.to_string(),
+    };
+    write_json_atomic(&path, &document)
+}
+
+fn validate_baseline_provenance(path: &Path) -> io::Result<BaselineProvenance> {
+    let bytes = fs::read(path)?;
+    let document: BaselineProvenance = serde_json::from_slice(&bytes).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid baseline provenance {}: {error}", path.display()),
+        )
+    })?;
+    if document.format_version != BASELINE_PROVENANCE_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "unsupported baseline provenance format {}",
+                document.format_version
+            ),
+        ));
+    }
+    if !matches!(
+        document.provenance.as_str(),
+        "exact_pre_module" | "legacy_upgrade_snapshot"
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unknown baseline provenance {}", document.provenance),
+        ));
+    }
+    if document.exact_pre_module != (document.provenance == "exact_pre_module") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "baseline provenance exact_pre_module flag is inconsistent",
+        ));
+    }
+    Ok(document)
+}
+
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    let bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
+    fs::write(&temporary, bytes)?;
+    fs::rename(temporary, path)
 }
 
 fn safe_fallback_algorithm(available: &[String]) -> &str {
@@ -178,7 +328,10 @@ fn preserve_exact_config(staging_dir: &Path, live_dir: &Path, name: &str) -> io:
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_upgrade_has_baseline, preserve_exact_config, safe_fallback_algorithm, BASELINE_FILE,
+        classify_baseline_mode, ensure_baseline_provenance, prepare_baseline_provenance,
+        prepare_baseline_snapshot, preserve_exact_config, safe_fallback_algorithm,
+        validate_baseline_provenance, BaselineProvenance, InstallBaselineMode, BASELINE_FILE,
+        BASELINE_PROVENANCE_FILE,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -222,7 +375,7 @@ mod tests {
         let (root, live, staging) = temporary_dirs("baseline");
         fs::write(live.join(BASELINE_FILE), "{\"version\":1}\n").unwrap();
 
-        preserve_exact_config(&staging, &live, BASELINE_FILE).unwrap();
+        prepare_baseline_snapshot(&staging, &live, InstallBaselineMode::PreserveExisting).unwrap();
 
         assert_eq!(
             fs::read_to_string(staging.join(BASELINE_FILE)).unwrap(),
@@ -232,25 +385,79 @@ mod tests {
     }
 
     #[test]
-    fn legacy_upgrade_without_baseline_is_rejected() {
-        let (root, live, staging) = temporary_dirs("legacy");
+    fn legacy_upgrade_discards_stale_staged_baseline() {
+        let (root, live, staging) = temporary_dirs("stale-baseline");
         fs::write(live.join("module.prop"), "id=tcp_optimiser\n").unwrap();
+        fs::write(staging.join(BASELINE_FILE), "{\"version\":1}\n").unwrap();
 
-        let error = ensure_upgrade_has_baseline(&staging, &live).unwrap_err();
+        prepare_baseline_snapshot(&staging, &live, InstallBaselineMode::LegacyUpgradeSnapshot)
+            .unwrap();
 
-        assert!(error.to_string().contains("uninstall"));
-        assert!(error.to_string().contains("reboot"));
+        assert!(!staging.join(BASELINE_FILE).exists());
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn transactional_upgrade_with_baseline_is_allowed() {
+    fn legacy_upgrade_without_baseline_is_allowed_with_compatibility_provenance() {
+        let (root, live, staging) = temporary_dirs("legacy");
+        fs::write(live.join("module.prop"), "id=tcp_optimiser\n").unwrap();
+
+        let mode = classify_baseline_mode(&staging, &live);
+        assert_eq!(mode, InstallBaselineMode::LegacyUpgradeSnapshot);
+        prepare_baseline_provenance(&staging, &live, mode).unwrap();
+        let provenance =
+            validate_baseline_provenance(&staging.join(BASELINE_PROVENANCE_FILE)).unwrap();
+        assert_eq!(provenance.provenance, "legacy_upgrade_snapshot");
+        assert!(!provenance.exact_pre_module);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_upgrade_discards_orphan_exact_provenance() {
+        let (root, live, staging) = temporary_dirs("orphan-provenance");
+        fs::write(live.join("module.prop"), "id=tcp_optimiser\n").unwrap();
+        let orphan = BaselineProvenance {
+            format_version: 1,
+            provenance: "exact_pre_module".to_string(),
+            exact_pre_module: true,
+            note: "orphan".to_string(),
+        };
+        fs::write(
+            staging.join(BASELINE_PROVENANCE_FILE),
+            serde_json::to_vec(&orphan).unwrap(),
+        )
+        .unwrap();
+
+        prepare_baseline_provenance(&staging, &live, InstallBaselineMode::LegacyUpgradeSnapshot)
+            .unwrap();
+        let provenance =
+            validate_baseline_provenance(&staging.join(BASELINE_PROVENANCE_FILE)).unwrap();
+        assert_eq!(provenance.provenance, "legacy_upgrade_snapshot");
+        assert!(!provenance.exact_pre_module);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn transactional_upgrade_preserves_existing_baseline_mode() {
         let (root, live, staging) = temporary_dirs("transactional");
         fs::write(live.join("module.prop"), "id=tcp_optimiser\n").unwrap();
         fs::write(live.join(BASELINE_FILE), "{\"version\":1}\n").unwrap();
 
-        ensure_upgrade_has_baseline(&staging, &live).unwrap();
+        assert_eq!(
+            classify_baseline_mode(&staging, &live),
+            InstallBaselineMode::PreserveExisting
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
+    #[test]
+    fn exact_install_provenance_is_consistent() {
+        let (root, _live, staging) = temporary_dirs("fresh");
+        ensure_baseline_provenance(&staging, InstallBaselineMode::ExactPreModule).unwrap();
+        let provenance =
+            validate_baseline_provenance(&staging.join(BASELINE_PROVENANCE_FILE)).unwrap();
+        assert_eq!(provenance.provenance, "exact_pre_module");
+        assert!(provenance.exact_pre_module);
         fs::remove_dir_all(root).unwrap();
     }
 }

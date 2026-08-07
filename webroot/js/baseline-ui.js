@@ -2,6 +2,7 @@ import { exec, shellQuote } from './kernelsu.js';
 import I18N from './i18n.js';
 import { formatLocalDateTime } from './common.js';
 import router_state from './router.js';
+import { initRuntimeControlUI } from './runtime-control-ui.js';
 
 let panel = null;
 let status = null;
@@ -15,8 +16,8 @@ function localText(english, chinese) {
 }
 
 function previewAllowed() {
-	const requested = new URLSearchParams(location.search).get('preview') === '1';
-	return requested || ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+	const localHost = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+	return ['http:', 'https:'].includes(location.protocol) && localHost;
 }
 
 function previewStatus() {
@@ -186,6 +187,7 @@ export async function refreshBaselineStatus(force = false) {
 export function initBaselineUI() {
 	if (initialized) return;
 	initialized = true;
+	initRuntimeControlUI();
 	ensurePanel();
 	document.addEventListener('i18n-changed', () => {
 		updateLabels();
