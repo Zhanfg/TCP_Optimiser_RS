@@ -43,6 +43,10 @@ cmp "$EXTRACTED/webroot/index.html" webroot/index.html
 cmp "$EXTRACTED/webroot/js/common.js" webroot/js/common.js
 cmp "$EXTRACTED/webroot/js/settings.js" webroot/js/settings.js
 
+grep -Fxq 'id=tcp_optimiser' "$EXTRACTED/module.prop"
+grep -Fxq 'name=TCP Optimiser' "$EXTRACTED/module.prop"
+grep -Fq 'preparing same-name in-place upgrade' "$EXTRACTED/customize.sh"
+
 check_machine() {
   local binary=$1
   local machine=$2
@@ -70,4 +74,4 @@ if grep -RniE 'stealth|幽灵|隐身' "$EXTRACTED/module.prop" "$EXTRACTED/webro
   exit 1
 fi
 
-printf 'package validation: %s entries, signed manifest, matched provenance and three verified Android ELFs\n' "$(printf '%s\n' "$ENTRIES" | wc -l)"
+printf 'package validation: %s entries, stable identity, signed manifest, matched provenance and three verified Android ELFs\n' "$(printf '%s\n' "$ENTRIES" | wc -l)"
