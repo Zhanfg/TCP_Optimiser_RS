@@ -203,7 +203,7 @@ for (const command of [
 	requireText(mainRust, command, `Rust CLI must expose ${command}`);
 }
 requireText(runtimeControl, 'runtime-control-v1.json', 'runtime mode must use a versioned persistent state file');
-requireText(runtimeControl, 'ControlState::safe_fallback', 'invalid runtime state must fail closed');
+requireText(runtimeControl, 'pub fn safe_fallback', 'invalid runtime state must fail closed');
 requireText(runtimeControl, 'recovery_state', 'explicit commands must recover from a corrupt control file');
 requireText(checkpoint, 'last-good-policy-v1.json', 'last-known-good policy must use a versioned checkpoint');
 requireText(checkpoint, 'AUTOMATIC_SAFE_MODE_THRESHOLD', 'checkpoint failures must have an explicit safe-mode threshold');
