@@ -36,6 +36,13 @@ pub fn run() -> io::Result<()> {
     reset_description();
 
     let mut control_state = read_control_state(None);
+    if let Err(error) = control::acknowledge(&control_state) {
+        let reason = format!("cannot persist runtime acknowledgement: {error}");
+        logging::log_print(&format!(
+            "[ERROR] {reason}; daemon starts fail-closed"
+        ));
+        control_state = ControlState::safe_fallback(reason);
+    }
     let mut last_control_generation = control_state.generation;
     let mut last_control_error: Option<String> = None;
     if control_state.mode.allows_writes() {
@@ -79,9 +86,6 @@ pub fn run() -> io::Result<()> {
         };
         let control_changed = observed_control.generation != last_control_generation
             || observed_control.mode != control_state.mode;
-        let control_requests_apply = control_changed
-            && observed_control.mode == RuntimeMode::Active
-            && observed_control.requested_action.requests_apply();
         if control_changed {
             logging::log_print(&format!(
                 "[INFO] Runtime control: generation={} mode={} action={:?} reason={}",
@@ -90,7 +94,20 @@ pub fn run() -> io::Result<()> {
                 observed_control.requested_action,
                 observed_control.reason
             ));
+            if let Err(error) = control::acknowledge(&observed_control) {
+                logging::log_print(&format!(
+                    "[ERROR] Runtime acknowledgement failed; writes remain disabled: {error}"
+                ));
+                control_state = ControlState::safe_fallback(format!(
+                    "runtime-acknowledgement-failed: {error}"
+                ));
+                thread::sleep(Duration::from_secs(SLEEP_FAST));
+                continue;
+            }
         }
+        let control_requests_apply = control_changed
+            && observed_control.mode == RuntimeMode::Active
+            && observed_control.requested_action.requests_apply();
         last_control_generation = observed_control.generation;
         control_state = observed_control;
 
@@ -268,15 +285,11 @@ fn create_pid_file(path: &Path) -> io::Result<()> {
     writeln!(file, "{}", std::process::id())
 }
 
-fn daemon_pid_is_live(path: &Path) -> bool {
-    let Ok(pid) = fs::read_to_string(path).and_then(|value| {
-        value
-            .trim()
-            .parse::<u32>()
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-    }) else {
-        return false;
-    };
+fn read_daemon_pid(path: &Path) -> Option<u32> {
+    fs::read_to_string(path).ok()?.trim().parse::<u32>().ok()
+}
+
+fn pid_is_live(pid: u32) -> bool {
     let Ok(command_line) = fs::read(format!("/proc/{pid}/cmdline")) else {
         return false;
     };
@@ -285,8 +298,17 @@ fn daemon_pid_is_live(path: &Path) -> bool {
         .any(|arg| arg.ends_with(b"tcp_optimiser"))
 }
 
+fn daemon_pid_is_live(path: &Path) -> bool {
+    read_daemon_pid(path).is_some_and(pid_is_live)
+}
+
+pub fn running_pid() -> Option<u32> {
+    let pid = read_daemon_pid(&config::module_dir().join("daemon.pid"))?;
+    pid_is_live(pid).then_some(pid)
+}
+
 pub fn is_running() -> bool {
-    daemon_pid_is_live(&config::module_dir().join("daemon.pid"))
+    running_pid().is_some()
 }
 
 pub fn run_once() -> io::Result<()> {
@@ -372,7 +394,7 @@ fn record_policy_failure(reason: &str) {
             checkpoint::AUTOMATIC_SAFE_MODE_THRESHOLD
         )),
         Err(error) => logging::log_print(&format!(
-            "[WARN] Failed to persist policy failure state: {error}"
+            "[ERROR] Policy failure state is unusable; fail-closed request result: {error}"
         )),
     }
 }
