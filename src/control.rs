@@ -165,9 +165,7 @@ fn recovery_state(error: &io::Error) -> ControlState {
 fn read_from(path: &Path) -> io::Result<ControlState> {
     let content = match fs::read(path) {
         Ok(content) => content,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(ControlState::default())
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ControlState::default()),
         Err(error) => return Err(error),
     };
     let state: ControlState = serde_json::from_slice(&content).map_err(|error| {
