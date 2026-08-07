@@ -659,9 +659,7 @@ fn read_checkpoint() -> io::Result<Option<LastGoodPolicy>> {
 fn read_failures() -> io::Result<FailureState> {
     let bytes = match fs::read(failure_path()) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(FailureState::default())
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(FailureState::default()),
         Err(error) => return Err(error),
     };
     decode_failure_state(&bytes)
@@ -879,8 +877,7 @@ mod tests {
     #[test]
     fn corrupted_failure_state_is_not_reset() {
         assert!(
-            decode_failure_state(br#"{"format_version":1,"consecutive_failures":"bad"}"#)
-                .is_err()
+            decode_failure_state(br#"{"format_version":1,"consecutive_failures":"bad"}"#).is_err()
         );
         assert!(decode_failure_state(br#"{"format_version":9,"consecutive_failures":1,"updated_at_epoch":1,"last_error":"x"}"#)
             .is_err());
