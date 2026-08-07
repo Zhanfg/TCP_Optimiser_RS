@@ -395,12 +395,8 @@ mod tests {
         )
         .unwrap();
 
-        prepare_baseline_provenance(
-            &staging,
-            &live,
-            InstallBaselineMode::LegacyUpgradeSnapshot,
-        )
-        .unwrap();
+        prepare_baseline_provenance(&staging, &live, InstallBaselineMode::LegacyUpgradeSnapshot)
+            .unwrap();
         let provenance =
             validate_baseline_provenance(&staging.join(BASELINE_PROVENANCE_FILE)).unwrap();
         assert_eq!(provenance.provenance, "legacy_upgrade_snapshot");
