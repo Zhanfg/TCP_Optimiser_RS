@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::config;
 
 const CONTROL_FILE: &str = "runtime-control-v1.json";
+const ACK_FILE: &str = "runtime-control-ack-v1.json";
 const FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -59,6 +60,15 @@ pub struct ControlState {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ControlAck {
+    pub format_version: u32,
+    pub generation: u64,
+    pub mode: RuntimeMode,
+    pub daemon_pid: u32,
+    pub acknowledged_at_epoch: u64,
+}
+
 impl Default for ControlState {
     fn default() -> Self {
         Self {
@@ -89,8 +99,51 @@ pub fn path() -> PathBuf {
     config::module_dir().join(CONTROL_FILE)
 }
 
+fn ack_path() -> PathBuf {
+    config::module_dir().join(ACK_FILE)
+}
+
 pub fn read() -> io::Result<ControlState> {
     read_from(&path())
+}
+
+pub fn read_ack() -> io::Result<ControlAck> {
+    let content = fs::read(ack_path())?;
+    let ack: ControlAck = serde_json::from_slice(&content).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid runtime control acknowledgement: {error}"),
+        )
+    })?;
+    if ack.format_version != FORMAT_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "unsupported runtime control acknowledgement format {}",
+                ack.format_version
+            ),
+        ));
+    }
+    Ok(ack)
+}
+
+pub fn acknowledge(state: &ControlState) -> io::Result<ControlAck> {
+    let ack = ControlAck {
+        format_version: FORMAT_VERSION,
+        generation: state.generation,
+        mode: state.mode,
+        daemon_pid: std::process::id(),
+        acknowledged_at_epoch: now_epoch(),
+    };
+    write_json_atomic(&ack_path(), &ack)?;
+    Ok(ack)
+}
+
+pub fn ack_matches(ack: &ControlAck, state: &ControlState, daemon_pid: u32) -> bool {
+    ack.format_version == FORMAT_VERSION
+        && ack.generation == state.generation
+        && ack.mode == state.mode
+        && ack.daemon_pid == daemon_pid
 }
 
 pub fn request_reload(reason: impl Into<String>) -> io::Result<ControlState> {
@@ -147,7 +200,7 @@ fn update(
     state.requested_action = action;
     state.updated_at_epoch = now_epoch();
     state.reason = sanitize_reason(reason.into());
-    write_atomic(&path(), &state)?;
+    write_json_atomic(&path(), &state)?;
     Ok(state)
 }
 
@@ -186,12 +239,12 @@ fn read_from(path: &Path) -> io::Result<ControlState> {
     Ok(state)
 }
 
-fn write_atomic(path: &Path, state: &ControlState) -> io::Result<()> {
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let temporary = path.with_extension(format!("json.tmp.{}", std::process::id()));
-    let payload = serde_json::to_vec_pretty(state).map_err(io::Error::other)?;
+    let payload = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
     fs::write(&temporary, payload)?;
     fs::rename(&temporary, path)
 }
@@ -225,7 +278,8 @@ fn now_epoch() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        read_from, recovery_state, write_atomic, ControlState, RuntimeAction, RuntimeMode,
+        ack_matches, read_from, recovery_state, write_json_atomic, ControlAck, ControlState,
+        RuntimeAction, RuntimeMode,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -257,9 +311,31 @@ mod tests {
             updated_at_epoch: 123,
             reason: "test".to_string(),
         };
-        write_atomic(&path, &state).unwrap();
+        write_json_atomic(&path, &state).unwrap();
         assert_eq!(read_from(&path).unwrap(), state);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn acknowledgement_must_match_generation_mode_and_pid() {
+        let state = ControlState {
+            format_version: 1,
+            generation: 7,
+            mode: RuntimeMode::SafeMode,
+            requested_action: RuntimeAction::AutomaticSafeMode,
+            updated_at_epoch: 123,
+            reason: "test".to_string(),
+        };
+        let mut ack = ControlAck {
+            format_version: 1,
+            generation: 7,
+            mode: RuntimeMode::SafeMode,
+            daemon_pid: 42,
+            acknowledged_at_epoch: 124,
+        };
+        assert!(ack_matches(&ack, &state, 42));
+        ack.generation = 6;
+        assert!(!ack_matches(&ack, &state, 42));
     }
 
     #[test]
