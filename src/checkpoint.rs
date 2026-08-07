@@ -475,9 +475,7 @@ fn preflight_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
     if !config::is_known_algorithm(&current_algorithm) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            format!(
-                "current algorithm {current_algorithm} cannot be transactionally restored"
-            ),
+            format!("current algorithm {current_algorithm} cannot be transactionally restored"),
         ));
     }
     let current_default_qdisc = sysctl::default_qdisc()?;
@@ -501,9 +499,7 @@ fn preflight_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
     if !config::is_known_qdisc(&current_qdisc) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            format!(
-                "current interface qdisc {current_qdisc} cannot be transactionally restored"
-            ),
+            format!("current interface qdisc {current_qdisc} cannot be transactionally restored"),
         ));
     }
 
