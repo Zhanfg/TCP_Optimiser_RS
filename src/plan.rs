@@ -81,6 +81,7 @@ pub fn build(iface: Option<String>) -> io::Result<PolicyPlan> {
             None
         }
     };
+    let policy_resolved = planned.is_some();
 
     let current_algorithm = sysctl::current_algorithm().ok();
     let current_default_qdisc = sysctl::default_qdisc().ok();
@@ -124,7 +125,9 @@ pub fn build(iface: Option<String>) -> io::Result<PolicyPlan> {
             .as_ref()
             .and_then(|policy| policy.wifi_frequency_mhz),
         runtime_mode: control_state.mode,
-        write_allowed: control_state.mode.allows_writes() && mode != IfaceMode::Unknown,
+        write_allowed: control_state.mode.allows_writes()
+            && mode != IfaceMode::Unknown
+            && policy_resolved,
         algorithm,
         default_qdisc,
         interface_qdisc,
