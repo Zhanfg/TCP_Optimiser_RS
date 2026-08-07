@@ -54,8 +54,15 @@ check_machine "$EXTRACTED/bin/armeabi-v7a/tcp_optimiser" 'ARM'
 check_machine "$EXTRACTED/bin/x86_64/tcp_optimiser" 'X86-64'
 
 if [ "${GITHUB_ACTIONS:-false}" = "true" ]; then
+  PACKAGE_CHANNEL=${TCP_OPTIMISER_PACKAGE_CHANNEL:?TCP_OPTIMISER_PACKAGE_CHANNEL is required}
+  PACKAGE_OFFICIAL=${TCP_OPTIMISER_PACKAGE_OFFICIAL:?TCP_OPTIMISER_PACKAGE_OFFICIAL is required}
   grep -Fq "https://github.com/${GITHUB_REPOSITORY}" "$EXTRACTED/build-info.json"
   grep -Fq "${GITHUB_SHA}" "$EXTRACTED/build-info.json"
+  grep -Fq "\"channel\": \"${PACKAGE_CHANNEL}\"" "$EXTRACTED/build-info.json"
+  grep -Fq "\"official\": ${PACKAGE_OFFICIAL}" "$EXTRACTED/build-info.json"
+  for ABI in arm64-v8a armeabi-v7a x86_64; do
+    strings "$EXTRACTED/bin/$ABI/tcp_optimiser" | grep -F "channel=${PACKAGE_CHANNEL}" >/dev/null
+  done
 fi
 
 if grep -RniE 'stealth|幽灵|隐身' "$EXTRACTED/module.prop" "$EXTRACTED/webroot" >/dev/null; then
@@ -63,4 +70,4 @@ if grep -RniE 'stealth|幽灵|隐身' "$EXTRACTED/module.prop" "$EXTRACTED/webro
   exit 1
 fi
 
-printf 'package validation: %s entries, signed manifest and three verified Android ELFs\n' "$(printf '%s\n' "$ENTRIES" | wc -l)"
+printf 'package validation: %s entries, signed manifest, matched provenance and three verified Android ELFs\n' "$(printf '%s\n' "$ENTRIES" | wc -l)"
