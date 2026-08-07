@@ -470,16 +470,43 @@ fn preflight_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
             ),
         ));
     }
-    let current_qdisc = network::root_qdisc(&checkpoint.interface)?;
-    if current_qdisc.is_none() {
+
+    let current_algorithm = sysctl::current_algorithm()?;
+    if !config::is_known_algorithm(&current_algorithm) {
         return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "current algorithm {current_algorithm} cannot be transactionally restored"
+            ),
+        ));
+    }
+    let current_default_qdisc = sysctl::default_qdisc()?;
+    if !config::is_known_qdisc(&current_default_qdisc) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "current default qdisc {current_default_qdisc} cannot be transactionally restored"
+            ),
+        ));
+    }
+    let current_qdisc = network::root_qdisc(&checkpoint.interface)?.ok_or_else(|| {
+        io::Error::new(
             io::ErrorKind::Unsupported,
             format!(
                 "interface {} has no readable root qdisc; transactional rollback cannot be guaranteed",
                 checkpoint.interface
             ),
+        )
+    })?;
+    if !config::is_known_qdisc(&current_qdisc) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "current interface qdisc {current_qdisc} cannot be transactionally restored"
+            ),
         ));
     }
+
     for item in &checkpoint.advanced_sysctls {
         read_u32(&item.path).map_err(|error| {
             io::Error::new(
