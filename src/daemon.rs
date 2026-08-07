@@ -38,9 +38,7 @@ pub fn run() -> io::Result<()> {
     let mut control_state = read_control_state(None);
     if let Err(error) = control::acknowledge(&control_state) {
         let reason = format!("cannot persist runtime acknowledgement: {error}");
-        logging::log_print(&format!(
-            "[ERROR] {reason}; daemon starts fail-closed"
-        ));
+        logging::log_print(&format!("[ERROR] {reason}; daemon starts fail-closed"));
         control_state = ControlState::safe_fallback(reason);
     }
     let mut last_control_generation = control_state.generation;
@@ -98,9 +96,8 @@ pub fn run() -> io::Result<()> {
                 logging::log_print(&format!(
                     "[ERROR] Runtime acknowledgement failed; writes remain disabled: {error}"
                 ));
-                control_state = ControlState::safe_fallback(format!(
-                    "runtime-acknowledgement-failed: {error}"
-                ));
+                control_state =
+                    ControlState::safe_fallback(format!("runtime-acknowledgement-failed: {error}"));
                 thread::sleep(Duration::from_secs(SLEEP_FAST));
                 continue;
             }
