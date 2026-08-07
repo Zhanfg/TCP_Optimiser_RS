@@ -1,6 +1,6 @@
 # Runtime control and policy checkpoints
 
-This document defines the first runtime-control protocol for TCP Optimiser. It is intentionally small and versioned so later network profiles, adaptive policy and experiments can use the same safety boundary.
+This document defines the versioned runtime-control protocol for TCP Optimiser. Network profiles, adaptive policy and experimental features must use this safety boundary rather than inventing separate one-shot marker files.
 
 ## Goals
 
@@ -11,8 +11,9 @@ The runtime layer must support all of the following without restarting Android o
 - enter a persistent read-only safe mode;
 - recover from a damaged control file through an explicit user command;
 - preview planned kernel changes without writing them;
-- preserve a last-known-good policy after complete verification;
-- stop repeated unhealthy writes automatically.
+- preserve a complete last-known-good policy after verification;
+- stop repeated unhealthy writes automatically;
+- prevent the daemon from racing a runtime restoration.
 
 The runtime checkpoint is not a replacement for `baseline-v1.json`:
 
@@ -46,7 +47,7 @@ The file `runtime-control-v1.json` is stored in the module directory.
 
 ### Generation semantics
 
-Every accepted command increments `generation`. The daemon polls the small state file as part of its existing loop and consumes a generation once.
+Every accepted command increments `generation`. The daemon polls the state file as part of its existing loop and consumes a generation once.
 
 - `reload` keeps the current mode and requests one immediate reapplication only when the mode is active.
 - `resume` changes the mode to active and requests one immediate reapplication.
@@ -54,6 +55,30 @@ Every accepted command increments `generation`. The daemon polls the small state
 - pause and entering safe mode never apply a policy.
 
 The generation mechanism replaces ambiguous one-shot marker consumption for runtime control. Existing `force_apply` compatibility remains during migration.
+
+## Daemon acknowledgement
+
+The daemon writes `runtime-control-ack-v1.json` after it has consumed a control generation and before it performs any write allowed by that generation.
+
+```json
+{
+  "format_version": 1,
+  "generation": 9,
+  "mode": "safe_mode",
+  "daemon_pid": 1234,
+  "acknowledged_at_epoch": 1786032010
+}
+```
+
+A runtime restoration is bound to all three values:
+
+- the exact control generation;
+- `safe_mode`;
+- the PID currently recorded in `daemon.pid` and verified through `/proc/<pid>/cmdline`.
+
+Restoration waits up to 15 seconds for that exact acknowledgement. A stale acknowledgement, a different daemon PID or a missing acknowledgement causes a visible timeout before any checkpoint value is written. This replaces the former fixed-delay quiescence guess.
+
+If acknowledgement persistence fails, the daemon remains fail-closed and does not continue kernel writes.
 
 ## Failure behavior
 
@@ -69,7 +94,7 @@ The daemon fails closed into an in-memory safe-mode state and performs no policy
 
 ### File update
 
-Control state is serialized to a process-specific temporary file and atomically renamed over the destination.
+Control state, acknowledgement state, checkpoints and failure records are serialized to process-specific temporary files and atomically renamed over their destinations.
 
 ## Commands
 
@@ -82,7 +107,7 @@ tcp_optimiser safe-mode
 tcp_optimiser safe-mode --disable
 ```
 
-All commands return one JSON object on standard output. Errors are sent to standard error and use a nonzero exit code.
+All commands return one JSON object on standard output. Errors use a nonzero exit code. The WebUI shell wrapper preserves both the JSON report and the real exit status so a failed transaction can still expose rollback evidence.
 
 ## Read-only policy planning
 
@@ -101,24 +126,31 @@ tcp_optimiser diff [--iface IFACE]
 
 It also reports interface type, MTU, Wi-Fi frequency, runtime mode, write eligibility and warnings.
 
-`diff` returns only values that would change. Neither command writes module files, sysctls or qdiscs.
+`write_allowed` is false when the runtime mode blocks writes, the interface is unsupported or the configured policy cannot be resolved. `diff` returns only values that would change. Neither command writes module files, sysctls or qdiscs.
 
-No active physical route is a valid temporary state. The WebUI must still show runtime mode and checkpoint status when policy planning is unavailable.
+No active physical route is a valid temporary state. The WebUI must still show runtime mode and checkpoint status when policy planning is unavailable, and must not describe an unavailable diff as a verified match.
 
 ## Last-known-good policy
 
-The file `last-good-policy-v1.json` records:
+The file `last-good-policy-v2.json` records the full policy covered by post-apply health verification:
 
 ```json
 {
-  "format_version": 1,
+  "format_version": 2,
   "captured_at_epoch": 1786032000,
   "interface": "wlan0",
   "interface_mode": "Wi-Fi",
   "algorithm": "bbr",
   "qdisc": "fq",
   "pacing_ca": 200,
-  "pacing_ss": 300
+  "pacing_ss": 300,
+  "advanced_sysctls": [
+    {
+      "key": "tcp_fin_timeout",
+      "path": "/proc/sys/net/ipv4/tcp_fin_timeout",
+      "value": 30
+    }
+  ]
 }
 ```
 
@@ -130,6 +162,10 @@ The daemon updates this file only when post-apply verification has:
 
 Manual `repair` follows the same rule. A checkpoint persistence error does not change a successful kernel-repair result; it is reported separately as a warning.
 
+Advanced sysctl entries are independently validated against a fixed key, `/proc/sys` path and numeric-range allowlist before restoration. The saved policy can still be restored after `advanced.conf` changes; the module remains in safe mode afterward so the operator can reconcile the configuration before resuming.
+
+The former v1 checkpoint omitted advanced sysctls even though health verification included them. It is intentionally not accepted as a complete runtime checkpoint.
+
 ## Runtime recovery
 
 ```text
@@ -137,23 +173,36 @@ tcp_optimiser checkpoint-status
 tcp_optimiser restore-checkpoint
 ```
 
-Before restoration, the command persists automatic safe mode. It then validates:
+Before restoration, the command persists automatic safe mode and waits for the matching daemon acknowledgement. It then validates:
 
 - checkpoint format version;
-- interface-name syntax;
-- algorithm allowlist membership;
+- interface-name syntax and recorded interface type;
+- algorithm allowlist membership and current availability;
 - qdisc allowlist membership;
-- pacing value ranges.
+- pacing value ranges;
+- every advanced sysctl key, path and numeric range;
+- current readability of every target value required for transactional rollback.
 
-It restores the saved algorithm, global qdisc, interface qdisc and pacing values. The module remains in safe mode after restoration. The user must inspect the result and explicitly resume.
+It captures the complete pre-restore runtime state, restores the saved algorithm, global qdisc, interface qdisc, pacing values and advanced sysctls, then reads every value back.
 
-A checkpoint is tied to the recorded interface. Restoration fails visibly if that interface no longer exists or cannot accept the recorded qdisc.
+If application or readback fails, the captured pre-restore state is reapplied and read back again. The report distinguishes:
+
+- `rollback_attempted`;
+- `rollback_succeeded`;
+- original application/readback errors;
+- rollback errors.
+
+The module remains in safe mode after restoration. The user must inspect the result and explicitly resume.
+
+A checkpoint is tied to the recorded interface and interface type. Restoration fails visibly before writing if the interface no longer exists, changed class or cannot provide a readable root qdisc.
 
 ## Automatic safe mode
 
 `policy-failures-v1.json` stores consecutive failed post-apply verifications. A fully verified checkpoint clears the counter.
 
 After three consecutive failures, the daemon persists automatic safe mode. This prevents a broken or incompatible policy from being written indefinitely.
+
+Malformed or unsupported failure-state data is never reset to zero. When a policy failure occurs with an unusable journal, the module requests persistent automatic safe mode and returns an explicit error. `checkpoint-status` exposes the journal error to the WebUI.
 
 The counter is for policy-health failures, not harmless UI errors or missing history data.
 
@@ -163,12 +212,14 @@ The Home runtime-control card must remain usable independently from network-rout
 
 - current mode and generation;
 - last command and reason;
-- checkpoint availability and timestamp;
-- consecutive failure count and threshold;
+- checkpoint availability, timestamp and advanced-sysctl count;
+- consecutive failure count, threshold and journal errors;
 - planned differences and warnings;
 - reload, pause, resume, safe-mode and checkpoint-restore actions.
 
-Pause, safe-mode transitions and checkpoint restoration require confirmation. The UI must release its busy state before refreshing command results.
+Pause, safe-mode transitions and checkpoint restoration require confirmation. After every action, including a failed one, the UI refreshes the actual control state. Failed restoration retains and displays the structured rollback report instead of replacing it with a generic command error.
+
+Fake preview data is restricted to localhost over HTTP or HTTPS. A query parameter alone cannot enable preview data on a production WebView host.
 
 ## Device validation still required
 
@@ -179,8 +230,13 @@ Automated host tests cannot prove Android kernel behavior. Before this feature i
 3. reload without daemon PID change;
 4. safe mode across reboot;
 5. damaged control JSON and explicit recovery;
-6. three injected verification failures entering automatic safe mode;
-7. checkpoint restoration with the recorded interface present;
-8. checkpoint restoration with the recorded interface absent;
-9. Wi-Fi to cellular transition while paused;
-10. Magisk, KernelSU and APatch WebUI command bridges.
+6. damaged failure journal entering fail-closed behavior on the next policy failure;
+7. three injected verification failures entering automatic safe mode;
+8. acknowledgement timeout with a deliberately stalled daemon;
+9. checkpoint restoration with the recorded interface present;
+10. checkpoint restoration with the recorded interface absent or changed type;
+11. checkpoint application failure followed by successful rollback;
+12. rollback failure being retained in the WebUI report;
+13. advanced sysctl drift and last-known-good restoration;
+14. Wi-Fi to cellular transition while paused;
+15. Magisk, KernelSU and APatch WebUI command bridges.
