@@ -189,11 +189,9 @@ fn set_safe_mode(disable: bool) -> io::Result<()> {
 fn print_control_status() -> io::Result<()> {
     match control::read() {
         Ok(state) => print_json(&state),
-        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-            print_json(&control::ControlState::safe_fallback(format!(
-                "invalid-control-state: {error}"
-            )))
-        }
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => print_json(
+            &control::ControlState::safe_fallback(format!("invalid-control-state: {error}")),
+        ),
         Err(error) => Err(error),
     }
 }
