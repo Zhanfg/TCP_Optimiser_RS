@@ -16,8 +16,8 @@ function localText(english, chinese) {
 }
 
 function previewAllowed() {
-	const requested = new URLSearchParams(location.search).get('preview') === '1';
-	return requested || ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+	const localHost = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+	return ['http:', 'https:'].includes(location.protocol) && localHost;
 }
 
 function previewStatus() {
