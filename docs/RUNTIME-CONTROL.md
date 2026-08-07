@@ -80,6 +80,22 @@ Restoration waits up to 15 seconds for that exact acknowledgement. A stale ackno
 
 If acknowledgement persistence fails, the daemon remains fail-closed and does not continue kernel writes.
 
+## Exclusive restoration transaction
+
+`restore-checkpoint` creates `runtime-restore-v1.lock` before reading or applying the checkpoint. The lock is held by an RAII guard until the command returns, including all error and rollback paths.
+
+While this lock exists:
+
+- daemon startup does not apply base sysctls;
+- the main daemon loop does not process `force_apply`, qdisc reconciliation or interface policy writes;
+- `run_once` returns without writing;
+- ordinary `reload`, `pause`, `resume` and user safe-mode transitions return `WouldBlock`;
+- automatic safe mode remains permitted.
+
+A second restore command is rejected when the recorded restore owner is still live. A stale lock from a dead restore process is removed only after checking `/proc/<pid>/cmdline`. Malformed or unreadable lock evidence fails closed rather than being silently discarded.
+
+The restore flow checks the safe-mode generation before capturing the old state and checks it again after application and readback. Any unexpected control-state change converts the operation into a failed transaction and triggers rollback. These checks are additional to the daemon write barrier; neither mechanism is treated as a substitute for the other.
+
 ## Failure behavior
 
 ### Missing control file
@@ -173,7 +189,7 @@ tcp_optimiser checkpoint-status
 tcp_optimiser restore-checkpoint
 ```
 
-Before restoration, the command persists automatic safe mode and waits for the matching daemon acknowledgement. It then validates:
+Before restoration, the command acquires the exclusive transaction guard, persists automatic safe mode and waits for the matching daemon acknowledgement. It then validates:
 
 - checkpoint format version;
 - interface-name syntax and recorded interface type;
@@ -185,14 +201,14 @@ Before restoration, the command persists automatic safe mode and waits for the m
 
 It captures the complete pre-restore runtime state, restores the saved algorithm, global qdisc, interface qdisc, pacing values and advanced sysctls, then reads every value back.
 
-If application or readback fails, the captured pre-restore state is reapplied and read back again. The report distinguishes:
+If application, readback or transaction-state verification fails, the captured pre-restore state is reapplied and read back again. The report distinguishes:
 
 - `rollback_attempted`;
 - `rollback_succeeded`;
 - original application/readback errors;
 - rollback errors.
 
-The module remains in safe mode after restoration. The user must inspect the result and explicitly resume.
+The module remains in safe mode after restoration. The user must inspect the result and explicitly resume after the transaction lock is released.
 
 A checkpoint is tied to the recorded interface and interface type. Restoration fails visibly before writing if the interface no longer exists, changed class or cannot provide a readable root qdisc.
 
@@ -238,5 +254,8 @@ Automated host tests cannot prove Android kernel behavior. Before this feature i
 11. checkpoint application failure followed by successful rollback;
 12. rollback failure being retained in the WebUI report;
 13. advanced sysctl drift and last-known-good restoration;
-14. Wi-Fi to cellular transition while paused;
-15. Magisk, KernelSU and APatch WebUI command bridges.
+14. concurrent `resume` and `reload` being rejected during restoration;
+15. daemon, `run_once` and legacy `force_apply` remaining write-blocked while the restore lock exists;
+16. stale restore-lock recovery after a killed restore process;
+17. Wi-Fi to cellular transition while paused;
+18. Magisk, KernelSU and APatch WebUI command bridges.
