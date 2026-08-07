@@ -21,11 +21,29 @@ RUST_BIN="$MODPATH/bin/$RUST_ABI/tcp_optimiser"
 [ -f "$RUST_BIN" ] || abort "! Missing Rust binary for $RUST_ABI"
 chmod 0755 "$RUST_BIN" || abort "! Cannot make Rust binary executable"
 
+grep -Fxq 'id=tcp_optimiser' "$MODPATH/module.prop" || abort "! Module identity mismatch"
+grep -Fxq 'name=TCP Optimiser' "$MODPATH/module.prop" || abort "! Module display name mismatch"
+
 LIVE_DIR="/data/adb/modules/tcp_optimiser"
-if [ "$MODPATH" != "$LIVE_DIR" ] && [ -f "$LIVE_DIR/module.prop" ] && [ ! -s "$LIVE_DIR/baseline-v1.json" ]; then
-    ui_print "! Existing release has no exact pre-module kernel baseline"
-    ui_print "! Uninstall the current TCP Optimiser, reboot once, then install this build"
-    abort "! Direct upgrade refused to prevent recording tuned values as system defaults"
+if [ "$MODPATH" != "$LIVE_DIR" ] && [ -f "$LIVE_DIR/module.prop" ]; then
+    ui_print "- Existing TCP Optimiser detected; preparing same-name in-place upgrade"
+    LIVE_PID_FILE="$LIVE_DIR/daemon.pid"
+    if [ -r "$LIVE_PID_FILE" ]; then
+        LIVE_PID="$(sed -n '1p' "$LIVE_PID_FILE" 2>/dev/null)"
+        case "$LIVE_PID" in
+            ''|*[!0-9]*) ;;
+            *)
+                kill "$LIVE_PID" 2>/dev/null || true
+                WAIT_COUNT=0
+                while [ "$WAIT_COUNT" -lt 20 ] && [ -d "/proc/$LIVE_PID" ]; do
+                    sleep 0.1
+                    WAIT_COUNT=$((WAIT_COUNT + 1))
+                done
+                ;;
+        esac
+    fi
+    pkill -f "$LIVE_DIR/bin/.*/tcp_optimiser" 2>/dev/null || true
+    ui_print "- Existing configuration and rollback evidence will be preserved"
 fi
 
 export TCP_OPTIMISER_MODULE_DIR="$MODPATH"
