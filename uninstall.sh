@@ -3,6 +3,7 @@
 MODDIR="${0%/*}"
 LOG_FILE="$MODDIR/uninstall-restore.log"
 PID_FILE="$MODDIR/daemon.pid"
+PROVENANCE_FILE="$MODDIR/baseline-provenance-v1.json"
 
 # Stop the exact daemon instance first; retain pkill only as a compatibility
 # fallback for installations created before PID journaling was introduced.
@@ -27,15 +28,25 @@ RUST_BIN="$MODDIR/bin/$RUST_ABI/tcp_optimiser"
 export TCP_OPTIMISER_MODULE_DIR="$MODDIR"
 export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:$PATH"
 
+BASELINE_KIND="exact_pre_module"
+if [ -s "$PROVENANCE_FILE" ] && grep -Fq '"provenance": "legacy_upgrade_snapshot"' "$PROVENANCE_FILE"; then
+    BASELINE_KIND="legacy_upgrade_snapshot"
+fi
+
 if [ -n "$RUST_ABI" ] && [ -x "$RUST_BIN" ] && [ -s "$MODDIR/baseline-v1.json" ]; then
     if "$RUST_BIN" restore-baseline > "$LOG_FILE" 2>&1; then
-        command -v log >/dev/null 2>&1 && log -t TCP_Optimiser "Original kernel baseline restored"
+        if [ "$BASELINE_KIND" = "legacy_upgrade_snapshot" ]; then
+            printf '%s\n' "[WARN] Restored the state captured immediately before the legacy in-place upgrade; this was not verified as the vendor default." >> "$LOG_FILE"
+            command -v log >/dev/null 2>&1 && log -t TCP_Optimiser "Pre-upgrade compatibility snapshot restored"
+        else
+            command -v log >/dev/null 2>&1 && log -t TCP_Optimiser "Original kernel baseline restored"
+        fi
     else
         command -v log >/dev/null 2>&1 && log -p e -t TCP_Optimiser "Kernel baseline restoration reported errors; see $LOG_FILE before module removal completes"
     fi
 else
-    printf '%s\n' "[ERROR] Exact baseline restoration unavailable; no generic TCP defaults were forced" > "$LOG_FILE"
-    command -v log >/dev/null 2>&1 && log -p e -t TCP_Optimiser "Exact kernel baseline unavailable; refusing unsafe cubic/fq_codel fallback"
+    printf '%s\n' "[ERROR] Baseline restoration unavailable; no generic TCP defaults were forced" > "$LOG_FILE"
+    command -v log >/dev/null 2>&1 && log -p e -t TCP_Optimiser "Kernel baseline unavailable; refusing unsafe cubic/fq_codel fallback"
 fi
 
 # Logs are retained only until the module manager removes the module directory,
