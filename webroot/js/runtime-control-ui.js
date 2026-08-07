@@ -331,7 +331,13 @@ function binaryCommand(subcommand) {
 
 function parseCommandOutput(stdout) {
 	const lines = String(stdout || '').split('\n').map(line => line.trim()).filter(Boolean);
-	const markerIndex = lines.findLastIndex(line => line.startsWith(STATUS_MARKER));
+	let markerIndex = -1;
+	for (let index = lines.length - 1; index >= 0; index -= 1) {
+		if (lines[index].startsWith(STATUS_MARKER)) {
+			markerIndex = index;
+			break;
+		}
+	}
 	if (markerIndex < 0) throw new Error('Runtime command did not return an exit-status marker');
 	const status = Number.parseInt(lines[markerIndex].slice(STATUS_MARKER.length), 10);
 	if (!Number.isInteger(status)) throw new Error('Runtime command returned an invalid exit status');
