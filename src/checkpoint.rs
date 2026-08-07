@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::control::{self, ControlState};
 use crate::network::{self, IfaceMode};
@@ -14,7 +14,8 @@ const CHECKPOINT_FILE: &str = "last-good-policy-v2.json";
 const FAILURE_FILE: &str = "policy-failures-v1.json";
 const CHECKPOINT_FORMAT_VERSION: u32 = 2;
 const FAILURE_FORMAT_VERSION: u32 = 1;
-const DAEMON_QUIESCE_SECONDS: u64 = 6;
+const DAEMON_ACK_TIMEOUT: Duration = Duration::from_secs(15);
+const DAEMON_ACK_POLL: Duration = Duration::from_millis(100);
 pub const AUTOMATIC_SAFE_MODE_THRESHOLD: u32 = 3;
 
 const CHECKPOINT_SYSCTLS: &[(&str, &str, u32, u32)] = &[
@@ -368,8 +369,8 @@ pub fn restore() -> io::Result<RestoreCheckpointReport> {
     preflight_checkpoint(&checkpoint)?;
 
     let control = control::enter_automatic_safe_mode("restoring-last-known-good-policy")?;
-    if daemon::is_running() {
-        thread::sleep(Duration::from_secs(DAEMON_QUIESCE_SECONDS));
+    if let Some(daemon_pid) = daemon::running_pid() {
+        wait_for_daemon_ack(&control, daemon_pid)?;
     }
 
     let previous = capture_runtime_state(&checkpoint)?;
@@ -397,6 +398,27 @@ pub fn restore() -> io::Result<RestoreCheckpointReport> {
         errors,
         rollback_errors,
     })
+}
+
+fn wait_for_daemon_ack(state: &ControlState, daemon_pid: u32) -> io::Result<()> {
+    let deadline = Instant::now() + DAEMON_ACK_TIMEOUT;
+    loop {
+        if let Ok(ack) = control::read_ack() {
+            if control::ack_matches(&ack, state, daemon_pid) {
+                return Ok(());
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "daemon {daemon_pid} did not acknowledge safe mode generation {}",
+                    state.generation
+                ),
+            ));
+        }
+        thread::sleep(DAEMON_ACK_POLL);
+    }
 }
 
 fn preflight_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
@@ -719,13 +741,9 @@ fn validate_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
 }
 
 fn checkpoint_sysctl_allowed(item: &CheckpointSysctl) -> bool {
-    CHECKPOINT_SYSCTLS
-        .iter()
-        .any(|(key, path, min, max)| {
-            item.key == *key
-                && item.path == *path
-                && (*min..=*max).contains(&item.value)
-        })
+    CHECKPOINT_SYSCTLS.iter().any(|(key, path, min, max)| {
+        item.key == *key && item.path == *path && (*min..=*max).contains(&item.value)
+    })
 }
 
 fn validate_iface_name(iface: &str) -> io::Result<()> {
