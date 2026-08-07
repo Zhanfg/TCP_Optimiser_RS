@@ -30,6 +30,10 @@ requireText(checkpoint, 'wait_for_daemon_ack', 'checkpoint restore must wait for
 requireText(checkpoint, 'ensure_control_unchanged', 'checkpoint restore must verify the control generation before writes');
 requireText(checkpoint, 'control_state_errors', 'a control race must convert the transaction into rollback');
 requireText(checkpoint, 'rollback_attempted', 'transaction report must retain rollback state');
+requireText(checkpoint, 'current algorithm', 'preflight must reject an algorithm that cannot be replayed during rollback');
+requireText(checkpoint, 'current default qdisc', 'preflight must reject a global qdisc that cannot be replayed');
+requireText(checkpoint, 'current interface qdisc', 'preflight must reject an interface qdisc that cannot be replayed');
+requireCount(checkpoint, 'config::is_known_qdisc', 3, 'target and both captured qdiscs must be allowlisted');
 
 requireCount(daemon, 'control::restore_in_progress()', 3, 'startup, daemon loop and run-once must all honor the restore barrier');
 requireText(daemon, 'startup kernel writes are disabled', 'startup must explicitly block writes under restore lock');
@@ -38,5 +42,5 @@ requireText(daemon, 'Once skipped while a runtime restoration is active', 'run-o
 requireText(daemon, 'restore_locked || !control_state.mode.allows_writes()', 'restore barrier must take precedence over active mode');
 
 if (!process.exitCode) {
-  console.log('runtime transaction validation: exclusive lock, acknowledgement, write barriers and rollback race checks enforced');
+  console.log('runtime transaction validation: exclusive lock, acknowledgement, replayable preflight, write barriers and rollback race checks enforced');
 }
