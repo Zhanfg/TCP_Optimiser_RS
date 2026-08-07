@@ -78,6 +78,7 @@ jobs:
             machine: X86-64
     env:
       TCP_OPTIMISER_OFFICIAL_BUILD: '1'
+      TCP_OPTIMISER_BUILD_CHANNEL: ${{ github.event_name == 'pull_request' && 'pull-request-candidate' || 'official-github' }}
       TCP_OPTIMISER_BUILD_REPOSITORY: ${{ github.repository }}
       TCP_OPTIMISER_BUILD_REVISION: ${{ github.sha }}
       RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/_/TCP_Optimiser_RS -C debuginfo=0
@@ -118,6 +119,7 @@ jobs:
           grep -F "Machine:" elf-header.txt | grep -F "${{ matrix.machine }}"
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strings" "$binary" | grep -F "https://github.com/${GITHUB_REPOSITORY}"
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strings" "$binary" | grep -F "$GITHUB_SHA"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strings" "$binary" | grep -F "channel=$TCP_OPTIMISER_BUILD_CHANNEL"
           install -Dm755 "$binary" "artifact/bin/${{ matrix.abi }}/tcp_optimiser"
 
       - uses: actions/upload-artifact@v7
