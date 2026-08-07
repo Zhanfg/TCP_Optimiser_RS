@@ -137,7 +137,8 @@ pub fn run() -> io::Result<()> {
         }
 
         let new_mode = network::iface_mode(&iface);
-        let force_apply = control_requests_apply || config::module_dir().join("force_apply").exists();
+        let force_apply =
+            control_requests_apply || config::module_dir().join("force_apply").exists();
         let mut mode_changed = false;
 
         if new_mode != last_mode || iface != last_iface || force_apply {
