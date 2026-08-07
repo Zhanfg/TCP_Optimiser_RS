@@ -14,12 +14,14 @@ const COMMANDS = new Set([
 	'safe-mode --disable',
 	'restore-checkpoint',
 ]);
+const STATUS_MARKER = '__TCP_OPTIMISER_STATUS__=';
 
 let panel = null;
 let controlStatus = null;
 let checkpointStatus = null;
 let policyDiff = null;
-let lastError = null;
+let statusError = null;
+let actionNotice = null;
 let loading = false;
 let actionBusy = false;
 let initialized = false;
@@ -30,8 +32,8 @@ function localText(english, chinese) {
 }
 
 function previewAllowed() {
-	const requested = new URLSearchParams(location.search).get('preview') === '1';
-	return requested || ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+	const localHost = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+	return ['http:', 'https:'].includes(location.protocol) && localHost;
 }
 
 function previewData() {
@@ -47,6 +49,7 @@ function previewData() {
 		checkpoint: {
 			available: true,
 			checkpoint: {
+				format_version: 2,
 				captured_at_epoch: Math.floor(Date.now() / 1000) - 3600,
 				interface: 'wlan0',
 				interface_mode: 'Wi-Fi',
@@ -54,9 +57,11 @@ function previewData() {
 				qdisc: 'fq',
 				pacing_ca: 200,
 				pacing_ss: 300,
+				advanced_sysctls: [],
 			},
 			consecutive_failures: 0,
 			automatic_safe_mode_threshold: 3,
+			failure_state_error: null,
 		},
 		diff: {
 			interface: 'wlan0',
@@ -205,10 +210,10 @@ function render() {
 		syncButtons();
 		return;
 	}
-	if (lastError || !controlStatus) {
+	if (statusError || !controlStatus) {
 		panel.dataset.mode = 'unavailable';
 		count.textContent = localText('Unavailable', '不可用');
-		list.appendChild(createRow(localText('Runtime control', '运行控制'), lastError || localText('No result yet', '尚未检查'), 'unavailable'));
+		list.appendChild(createRow(localText('Runtime control', '运行控制'), statusError || localText('No result yet', '尚未检查'), 'unavailable'));
 		syncButtons();
 		return;
 	}
@@ -226,37 +231,58 @@ function render() {
 		`${controlStatus.requested_action || 'initial'} · ${controlStatus.reason || '-'}`,
 		'match',
 	));
-
-	const checkpoint = checkpointStatus?.checkpoint;
-	const failureCount = checkpointStatus?.consecutive_failures || 0;
-	const failureThreshold = checkpointStatus?.automatic_safe_mode_threshold || 3;
-	list.appendChild(createRow(
-		localText('Verified checkpoint', '已验证检查点'),
-		checkpoint
-			? `${checkpoint.algorithm} + ${checkpoint.qdisc} · ${checkpoint.interface}`
-			: localText('No verified policy recorded yet', '尚未记录已验证策略'),
-		checkpoint ? 'match' : 'warn',
-	));
-	list.appendChild(createRow(
-		localText('Policy failures', '策略失败计数'),
-		`${failureCount} / ${failureThreshold}`,
-		failureCount > 0 ? 'warn' : 'match',
-	));
-	if (checkpoint?.captured_at_epoch) {
+	if (actionNotice) {
 		list.appendChild(createRow(
-			localText('Checkpoint time', '检查点时间'),
-			formatLocalDateTime(new Date(checkpoint.captured_at_epoch * 1000)),
-			'match',
+			localText('Last action result', '最近操作结果'),
+			actionNotice,
+			'warn',
 		));
 	}
 
+	if (checkpointStatus?.status_error) {
+		list.appendChild(createRow(
+			localText('Checkpoint status', '检查点状态'),
+			checkpointStatus.status_error,
+			'unavailable',
+		));
+	} else {
+		const checkpoint = checkpointStatus?.checkpoint;
+		list.appendChild(createRow(
+			localText('Verified checkpoint', '已验证检查点'),
+			checkpoint
+				? `${checkpoint.algorithm} + ${checkpoint.qdisc} · ${checkpoint.interface} · ${checkpoint.advanced_sysctls?.length || 0} sysctl`
+				: localText('No verified policy recorded yet', '尚未记录已验证策略'),
+			checkpoint ? 'match' : 'warn',
+		));
+		if (checkpoint?.captured_at_epoch) {
+			list.appendChild(createRow(
+				localText('Checkpoint time', '检查点时间'),
+				formatLocalDateTime(new Date(checkpoint.captured_at_epoch * 1000)),
+				'match',
+			));
+		}
+	}
+
+	const failureCount = checkpointStatus?.consecutive_failures || 0;
+	const failureThreshold = checkpointStatus?.automatic_safe_mode_threshold || 3;
+	list.appendChild(createRow(
+		localText('Policy failures', '策略失败计数'),
+		checkpointStatus?.failure_state_error
+			? checkpointStatus.failure_state_error
+			: `${failureCount} / ${failureThreshold}`,
+		checkpointStatus?.failure_state_error || failureCount > 0 ? 'warn' : 'match',
+	));
+
+	const diffUnavailable = policyDiff?.unavailable === true;
 	const changes = Array.isArray(policyDiff?.changes) ? policyDiff.changes : [];
 	list.appendChild(createRow(
 		localText('Planned differences', '计划差异'),
-		changes.length === 0
-			? localText('Current kernel state matches the configured policy', '当前内核状态与配置策略一致')
-			: localText(`${changes.length} value(s) would change`, `将修改 ${changes.length} 项`),
-		changes.length === 0 ? 'match' : 'warn',
+		diffUnavailable
+			? localText('Policy difference is currently unavailable', '当前无法读取策略差异')
+			: changes.length === 0
+				? localText('Current kernel state matches the configured policy', '当前内核状态与配置策略一致')
+				: localText(`${changes.length} value(s) would change`, `将修改 ${changes.length} 项`),
+		diffUnavailable ? 'warn' : changes.length === 0 ? 'match' : 'warn',
 	));
 	for (const change of changes.slice(0, 6)) {
 		const row = document.createElement('div');
@@ -289,7 +315,9 @@ function syncButtons() {
 	panel.querySelector('#runtime-pause-btn').disabled = disabled || mode !== 'active';
 	panel.querySelector('#runtime-resume-btn').disabled = disabled || mode !== 'paused';
 	panel.querySelector('#runtime-safe-btn').disabled = disabled;
-	panel.querySelector('#runtime-restore-btn').disabled = disabled || checkpointStatus?.available !== true;
+	panel.querySelector('#runtime-restore-btn').disabled = disabled
+		|| checkpointStatus?.available !== true
+		|| Boolean(checkpointStatus?.status_error);
 	panel.querySelector('#runtime-refresh-btn').disabled = loading || actionBusy;
 }
 
@@ -298,34 +326,83 @@ function binaryCommand(subcommand) {
 	const moduleDir = router_state.moduleInformation?.moduleDir;
 	if (!moduleDir) throw new Error(localText('Module is not installed.', '模块尚未安装。'));
 	const binaryRoot = shellQuote(`${moduleDir}/bin`);
-	return `abi=$(getprop ro.product.cpu.abi 2>/dev/null); case "$abi" in arm64-v8a) abi=arm64-v8a ;; armeabi-v7a|armeabi) abi=armeabi-v7a ;; x86_64) abi=x86_64 ;; *) exit 64 ;; esac; bin=${binaryRoot}/$abi/tcp_optimiser; [ -x "$bin" ] || exit 65; "$bin" ${subcommand}`;
+	return `abi=$(getprop ro.product.cpu.abi 2>/dev/null); case "$abi" in arm64-v8a) abi=arm64-v8a ;; armeabi-v7a|armeabi) abi=armeabi-v7a ;; x86_64) abi=x86_64 ;; *) exit 64 ;; esac; bin=${binaryRoot}/$abi/tcp_optimiser; [ -x "$bin" ] || exit 65; set +e; output=$("$bin" ${subcommand} 2>&1); status=$?; printf '%s\n' "$output"; printf '${STATUS_MARKER}%s\n' "$status"; exit 0`;
+}
+
+function parseCommandOutput(stdout) {
+	const lines = String(stdout || '').split('\n').map(line => line.trim()).filter(Boolean);
+	const markerIndex = lines.findLastIndex(line => line.startsWith(STATUS_MARKER));
+	if (markerIndex < 0) throw new Error('Runtime command did not return an exit-status marker');
+	const status = Number.parseInt(lines[markerIndex].slice(STATUS_MARKER.length), 10);
+	if (!Number.isInteger(status)) throw new Error('Runtime command returned an invalid exit status');
+	const outputLines = lines.slice(0, markerIndex);
+	let payload = null;
+	let payloadIndex = -1;
+	for (let index = outputLines.length - 1; index >= 0; index -= 1) {
+		try {
+			payload = JSON.parse(outputLines[index]);
+			payloadIndex = index;
+			break;
+		} catch {}
+	}
+	const detail = outputLines
+		.filter((_, index) => index !== payloadIndex)
+		.at(-1) || `Command failed with status ${status}`;
+	return { status, payload, detail };
 }
 
 async function readJson(subcommand) {
 	const { stdout } = await exec(binaryCommand(subcommand));
-	const line = stdout.trim().split('\n').filter(Boolean).at(-1);
-	return JSON.parse(line || '{}');
+	const result = parseCommandOutput(stdout);
+	if (result.status !== 0) {
+		const error = new Error(result.detail);
+		error.report = result.payload;
+		error.exitStatus = result.status;
+		throw error;
+	}
+	if (!result.payload || typeof result.payload !== 'object') {
+		throw new Error('Runtime command did not return a JSON object');
+	}
+	return result.payload;
+}
+
+function actionFailureMessage(subcommand, error) {
+	const report = error?.report;
+	if (subcommand === 'restore-checkpoint' && report && typeof report === 'object') {
+		const rollback = report.rollback_attempted
+			? report.rollback_succeeded
+				? localText('rollback succeeded', '回滚成功')
+				: localText('rollback failed', '回滚失败')
+			: localText('rollback was not required', '未执行回滚');
+		const details = Array.isArray(report.errors) && report.errors.length
+			? report.errors.join('; ')
+			: String(error?.message || error);
+		return `${localText('Restore failed', '恢复失败')} · ${rollback} · ${details}`;
+	}
+	return String(error?.message || error).replace(/^tcp_optimiser:\s*error:\s*/i, '');
 }
 
 async function runAction(subcommand, confirmation = null) {
 	if (actionBusy) return;
 	if (confirmation && !window.confirm(confirmation)) return;
 	actionBusy = true;
-	lastError = null;
+	actionNotice = null;
 	render();
-	let accepted = false;
+	let failure = null;
 	try {
 		await readJson(subcommand);
-		accepted = true;
 		toast(localText('Runtime command accepted', '运行命令已接受'));
 	} catch (error) {
 		console.error('Runtime command failed:', error);
-		lastError = String(error?.message || error).replace(/^tcp_optimiser:\s*error:\s*/i, '');
+		failure = actionFailureMessage(subcommand, error);
 		toast(localText('Runtime command failed', '运行命令失败'));
 	}
 	actionBusy = false;
-	if (accepted) await refreshRuntimeControl(true);
-	else render();
+	await refreshRuntimeControl(true);
+	if (failure) {
+		actionNotice = failure;
+		render();
+	}
 }
 
 function bindActions() {
@@ -354,11 +431,15 @@ function bindActions() {
 	panel.querySelector('#runtime-refresh-btn')?.addEventListener('click', () => void refreshRuntimeControl(true));
 }
 
+function errorText(error) {
+	return String(error?.message || error).replace(/^tcp_optimiser:\s*error:\s*/i, '');
+}
+
 export async function refreshRuntimeControl(force = false) {
 	if (loading) return;
-	if (!force && controlStatus && checkpointStatus && policyDiff && !lastError) return;
+	if (!force && controlStatus && checkpointStatus && policyDiff && !statusError) return;
 	loading = true;
-	lastError = null;
+	statusError = null;
 	render();
 	try {
 		const [controlResult, checkpointResult, diffResult] = await Promise.allSettled([
@@ -375,10 +456,13 @@ export async function refreshRuntimeControl(force = false) {
 				checkpoint: null,
 				consecutive_failures: 0,
 				automatic_safe_mode_threshold: 3,
+				failure_state_error: null,
+				status_error: errorText(checkpointResult.reason),
 			};
 		policyDiff = diffResult.status === 'fulfilled'
 			? diffResult.value
 			: {
+				unavailable: true,
 				changes: [],
 				warnings: [localText(
 					'Policy difference is unavailable until an active physical route exists.',
@@ -393,7 +477,8 @@ export async function refreshRuntimeControl(force = false) {
 			policyDiff = preview.diff;
 		} else {
 			console.error('Runtime control status unavailable:', error);
-			lastError = String(error?.message || error).replace(/^tcp_optimiser:\s*error:\s*/i, '');
+			controlStatus = null;
+			statusError = errorText(error);
 		}
 	} finally {
 		loading = false;
