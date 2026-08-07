@@ -284,12 +284,7 @@ fn verify_runtime_state(iface: &str, expected: &RuntimeKernelState) -> Vec<Strin
     errors
 }
 
-fn compare_value(
-    errors: &mut Vec<String>,
-    name: &str,
-    actual: Option<String>,
-    expected: String,
-) {
+fn compare_value(errors: &mut Vec<String>, name: &str, actual: Option<String>, expected: String) {
     match actual {
         Some(value) if value == expected => {}
         Some(value) => errors.push(format!(
@@ -330,10 +325,7 @@ fn read_failures() -> io::Result<FailureState> {
     if state.format_version != FORMAT_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "unsupported policy failure format {}",
-                state.format_version
-            ),
+            format!("unsupported policy failure format {}", state.format_version),
         ));
     }
     Ok(state)
@@ -362,9 +354,7 @@ fn validate_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
             format!("unknown checkpoint qdisc {}", checkpoint.qdisc),
         ));
     }
-    if !(1..=1000).contains(&checkpoint.pacing_ca)
-        || !(1..=1000).contains(&checkpoint.pacing_ss)
-    {
+    if !(1..=1000).contains(&checkpoint.pacing_ca) || !(1..=1000).contains(&checkpoint.pacing_ss) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "checkpoint pacing values are out of range",
@@ -450,9 +440,7 @@ impl Default for FailureState {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        compare_value, validate_checkpoint, validate_iface_name, LastGoodPolicy,
-    };
+    use super::{compare_value, validate_checkpoint, validate_iface_name, LastGoodPolicy};
 
     #[test]
     fn interface_name_validation_rejects_paths_and_shell_text() {
