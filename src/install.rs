@@ -37,7 +37,7 @@ pub fn run() -> io::Result<()> {
     let live_dir = config::live_module_dir();
     let baseline_mode = classify_baseline_mode(&staging_dir, &live_dir);
 
-    preserve_exact_config(&staging_dir, &live_dir, BASELINE_FILE)?;
+    prepare_baseline_snapshot(&staging_dir, &live_dir, baseline_mode)?;
     prepare_baseline_provenance(&staging_dir, &live_dir, baseline_mode)?;
 
     let baseline = baseline::ensure_global_baseline()?;
@@ -117,6 +117,25 @@ fn baseline_mode_name(mode: InstallBaselineMode) -> &'static str {
         InstallBaselineMode::PreserveExisting => "preserved_existing",
         InstallBaselineMode::LegacyUpgradeSnapshot => "legacy_upgrade_snapshot",
     }
+}
+
+fn prepare_baseline_snapshot(
+    staging_dir: &Path,
+    live_dir: &Path,
+    mode: InstallBaselineMode,
+) -> io::Result<()> {
+    let staged = staging_dir.join(BASELINE_FILE);
+    if mode == InstallBaselineMode::LegacyUpgradeSnapshot {
+        match fs::remove_file(&staged) {
+            Ok(()) => logging::log_print(
+                "[WARN] Removed stale staged baseline before capturing legacy upgrade state.",
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        return Ok(());
+    }
+    preserve_exact_config(staging_dir, live_dir, BASELINE_FILE)
 }
 
 fn prepare_baseline_provenance(
@@ -310,8 +329,9 @@ fn preserve_exact_config(staging_dir: &Path, live_dir: &Path, name: &str) -> io:
 mod tests {
     use super::{
         classify_baseline_mode, ensure_baseline_provenance, prepare_baseline_provenance,
-        preserve_exact_config, safe_fallback_algorithm, validate_baseline_provenance,
-        BaselineProvenance, InstallBaselineMode, BASELINE_FILE, BASELINE_PROVENANCE_FILE,
+        prepare_baseline_snapshot, preserve_exact_config, safe_fallback_algorithm,
+        validate_baseline_provenance, BaselineProvenance, InstallBaselineMode, BASELINE_FILE,
+        BASELINE_PROVENANCE_FILE,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -355,12 +375,25 @@ mod tests {
         let (root, live, staging) = temporary_dirs("baseline");
         fs::write(live.join(BASELINE_FILE), "{\"version\":1}\n").unwrap();
 
-        preserve_exact_config(&staging, &live, BASELINE_FILE).unwrap();
+        prepare_baseline_snapshot(&staging, &live, InstallBaselineMode::PreserveExisting).unwrap();
 
         assert_eq!(
             fs::read_to_string(staging.join(BASELINE_FILE)).unwrap(),
             "{\"version\":1}\n"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_upgrade_discards_stale_staged_baseline() {
+        let (root, live, staging) = temporary_dirs("stale-baseline");
+        fs::write(live.join("module.prop"), "id=tcp_optimiser\n").unwrap();
+        fs::write(staging.join(BASELINE_FILE), "{\"version\":1}\n").unwrap();
+
+        prepare_baseline_snapshot(&staging, &live, InstallBaselineMode::LegacyUpgradeSnapshot)
+            .unwrap();
+
+        assert!(!staging.join(BASELINE_FILE).exists());
         fs::remove_dir_all(root).unwrap();
     }
 
