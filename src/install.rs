@@ -38,8 +38,7 @@ pub fn run() -> io::Result<()> {
     let baseline_mode = classify_baseline_mode(&staging_dir, &live_dir);
 
     preserve_exact_config(&staging_dir, &live_dir, BASELINE_FILE)?;
-    preserve_exact_config(&staging_dir, &live_dir, BASELINE_PROVENANCE_FILE)?;
-    ensure_baseline_provenance(&staging_dir, baseline_mode)?;
+    prepare_baseline_provenance(&staging_dir, &live_dir, baseline_mode)?;
 
     let baseline = baseline::ensure_global_baseline()?;
     logging::log_print(&format!(
@@ -118,6 +117,26 @@ fn baseline_mode_name(mode: InstallBaselineMode) -> &'static str {
         InstallBaselineMode::PreserveExisting => "preserved_existing",
         InstallBaselineMode::LegacyUpgradeSnapshot => "legacy_upgrade_snapshot",
     }
+}
+
+fn prepare_baseline_provenance(
+    staging_dir: &Path,
+    live_dir: &Path,
+    mode: InstallBaselineMode,
+) -> io::Result<()> {
+    let staged = staging_dir.join(BASELINE_PROVENANCE_FILE);
+    if mode == InstallBaselineMode::LegacyUpgradeSnapshot {
+        match fs::remove_file(&staged) {
+            Ok(()) => logging::log_print(
+                "[WARN] Removed orphan baseline provenance because no baseline file was available.",
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    } else {
+        preserve_exact_config(staging_dir, live_dir, BASELINE_PROVENANCE_FILE)?;
+    }
+    ensure_baseline_provenance(staging_dir, mode)
 }
 
 fn ensure_baseline_provenance(staging_dir: &Path, mode: InstallBaselineMode) -> io::Result<()> {
@@ -290,9 +309,9 @@ fn preserve_exact_config(staging_dir: &Path, live_dir: &Path, name: &str) -> io:
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_baseline_mode, ensure_baseline_provenance, preserve_exact_config,
-        safe_fallback_algorithm, validate_baseline_provenance, InstallBaselineMode, BASELINE_FILE,
-        BASELINE_PROVENANCE_FILE,
+        classify_baseline_mode, ensure_baseline_provenance, prepare_baseline_provenance,
+        preserve_exact_config, safe_fallback_algorithm, validate_baseline_provenance,
+        BaselineProvenance, InstallBaselineMode, BASELINE_FILE, BASELINE_PROVENANCE_FILE,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -352,7 +371,36 @@ mod tests {
 
         let mode = classify_baseline_mode(&staging, &live);
         assert_eq!(mode, InstallBaselineMode::LegacyUpgradeSnapshot);
-        ensure_baseline_provenance(&staging, mode).unwrap();
+        prepare_baseline_provenance(&staging, &live, mode).unwrap();
+        let provenance =
+            validate_baseline_provenance(&staging.join(BASELINE_PROVENANCE_FILE)).unwrap();
+        assert_eq!(provenance.provenance, "legacy_upgrade_snapshot");
+        assert!(!provenance.exact_pre_module);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_upgrade_discards_orphan_exact_provenance() {
+        let (root, live, staging) = temporary_dirs("orphan-provenance");
+        fs::write(live.join("module.prop"), "id=tcp_optimiser\n").unwrap();
+        let orphan = BaselineProvenance {
+            format_version: 1,
+            provenance: "exact_pre_module".to_string(),
+            exact_pre_module: true,
+            note: "orphan".to_string(),
+        };
+        fs::write(
+            staging.join(BASELINE_PROVENANCE_FILE),
+            serde_json::to_vec(&orphan).unwrap(),
+        )
+        .unwrap();
+
+        prepare_baseline_provenance(
+            &staging,
+            &live,
+            InstallBaselineMode::LegacyUpgradeSnapshot,
+        )
+        .unwrap();
         let provenance =
             validate_baseline_provenance(&staging.join(BASELINE_PROVENANCE_FILE)).unwrap();
         assert_eq!(provenance.provenance, "legacy_upgrade_snapshot");
