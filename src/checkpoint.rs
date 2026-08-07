@@ -17,6 +17,196 @@ const FAILURE_FORMAT_VERSION: u32 = 1;
 const DAEMON_QUIESCE_SECONDS: u64 = 6;
 pub const AUTOMATIC_SAFE_MODE_THRESHOLD: u32 = 3;
 
+const CHECKPOINT_SYSCTLS: &[(&str, &str, u32, u32)] = &[
+    (
+        "tcp_keepalive_time",
+        "/proc/sys/net/ipv4/tcp_keepalive_time",
+        10,
+        7200,
+    ),
+    (
+        "tcp_keepalive_intvl",
+        "/proc/sys/net/ipv4/tcp_keepalive_intvl",
+        1,
+        300,
+    ),
+    (
+        "tcp_keepalive_probes",
+        "/proc/sys/net/ipv4/tcp_keepalive_probes",
+        1,
+        30,
+    ),
+    (
+        "tcp_fin_timeout",
+        "/proc/sys/net/ipv4/tcp_fin_timeout",
+        5,
+        120,
+    ),
+    (
+        "tcp_syn_retries",
+        "/proc/sys/net/ipv4/tcp_syn_retries",
+        1,
+        10,
+    ),
+    (
+        "tcp_synack_retries",
+        "/proc/sys/net/ipv4/tcp_synack_retries",
+        1,
+        10,
+    ),
+    ("tcp_retries2", "/proc/sys/net/ipv4/tcp_retries2", 3, 20),
+    (
+        "rmem_max",
+        "/proc/sys/net/core/rmem_max",
+        65_536,
+        134_217_728,
+    ),
+    (
+        "wmem_max",
+        "/proc/sys/net/core/wmem_max",
+        65_536,
+        134_217_728,
+    ),
+    (
+        "optmem_max",
+        "/proc/sys/net/core/optmem_max",
+        10_240,
+        4_194_304,
+    ),
+    (
+        "tcp_notsent_lowat",
+        "/proc/sys/net/ipv4/tcp_notsent_lowat",
+        0,
+        u32::MAX,
+    ),
+    ("somaxconn", "/proc/sys/net/core/somaxconn", 128, 65_535),
+    (
+        "netdev_max_backlog",
+        "/proc/sys/net/core/netdev_max_backlog",
+        256,
+        65_535,
+    ),
+    (
+        "tcp_max_syn_backlog",
+        "/proc/sys/net/ipv4/tcp_max_syn_backlog",
+        128,
+        65_535,
+    ),
+    (
+        "netdev_budget",
+        "/proc/sys/net/core/netdev_budget",
+        64,
+        4_096,
+    ),
+    (
+        "netdev_budget_usecs",
+        "/proc/sys/net/core/netdev_budget_usecs",
+        500,
+        50_000,
+    ),
+    (
+        "tcp_mtu_probing",
+        "/proc/sys/net/ipv4/tcp_mtu_probing",
+        0,
+        2,
+    ),
+    ("tcp_sack", "/proc/sys/net/ipv4/tcp_sack", 0, 1),
+    ("tcp_dsack", "/proc/sys/net/ipv4/tcp_dsack", 0, 1),
+    (
+        "tcp_no_metrics_save",
+        "/proc/sys/net/ipv4/tcp_no_metrics_save",
+        0,
+        1,
+    ),
+    (
+        "tcp_slow_start_after_idle",
+        "/proc/sys/net/ipv4/tcp_slow_start_after_idle",
+        0,
+        1,
+    ),
+    ("tcp_tw_reuse", "/proc/sys/net/ipv4/tcp_tw_reuse", 0, 2),
+    (
+        "tcp_autocorking",
+        "/proc/sys/net/ipv4/tcp_autocorking",
+        0,
+        1,
+    ),
+    (
+        "tcp_early_retrans",
+        "/proc/sys/net/ipv4/tcp_early_retrans",
+        0,
+        4,
+    ),
+    (
+        "tcp_thin_linear_timeouts",
+        "/proc/sys/net/ipv4/tcp_thin_linear_timeouts",
+        0,
+        1,
+    ),
+    (
+        "tcp_thin_dupack",
+        "/proc/sys/net/ipv4/tcp_thin_dupack",
+        0,
+        1,
+    ),
+    (
+        "tcp_rto_max_ms",
+        "/proc/sys/net/ipv4/tcp_rto_max_ms",
+        1_000,
+        120_000,
+    ),
+    (
+        "tcp_plb_enabled",
+        "/proc/sys/net/ipv4/tcp_plb_enabled",
+        0,
+        1,
+    ),
+    (
+        "tcp_plb_idle_rehash_rounds",
+        "/proc/sys/net/ipv4/tcp_plb_idle_rehash_rounds",
+        0,
+        31,
+    ),
+    (
+        "tcp_plb_rehash_rounds",
+        "/proc/sys/net/ipv4/tcp_plb_rehash_rounds",
+        0,
+        31,
+    ),
+    (
+        "tcp_plb_suspend_rto_sec",
+        "/proc/sys/net/ipv4/tcp_plb_suspend_rto_sec",
+        0,
+        255,
+    ),
+    (
+        "tcp_plb_cong_thresh",
+        "/proc/sys/net/ipv4/tcp_plb_cong_thresh",
+        0,
+        256,
+    ),
+    ("busy_poll", "/proc/sys/net/core/busy_poll", 0, 100_000),
+    ("busy_read", "/proc/sys/net/core/busy_read", 0, 100_000),
+    (
+        "nf_conntrack_max",
+        "/proc/sys/net/netfilter/nf_conntrack_max",
+        1_024,
+        1_048_576,
+    ),
+    (
+        "nf_conntrack_tcp_timeout_established",
+        "/proc/sys/net/netfilter/nf_conntrack_tcp_timeout_established",
+        60,
+        432_000,
+    ),
+    (
+        "nf_conntrack_tcp_timeout_time_wait",
+        "/proc/sys/net/netfilter/nf_conntrack_tcp_timeout_time_wait",
+        1,
+        600,
+    ),
+];
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CheckpointSysctl {
     pub key: String,
@@ -138,7 +328,20 @@ pub fn persist(
 }
 
 pub fn record_failure(message: impl Into<String>) -> io::Result<FailureState> {
-    let mut state = read_failures()?;
+    let mut state = match read_failures() {
+        Ok(state) => state,
+        Err(error) => {
+            let reason = format!("policy failure journal is invalid: {error}");
+            let safe_mode_error = control::enter_automatic_safe_mode(&reason).err();
+            let detail = match safe_mode_error {
+                Some(safe_error) => {
+                    format!("{reason}; failed to persist safe mode: {safe_error}")
+                }
+                None => reason,
+            };
+            return Err(io::Error::new(io::ErrorKind::InvalidData, detail));
+        }
+    };
     state.consecutive_failures = state.consecutive_failures.saturating_add(1);
     state.updated_at_epoch = now_epoch();
     state.last_error = sanitize_message(message.into());
@@ -282,7 +485,10 @@ fn apply_checkpoint(checkpoint: &LastGoodPolicy) -> Vec<String> {
     }
     for item in &checkpoint.advanced_sysctls {
         if let Err(error) = sysctl::write_sysctl(&item.path, &item.value.to_string()) {
-            errors.push(format!("advanced sysctl {} restore failed: {error}", item.key));
+            errors.push(format!(
+                "advanced sysctl {} restore failed: {error}",
+                item.key
+            ));
         }
     }
     errors
@@ -327,7 +533,10 @@ fn restore_runtime_state(iface: &str, previous: &RuntimeKernelState) -> Vec<Stri
     }
     for item in &previous.advanced_sysctls {
         if let Err(error) = sysctl::write_sysctl(&item.path, &item.value.to_string()) {
-            errors.push(format!("rollback advanced sysctl {} failed: {error}", item.key));
+            errors.push(format!(
+                "rollback advanced sysctl {} failed: {error}",
+                item.key
+            ));
         }
     }
     errors
@@ -428,7 +637,9 @@ fn read_checkpoint() -> io::Result<Option<LastGoodPolicy>> {
 fn read_failures() -> io::Result<FailureState> {
     let bytes = match fs::read(failure_path()) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(FailureState::default()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(FailureState::default())
+        }
         Err(error) => return Err(error),
     };
     decode_failure_state(&bytes)
@@ -464,7 +675,10 @@ fn validate_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
     if !matches!(checkpoint.interface_mode.as_str(), "Wi-Fi" | "Cellular") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid checkpoint interface mode {}", checkpoint.interface_mode),
+            format!(
+                "invalid checkpoint interface mode {}",
+                checkpoint.interface_mode
+            ),
         ));
     }
     if !config::is_known_algorithm(&checkpoint.algorithm) {
@@ -486,19 +700,6 @@ fn validate_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
         ));
     }
 
-    let (configured, parse_errors) = sysctl::configured_advanced_overrides();
-    if !parse_errors.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("advanced.conf is invalid: {}", parse_errors.join("; ")),
-        ));
-    }
-    if checkpoint.advanced_sysctls.len() != configured.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "checkpoint advanced sysctl set does not match the configured policy",
-        ));
-    }
     let mut seen = HashSet::new();
     for item in &checkpoint.advanced_sysctls {
         if !seen.insert(item.key.as_str()) {
@@ -507,21 +708,24 @@ fn validate_checkpoint(checkpoint: &LastGoodPolicy) -> io::Result<()> {
                 format!("duplicate checkpoint sysctl {}", item.key),
             ));
         }
-        let Some(configured_item) = configured.iter().find(|candidate| candidate.key == item.key)
-        else {
+        if !checkpoint_sysctl_allowed(item) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("unknown checkpoint sysctl {}", item.key),
-            ));
-        };
-        if configured_item.path != item.path || configured_item.value != item.value {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("checkpoint sysctl {} does not match advanced.conf", item.key),
+                format!("invalid checkpoint sysctl {}", item.key),
             ));
         }
     }
     Ok(())
+}
+
+fn checkpoint_sysctl_allowed(item: &CheckpointSysctl) -> bool {
+    CHECKPOINT_SYSCTLS
+        .iter()
+        .any(|(key, path, min, max)| {
+            item.key == *key
+                && item.path == *path
+                && (*min..=*max).contains(&item.value)
+        })
 }
 
 fn validate_iface_name(iface: &str) -> io::Result<()> {
@@ -602,8 +806,8 @@ impl Default for FailureState {
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_value, decode_failure_state, validate_checkpoint, validate_iface_name,
-        LastGoodPolicy,
+        checkpoint_sysctl_allowed, compare_value, decode_failure_state, validate_checkpoint,
+        validate_iface_name, CheckpointSysctl, LastGoodPolicy,
     };
 
     fn checkpoint() -> LastGoodPolicy {
@@ -637,9 +841,29 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_sysctls_are_allowlisted_and_bounded() {
+        let valid = CheckpointSysctl {
+            key: "tcp_fin_timeout".to_string(),
+            path: "/proc/sys/net/ipv4/tcp_fin_timeout".to_string(),
+            value: 30,
+        };
+        assert!(checkpoint_sysctl_allowed(&valid));
+
+        let mut invalid = valid.clone();
+        invalid.path = "/proc/sys/kernel/panic".to_string();
+        assert!(!checkpoint_sysctl_allowed(&invalid));
+
+        invalid = valid;
+        invalid.value = 121;
+        assert!(!checkpoint_sysctl_allowed(&invalid));
+    }
+
+    #[test]
     fn corrupted_failure_state_is_not_reset() {
-        assert!(decode_failure_state(br#"{"format_version":1,"consecutive_failures":"bad"}"#)
-            .is_err());
+        assert!(
+            decode_failure_state(br#"{"format_version":1,"consecutive_failures":"bad"}"#)
+                .is_err()
+        );
         assert!(decode_failure_state(br#"{"format_version":9,"consecutive_failures":1,"updated_at_epoch":1,"last_error":"x"}"#)
             .is_err());
     }
