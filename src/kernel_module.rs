@@ -98,14 +98,61 @@ pub fn bundled_algorithms() -> Vec<String> {
 
 pub fn bundled_qdiscs() -> Vec<String> {
     let modules = matching_module_names().unwrap_or_default();
+    let blocked = unavailable_qdiscs();
     crate::config::KNOWN_QDISCS
         .iter()
+        .filter(|qdisc| !blocked.contains(**qdisc))
         .filter(|qdisc| {
             qdisc_modules(qdisc)
                 .is_some_and(|required| required.iter().all(|module| modules.contains(*module)))
         })
         .map(|qdisc| (*qdisc).to_string())
         .collect()
+}
+
+pub fn mark_qdisc_unavailable(qdisc: &str) -> io::Result<()> {
+    if !crate::config::is_known_qdisc(qdisc) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unknown qdisc: {qdisc}"),
+        ));
+    }
+    let path = crate::config::module_dir().join("unavailable_qdiscs");
+    let mut blocked = unavailable_qdiscs();
+    blocked.insert(qdisc.to_string());
+    let mut values = blocked.into_iter().collect::<Vec<_>>();
+    values.sort();
+    fs::write(path, format!("{}\n", values.join(" ")))
+}
+
+pub fn clear_qdisc_unavailable(qdisc: &str) -> io::Result<()> {
+    let path = crate::config::module_dir().join("unavailable_qdiscs");
+    let mut blocked = unavailable_qdiscs();
+    if !blocked.remove(qdisc) {
+        return Ok(());
+    }
+    if blocked.is_empty() {
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+    let mut values = blocked.into_iter().collect::<Vec<_>>();
+    values.sort();
+    fs::write(path, format!("{}\n", values.join(" ")))
+}
+
+fn unavailable_qdiscs() -> HashSet<String> {
+    fs::read_to_string(crate::config::module_dir().join("unavailable_qdiscs"))
+        .ok()
+        .map(|content| {
+            content
+                .split_whitespace()
+                .filter(|qdisc| crate::config::is_known_qdisc(qdisc))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn ensure_algorithm(algorithm: &str) -> io::Result<bool> {
