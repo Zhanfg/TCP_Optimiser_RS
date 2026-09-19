@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
-      CCACHE_DIR: ${{ runner.temp }}/kernel-ccache
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 768M
       CCACHE_COMPRESS: "true"
     strategy:
