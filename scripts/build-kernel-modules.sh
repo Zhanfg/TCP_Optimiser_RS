@@ -24,7 +24,9 @@ BBR_DIR="$WORK/tcp_bbr_modules"
 git clone --filter=blob:none --depth=1 --branch "$KMI" \
   https://android.googlesource.com/kernel/common "$KERNEL_DIR"
 
-make -C "$KERNEL_DIR" ARCH=arm64 LLVM=1 gki_defconfig
+KBUILD_ARGS=(ARCH=arm64 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-)
+
+make -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" gki_defconfig
 
 CONFIG="$KERNEL_DIR/.config"
 "$KERNEL_DIR/scripts/config" --file "$CONFIG" --module TCP_CONG_BBR
@@ -34,14 +36,14 @@ CONFIG="$KERNEL_DIR/.config"
 "$KERNEL_DIR/scripts/config" --file "$CONFIG" --module NET_SCH_CAKE
 "$KERNEL_DIR/scripts/config" --file "$CONFIG" --module NET_SCH_PIE
 "$KERNEL_DIR/scripts/config" --file "$CONFIG" --module NET_SCH_FQ_PIE
-make -C "$KERNEL_DIR" ARCH=arm64 LLVM=1 olddefconfig
+make -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" olddefconfig
 
 # A full GKI build is intentional: CONFIG_MODVERSIONS modules need the exact
 # Module.symvers/CRC data. modules_prepare alone can create a .ko that compiles
 # but is not a trustworthy loadable artifact.
-make -C "$KERNEL_DIR" -j"$(nproc)" ARCH=arm64 LLVM=1 Image modules
+make -C "$KERNEL_DIR" -j"$(nproc)" "${KBUILD_ARGS[@]}" Image modules
 
-KERNEL_RELEASE=$(make -s -C "$KERNEL_DIR" ARCH=arm64 LLVM=1 kernelrelease)
+KERNEL_RELEASE=$(make -s -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" kernelrelease)
 KERNEL_REV=$(git -C "$KERNEL_DIR" rev-parse HEAD)
 
 git clone https://github.com/hrimfaxi/tcp_bbr_modules.git "$BBR_DIR"
@@ -61,7 +63,8 @@ path.write_text(text)
 PY
 
 make -C "$BBR_DIR" \
-  KDIR="$KERNEL_DIR" ARCH=arm64 LLVM=1 CC_PROBE=clang \
+  KDIR="$KERNEL_DIR" ARCH=arm64 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- \
+  CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CC_PROBE=clang \
   PROBE_J="$(nproc)"
 
 # Compile-time API probes are not enough: verify every unresolved symbol in
