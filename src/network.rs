@@ -95,6 +95,10 @@ impl RouteMonitor {
 
     /// Wait until a relevant network event arrives or the timeout expires.
     /// Returns true when an event was received, false for a normal timeout.
+    ///
+    /// A single route change often arrives as several netlink datagrams. Drain
+    /// the entire ready queue here so the daemon coalesces the burst into one
+    /// policy pass instead of spinning once per datagram.
     pub fn wait(&mut self, timeout: Duration) -> io::Result<bool> {
         let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as libc::c_int;
         let mut poll_fd = libc::pollfd {
@@ -111,30 +115,43 @@ impl RouteMonitor {
             }
             return Err(error);
         }
-        if rc == 0 || poll_fd.revents & libc::POLLIN == 0 {
+        if rc == 0 {
             return Ok(false);
         }
 
-        // Drain one datagram. We only care that state changed; the regular
-        // route/interface resolver remains the single source of truth.
+        if poll_fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            return Err(io::Error::other(format!(
+                "rtnetlink poll failed with revents=0x{:x}",
+                poll_fd.revents
+            )));
+        }
+        if poll_fd.revents & libc::POLLIN == 0 {
+            return Ok(false);
+        }
+
         let mut buffer = [0u8; 8192];
-        let received = unsafe {
-            libc::recv(
-                self.fd,
-                buffer.as_mut_ptr().cast::<libc::c_void>(),
-                buffer.len(),
-                libc::MSG_DONTWAIT,
-            )
-        };
-        if received < 0 {
-            let error = io::Error::last_os_error();
-            if matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-            ) {
-                return Ok(true);
+        loop {
+            let received = unsafe {
+                libc::recv(
+                    self.fd,
+                    buffer.as_mut_ptr().cast::<libc::c_void>(),
+                    buffer.len(),
+                    libc::MSG_DONTWAIT,
+                )
+            };
+            if received > 0 {
+                continue;
             }
-            return Err(error);
+            if received == 0 {
+                break;
+            }
+
+            let error = io::Error::last_os_error();
+            match error.kind() {
+                io::ErrorKind::WouldBlock => break,
+                io::ErrorKind::Interrupted => continue,
+                _ => return Err(error),
+            }
         }
         Ok(true)
     }
@@ -167,10 +184,10 @@ pub fn fast_active_iface() -> io::Result<String> {
     cached_active_iface().map(Ok).unwrap_or_else(active_iface)
 }
 
+/// Persist the daemon's latest physical route interface for cheap WebUI
+/// snapshots. The daemon only calls this on an actual interface transition,
+/// avoiding a read-before-write on every steady-state loop.
 pub fn record_active_iface(iface: &str) {
-    if cached_active_iface().as_deref() == Some(iface) {
-        return;
-    }
     let path = crate::config::module_dir().join("active_iface");
     let _ = fs::write(path, format!("{iface}\n"));
 }
