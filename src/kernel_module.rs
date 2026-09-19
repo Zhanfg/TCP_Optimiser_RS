@@ -225,12 +225,7 @@ fn kernel_release() -> io::Result<String> {
 }
 
 fn current_arch() -> &'static str {
-    match std::env::consts::ARCH {
-        "aarch64" => "aarch64",
-        "arm" => "arm",
-        "x86_64" => "x86_64",
-        other => other,
-    }
+    std::env::consts::ARCH
 }
 
 fn derive_kmi(release: &str) -> Option<String> {
