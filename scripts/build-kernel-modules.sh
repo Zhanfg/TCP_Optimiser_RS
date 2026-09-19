@@ -14,6 +14,7 @@ SYMVERS_CACHE=${KERNEL_SYMVERS_CACHE:-}
 THINLTO_CACHE=${KERNEL_THINLTO_CACHE:-}
 BBR_KCONFIG_CACHE=${BBR_KCONFIG_CACHE:-}
 PREFLIGHT_REPORT=${TCP_OPTIMISER_PREFLIGHT_REPORT:-}
+PREFLIGHT_CACHE=${TCP_OPTIMISER_PREFLIGHT_CACHE:-}
 
 case "$KMI" in
   android12-5.10|android13-5.15|android14-6.1|android15-6.6) ;;
@@ -24,6 +25,41 @@ case "$KMI" in
 esac
 
 test -s "$CONFIG_SPEC"
+
+# A workflow-level cache key guards this report with the exact kernel revision,
+# compiler identity, module config and audit/build scripts. When present, reuse
+# the deterministic compatibility result before cloning/preparing a kernel.
+if [[ -n "$PREFLIGHT_CACHE" && -s "$PREFLIGHT_CACHE" ]]; then
+  set +e
+  python3 - "$PREFLIGHT_CACHE" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1]))
+modules = data.get("modules", [])
+if not modules:
+    raise SystemExit(2)
+bad = [m for m in modules if not m.get("compatible", False)]
+print(f"cached KMI preflight: checked={len(modules)} incompatible={len(bad)}")
+for item in bad:
+    print(f"  {item['file']}: {', '.join(item.get('non_kmi_symbols', []))}")
+raise SystemExit(1 if bad else 0)
+PY
+  cached_rc=$?
+  set -e
+  if [[ "$cached_rc" -eq 1 ]]; then
+    printf 'cached KMI preflight rejects %s; skipping kernel preparation/build\n' "$KMI" >&2
+    exit 1
+  elif [[ "$cached_rc" -eq 0 ]]; then
+    printf 'cached KMI preflight accepts %s\n' "$KMI"
+    if [[ "$PREFLIGHT_ONLY" == "1" ]]; then
+      exit 0
+    fi
+    KMI_PREFLIGHT=0
+  else
+    printf '[WARN] cached KMI preflight report is invalid; recomputing\n' >&2
+  fi
+fi
 
 WORK=$(mktemp -d)
 cleanup() { rm -rf "$WORK"; }
@@ -187,6 +223,10 @@ if [[ "$KMI_PREFLIGHT" == "1" ]]; then
   if [[ -n "$PREFLIGHT_REPORT" && -s "$preflight_json" ]]; then
     mkdir -p "$(dirname "$PREFLIGHT_REPORT")"
     install -m 0644 "$preflight_json" "$PREFLIGHT_REPORT"
+  fi
+  if [[ -n "$PREFLIGHT_CACHE" && -s "$preflight_json" ]]; then
+    mkdir -p "$(dirname "$PREFLIGHT_CACHE")"
+    install -m 0644 "$preflight_json" "$PREFLIGHT_CACHE"
   fi
   if [[ "$preflight_rc" -ne 0 ]]; then
     printf 'KMI preflight rejected %s before full GKI build\n' "$KMI" >&2

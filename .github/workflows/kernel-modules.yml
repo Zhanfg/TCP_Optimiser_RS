@@ -40,14 +40,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install kernel build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            bc binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
-            bison build-essential ccache clang flex git kmod libelf-dev libssl-dev \
-            lld llvm pahole python3 rsync
-
       - id: cache_key
         name: Resolve compiler cache key
         shell: bash
@@ -58,6 +50,40 @@ jobs:
           clang_id=$(clang --version | head -1 | sha256sum | awk '{print $1}')
           echo "kernel_rev=$kernel_rev" >> "$GITHUB_OUTPUT"
           echo "clang_id=$clang_id" >> "$GITHUB_OUTPUT"
+
+      - id: preflight_cache
+        name: Restore KMI compatibility result
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.kmi-preflight/${{ matrix.kmi }}
+          key: ${{ runner.os }}-kmi-preflight-v2-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt', 'scripts/build-kernel-modules.sh', 'scripts/audit-gki-symbols.py') }}
+          save-always: true
+
+      - name: Stop immediately on cached KMI rejection
+        if: steps.preflight_cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$GITHUB_WORKSPACE/.kmi-preflight/${{ matrix.kmi }}/report.json"
+          test -s "$report"
+          python3 - "$report" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          bad = [m for m in data["modules"] if not m["compatible"]]
+          print(f"cached checked={len(data['modules'])} incompatible={len(bad)}")
+          for item in bad:
+              print(item["file"], ", ".join(item["non_kmi_symbols"]))
+          if bad:
+              raise SystemExit("cached KMI compatibility result rejects this bundle")
+          PY
+
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            bison build-essential ccache clang flex git kmod libelf-dev libssl-dev \
+            lld llvm pahole python3 rsync
 
       - name: Restore exact GKI Module.symvers
         uses: actions/cache@v6
@@ -103,6 +129,7 @@ jobs:
           KERNEL_SYMVERS_CACHE: ${{ github.workspace }}/.kernel-symvers/${{ matrix.kmi }}/Module.symvers
           KERNEL_THINLTO_CACHE: ${{ github.workspace }}/.thinlto/${{ matrix.kmi }}
           BBR_KCONFIG_CACHE: ${{ github.workspace }}/.bbr3-probe/${{ matrix.kmi }}/kernel_config.h
+          TCP_OPTIMISER_PREFLIGHT_CACHE: ${{ github.workspace }}/.kmi-preflight/${{ matrix.kmi }}/report.json
         run: bash scripts/build-kernel-modules.sh "${{ matrix.kmi }}" kernel_modules
 
       - name: Show compiler cache stats

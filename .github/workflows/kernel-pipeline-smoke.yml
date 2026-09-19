@@ -24,7 +24,45 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - id: cache_key
+        name: Resolve KMI cache key
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel_rev=$(git ls-remote https://android.googlesource.com/kernel/common "refs/heads/android15-6.6" | awk 'NR==1{print $1}')
+          test -n "$kernel_rev"
+          clang_id=$(clang --version | head -1 | sha256sum | awk '{print $1}')
+          echo "kernel_rev=$kernel_rev" >> "$GITHUB_OUTPUT"
+          echo "clang_id=$clang_id" >> "$GITHUB_OUTPUT"
+
+      - id: preflight_cache
+        name: Restore KMI compatibility result
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.kmi-preflight/android15-6.6
+          key: ${{ runner.os }}-kmi-preflight-v2-android15-6.6-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt', 'scripts/build-kernel-modules.sh', 'scripts/audit-gki-symbols.py') }}
+          save-always: true
+
+      - name: Reuse cached rejection
+        if: steps.preflight_cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$GITHUB_WORKSPACE/.kmi-preflight/android15-6.6/report.json"
+          test -s "$report"
+          cp "$report" "$GITHUB_WORKSPACE/preflight-report.json"
+          python3 - "$report" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          bad = [m for m in data["modules"] if not m["compatible"]]
+          print(f"cached checked={len(data['modules'])} incompatible={len(bad)}")
+          if not bad:
+              raise SystemExit("smoke expects the current 6.6 bundle to be rejected")
+          PY
+          echo "warm_preflight_cache=true" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Install minimal kernel build dependencies
+        if: steps.preflight_cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -33,6 +71,7 @@ jobs:
             lld llvm pahole python3 rsync
 
       - name: Run fail-fast KMI preflight
+        if: steps.preflight_cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -41,6 +80,7 @@ jobs:
           set +e
           TCP_OPTIMISER_PREFLIGHT_ONLY=1 \
           TCP_OPTIMISER_PREFLIGHT_REPORT="$report" \
+          TCP_OPTIMISER_PREFLIGHT_CACHE="$GITHUB_WORKSPACE/.kmi-preflight/android15-6.6/report.json" \
           bash scripts/build-kernel-modules.sh android15-6.6 kernel_modules
           rc=$?
           set -e
