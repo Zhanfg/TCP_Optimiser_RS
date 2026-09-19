@@ -12,7 +12,7 @@ const PROFILE_FILE: &str = "auto_profile.json";
 const AUTO_CONFIG_FILE: &str = "auto.conf";
 const DISABLE_AUTO_FILE: &str = "disable_auto_tuning";
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AutoRecommendations {
     pub socket_buffer_floor: u32,
     pub somaxconn: u32,
@@ -25,7 +25,7 @@ pub struct AutoRecommendations {
     pub tcp_autocorking: u32,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct NetworkProfile {
     pub schema: u32,
     pub generated_epoch: u64,
@@ -80,13 +80,26 @@ pub fn refresh_managed_profile() -> io::Result<(NetworkProfile, bool)> {
     let module_dir = crate::config::module_dir();
     fs::create_dir_all(&module_dir)?;
 
-    let profile = collect_profile();
+    let profile_path = module_dir.join(PROFILE_FILE);
+    let mut profile = collect_profile();
+    if let Ok(content) = fs::read(&profile_path) {
+        if let Ok(mut previous) = serde_json::from_slice::<NetworkProfile>(&content) {
+            let previous_epoch = previous.generated_epoch;
+            previous.generated_epoch = 0;
+            let mut current = profile.clone();
+            current.generated_epoch = 0;
+            if previous == current {
+                profile.generated_epoch = previous_epoch;
+            }
+        }
+    }
+
     let auto_config = render_managed_config(&profile);
     let managed_changed =
         write_if_changed(&module_dir.join(AUTO_CONFIG_FILE), auto_config.as_bytes())?;
 
     let json = serde_json::to_vec_pretty(&profile).map_err(io::Error::other)?;
-    write_if_changed(&module_dir.join(PROFILE_FILE), &json)?;
+    write_if_changed(&profile_path, &json)?;
 
     Ok((profile, managed_changed))
 }

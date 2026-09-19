@@ -254,7 +254,7 @@ function normalizeFastProxySnapshot(snapshot) {
 export async function getProxyStatus(force = false, detailed = false) {
 	const now = Date.now();
 	if (!detailed) {
-		if (!force && proxyFastStatusCache && now - proxyFastStatusCheckedAt < 15000) return proxyFastStatusCache;
+		if (!force && proxyFastStatusCache && now - proxyFastStatusCheckedAt < 30000) return proxyFastStatusCache;
 		try {
 			const { stdout } = await exec(rustBinaryCommand('proxy-status-fast', 'proxy'));
 			const snapshot = JSON.parse(stdout.trim());

@@ -3,6 +3,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Proxy family detected
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,7 +89,18 @@ fn classify_proxy_mode(family: &ProxyType, tproxy: bool, has_virtual_iface: bool
     }
 }
 
+const TPROXY_CACHE_SECONDS: u64 = 60;
+
 fn tproxy_active() -> bool {
+    if let Some(cached) = cached_tproxy_state(TPROXY_CACHE_SECONDS) {
+        return cached;
+    }
+    let active = tproxy_active_uncached();
+    let _ = write_tproxy_cache(active);
+    active
+}
+
+fn tproxy_active_uncached() -> bool {
     const PROBES: &[(&str, &[&str])] = &[
         ("iptables-save", &["-t", "mangle"]),
         ("ip6tables-save", &["-t", "mangle"]),
@@ -105,6 +117,31 @@ fn tproxy_active() -> bool {
         let text = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
         text.contains("tproxy") || text.contains("--tproxy-mark")
     })
+}
+
+fn cached_tproxy_state(ttl_seconds: u64) -> Option<bool> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let content =
+        fs::read_to_string(crate::config::module_dir().join("proxy_tproxy_cache")).ok()?;
+    let mut fields = content.split_whitespace();
+    let checked = fields.next()?.parse::<u64>().ok()?;
+    let active = match fields.next()? {
+        "1" => true,
+        "0" => false,
+        _ => return None,
+    };
+    (now >= checked && now - checked <= ttl_seconds).then_some(active)
+}
+
+fn write_tproxy_cache(active: bool) -> io::Result<()> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    fs::write(
+        crate::config::module_dir().join("proxy_tproxy_cache"),
+        format!("{now} {}\n", u8::from(active)),
+    )
 }
 
 fn transparent_virtual_iface() -> Option<String> {
