@@ -1,6 +1,6 @@
 import { exec, toast } from './kernelsu.js';
 import I18N from './i18n.js';
-import { get_active_iface, get_active_algorithm, getInitcwndInitrwndValue, getModuleActiveState, getDefaultQdisc, getProxyStatus, getHostsStatus, getQdiscCapabilities, getRuntimeSnapshot, repairRuntimePolicy, formatLocalDateTime } from './common.js';
+import { get_active_iface, get_active_algorithm, getInitcwndInitrwndValue, getModuleActiveState, getDefaultQdisc, getProxyStatus, getHostsStatus, getRuntimeSnapshot, repairRuntimePolicy, formatLocalDateTime } from './common.js';
 import router_state from './router.js';
 import { ALL_ALGOS, getAlgorithmDescription, getQdiscDescription } from './capabilities.js';
 import { haptic, setAnimatedText } from './motion.js';
@@ -26,9 +26,7 @@ export async function updateModuleStatus(force = false) {
 		}
 
 		let running, iface, algo, initcwndInitrwnd, defaultQdisc, hosts;
-		const [proxy, qdiscCapabilities] = await Promise.all([
-			getProxyStatus(force), getQdiscCapabilities(force),
-		]);
+		const proxy = await getProxyStatus(force);
 		if (snapshot) {
 			running = snapshot.module_active;
 			iface = snapshot.active_iface;
@@ -57,7 +55,6 @@ export async function updateModuleStatus(force = false) {
 		router_state.homePageParams.proxy_status = proxy?.status || 'unknown';
 		router_state.homePageParams.proxy_info = proxy || null;
 		router_state.homePageParams.hosts_status = hosts;
-		router_state.qdiscCapabilities = qdiscCapabilities;
 	} catch (error) {
 		console.error('Error updating status:', error);
 	}
