@@ -168,11 +168,7 @@ pub fn run() -> io::Result<()> {
                 last_vowifi_probe = Some(Instant::now());
             }
 
-            if should_apply_wifi(
-                wifi_applied,
-                last_vowifi_active,
-                pending_since.elapsed(),
-            ) {
+            if should_apply_wifi(wifi_applied, last_vowifi_active, pending_since.elapsed()) {
                 logging::log_print(&format!(
                     "[INFO] Applying Wi-Fi settings (VoWiFi={last_vowifi_active})"
                 ));
@@ -570,9 +566,7 @@ fn should_apply_wifi(already_applied: bool, vowifi_active: bool, elapsed: Durati
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        adjusted_pacing, qdisc_check_interval, should_apply_wifi, should_probe_vowifi,
-    };
+    use super::{adjusted_pacing, qdisc_check_interval, should_apply_wifi, should_probe_vowifi};
     use crate::network::IfaceMode;
     use std::time::Duration;
 
