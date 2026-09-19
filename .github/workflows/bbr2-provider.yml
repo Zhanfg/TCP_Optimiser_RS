@@ -22,7 +22,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang gcc libbpf-dev linux-tools-common linux-tools-generic llvm
-          bpftool_bin=$(find /usr/lib/linux-tools -type f -name bpftool -perm -111 | sort -V | tail -n1)
+          bpftool_bin=$(find /usr/lib -maxdepth 3 -type f -name bpftool -perm -111 2>/dev/null | sort -V | tail -n1)
           test -x "$bpftool_bin"
           echo "BPFTOOL=$bpftool_bin" >> "$GITHUB_ENV"
 
