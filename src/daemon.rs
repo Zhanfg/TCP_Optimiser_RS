@@ -15,9 +15,9 @@ const DEBOUNCE_TIME: u64 = 10;
 const VOWIFI_CONNECT_TIME: u64 = 10;
 const ADAPTIVE_FAST_CYCLES: u32 = 3;
 const SLEEP_FAST: u64 = 2;
-const SLEEP_NORMAL: u64 = 5;
-const QDISC_CHECK_WIFI: u64 = 30;
-const QDISC_CHECK_CELLULAR: u64 = 60;
+const SLEEP_NORMAL: u64 = 30;
+const QDISC_CHECK_WIFI: u64 = 60;
+const QDISC_CHECK_CELLULAR: u64 = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedPolicy {
@@ -44,6 +44,15 @@ pub fn run() -> io::Result<()> {
     let mut adaptive_count: u32 = 0;
     let mut last_qdisc_check: Option<Instant> = None;
     let mut route_unavailable = false;
+    let mut route_monitor = match network::RouteMonitor::new() {
+        Ok(monitor) => Some(monitor),
+        Err(error) => {
+            logging::log_print(&format!(
+                "[WARN] rtnetlink monitor unavailable; using timeout polling: {error}"
+            ));
+            None
+        }
+    };
 
     loop {
         let iface = match network::active_iface() {
@@ -154,7 +163,10 @@ pub fn run() -> io::Result<()> {
         }
 
         // Adaptive polling
-        let sleep_secs = if mode_changed {
+        let wifi_waiting = current_wifi_transition && !wifi_applied;
+        let sleep_secs = if wifi_waiting {
+            SLEEP_FAST
+        } else if mode_changed {
             adaptive_count = ADAPTIVE_FAST_CYCLES;
             SLEEP_FAST
         } else if adaptive_count > 0 {
@@ -164,7 +176,18 @@ pub fn run() -> io::Result<()> {
             SLEEP_NORMAL
         };
 
-        thread::sleep(Duration::from_secs(sleep_secs));
+        let wait = Duration::from_secs(sleep_secs);
+        if let Some(monitor) = route_monitor.as_mut() {
+            if let Err(error) = monitor.wait(wait) {
+                logging::log_print(&format!(
+                    "[WARN] rtnetlink monitor failed; reverting to timeout polling: {error}"
+                ));
+                route_monitor = None;
+                thread::sleep(wait);
+            }
+        } else {
+            thread::sleep(wait);
+        }
     }
 }
 
