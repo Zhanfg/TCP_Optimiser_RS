@@ -82,7 +82,8 @@ pub fn refresh_managed_profile() -> io::Result<(NetworkProfile, bool)> {
 
     let profile = collect_profile();
     let auto_config = render_managed_config(&profile);
-    let managed_changed = write_if_changed(&module_dir.join(AUTO_CONFIG_FILE), auto_config.as_bytes())?;
+    let managed_changed =
+        write_if_changed(&module_dir.join(AUTO_CONFIG_FILE), auto_config.as_bytes())?;
 
     let json = serde_json::to_vec_pretty(&profile).map_err(io::Error::other)?;
     write_if_changed(&module_dir.join(PROFILE_FILE), &json)?;
@@ -137,7 +138,10 @@ fn collect_profile() -> NetworkProfile {
     }
 }
 
-fn recommendations(memory: Option<u64>, proxy: &crate::proxy::ProxySnapshot) -> AutoRecommendations {
+fn recommendations(
+    memory: Option<u64>,
+    proxy: &crate::proxy::ProxySnapshot,
+) -> AutoRecommendations {
     let memory_gib = memory.unwrap_or(0) / 1_048_576;
     let socket_buffer_floor = socket_buffer_floor_for_memory(memory);
     let somaxconn = match memory_gib {
@@ -253,14 +257,25 @@ fn write_if_changed(path: &Path, content: &[u8]) -> io::Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_managed_config, socket_buffer_floor_for_memory, AutoRecommendations, NetworkProfile};
+    use super::{
+        render_managed_config, socket_buffer_floor_for_memory, AutoRecommendations, NetworkProfile,
+    };
     use crate::proxy::ProxySnapshot;
 
     #[test]
     fn buffer_floor_scales_without_reducing_legacy_floor() {
-        assert_eq!(socket_buffer_floor_for_memory(Some(4 * 1_048_576)), 16_777_216);
-        assert_eq!(socket_buffer_floor_for_memory(Some(8 * 1_048_576)), 25_165_824);
-        assert_eq!(socket_buffer_floor_for_memory(Some(12 * 1_048_576)), 33_554_432);
+        assert_eq!(
+            socket_buffer_floor_for_memory(Some(4 * 1_048_576)),
+            16_777_216
+        );
+        assert_eq!(
+            socket_buffer_floor_for_memory(Some(8 * 1_048_576)),
+            25_165_824
+        );
+        assert_eq!(
+            socket_buffer_floor_for_memory(Some(12 * 1_048_576)),
+            33_554_432
+        );
     }
 
     #[test]

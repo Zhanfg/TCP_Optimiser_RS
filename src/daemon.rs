@@ -36,7 +36,9 @@ pub fn run() -> io::Result<()> {
     logging::ensure_flag();
     reset_description();
     if let Err(error) = profile::refresh_managed_profile() {
-        logging::log_print(&format!("[WARN] Auto profile refresh failed at startup: {error}"));
+        logging::log_print(&format!(
+            "[WARN] Auto profile refresh failed at startup: {error}"
+        ));
     }
     for error in sysctl::apply_base_sysctls() {
         logging::log_print(&format!("[WARN] startup sysctl apply failed: {error}"));

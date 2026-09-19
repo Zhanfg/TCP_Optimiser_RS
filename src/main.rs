@@ -10,8 +10,8 @@ mod kernel_module;
 mod logging;
 mod network;
 mod policy;
-mod proxy;
 mod profile;
+mod proxy;
 mod stats;
 mod sysctl;
 

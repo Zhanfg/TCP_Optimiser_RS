@@ -25,13 +25,12 @@ pub fn run() -> io::Result<()> {
     fs::write(staging_dir.join("available_algos"), available.join(" "))?;
 
     let safe_fallback = safe_fallback_algorithm(&native);
-    let default_algo = if available.iter().any(|algo| algo == "bbr")
-        && validate_algorithm_loadability("bbr")
-    {
-        "bbr"
-    } else {
-        safe_fallback
-    };
+    let default_algo =
+        if available.iter().any(|algo| algo == "bbr") && validate_algorithm_loadability("bbr") {
+            "bbr"
+        } else {
+            safe_fallback
+        };
     ensure_prefixed_config(&staging_dir, &live_dir, "wlan", default_algo, &available)?;
     ensure_prefixed_config(
         &staging_dir,
@@ -42,6 +41,13 @@ pub fn run() -> io::Result<()> {
     )?;
     validate_prefixed_config(&staging_dir, "wlan", safe_fallback)?;
     validate_prefixed_config(&staging_dir, "rmnet_data", safe_fallback)?;
+
+    // Rebuild the cache after real module-load preflight so WebUI fallback
+    // data never advertises a bundled algorithm that this device rejected.
+    let available = crate::kernel_module::augment_algorithms(
+        sysctl::available_algorithms().unwrap_or_else(|_| native.clone()),
+    );
+    fs::write(staging_dir.join("available_algos"), available.join(" "))?;
 
     for name in [
         "kill_connections",
@@ -61,10 +67,7 @@ pub fn run() -> io::Result<()> {
     match crate::profile::refresh_managed_profile() {
         Ok((profile, _)) => logging::log_print(&format!(
             "Auto profile: iface={} mtu={} proxy={}/{} buffers>={}MiB",
-            profile
-                .active_iface
-                .as_deref()
-                .unwrap_or("unavailable"),
+            profile.active_iface.as_deref().unwrap_or("unavailable"),
             profile
                 .iface_mtu
                 .map(|value| value.to_string())
