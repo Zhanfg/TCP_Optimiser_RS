@@ -20,7 +20,6 @@ const SLEEP_FAST: u64 = 2;
 const SLEEP_NORMAL: u64 = 30;
 const QDISC_CHECK_WIFI: u64 = 60;
 const QDISC_CHECK_CELLULAR: u64 = 120;
-const AUTO_PROFILE_REFRESH: u64 = 600;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedPolicy {
@@ -54,7 +53,6 @@ pub fn run() -> io::Result<()> {
     let mut adaptive_count: u32 = 0;
     let mut last_qdisc_check: Option<Instant> = None;
     let mut route_unavailable = false;
-    let mut last_profile_refresh = Instant::now();
     let mut route_monitor = match network::RouteMonitor::new() {
         Ok(monitor) => Some(monitor),
         Err(error) => {
@@ -130,7 +128,6 @@ pub fn run() -> io::Result<()> {
                             "[WARN] Forced auto profile refresh failed: {error}"
                         ));
                     }
-                    last_profile_refresh = Instant::now();
                     for error in sysctl::apply_base_sysctls() {
                         logging::log_print(&format!("[WARN] forced sysctl apply failed: {error}"));
                     }
@@ -211,30 +208,6 @@ pub fn run() -> io::Result<()> {
                 logging::log_print(&format!("[WARN] qdisc reconciliation failed: {error}"));
             }
             last_qdisc_check = Some(Instant::now());
-        }
-
-        if last_profile_refresh.elapsed() >= Duration::from_secs(AUTO_PROFILE_REFRESH) {
-            match profile::refresh_managed_profile() {
-                Ok((profile, changed)) => {
-                    if changed && profile.auto_tuning_enabled {
-                        logging::log_print(&format!(
-                            "[INFO] Auto network profile changed (proxy={}/{}, iface={}); reapplying managed sysctls",
-                            profile.proxy.family,
-                            profile.proxy.mode,
-                            profile.active_iface.as_deref().unwrap_or("unavailable")
-                        ));
-                        for error in sysctl::apply_base_sysctls() {
-                            logging::log_print(&format!(
-                                "[WARN] auto-profile sysctl apply failed: {error}"
-                            ));
-                        }
-                    }
-                }
-                Err(error) => logging::log_print(&format!(
-                    "[WARN] Periodic auto profile refresh failed: {error}"
-                )),
-            }
-            last_profile_refresh = Instant::now();
         }
 
         // Adaptive polling
