@@ -286,7 +286,7 @@ function proxyDetail(status, info = {}) {
 		I18N.t('detail_proxy_vpn'),
 	], I18N.t('detail_live_device'));
 
-	const transparent = status === 'tproxy' || status.endsWith('_tproxy');
+	const transparent = Boolean(info?.transparent) || status === 'tproxy' || status.endsWith('_tproxy');
 	const family = status.replace(/_tproxy$/, '');
 	const names = {
 		mihomo: 'Mihomo', clash: 'Clash', 'sing-box': 'sing-box',
@@ -304,10 +304,18 @@ function proxyDetail(status, info = {}) {
 		lines.push(I18N.t('detail_proxy_package_module'));
 	}
 	if (coreName) lines.push(I18N.t('detail_proxy_core', { name: coreName }));
+	if (info?.mode && !['none', 'NONE', 'process', 'PROCESS', 'unknown', 'UNKNOWN'].includes(info.mode)) {
+		lines.push(I18N.t('detail_proxy_mode', { mode: info.mode }));
+	}
+	if (info?.virtualIface) lines.push(I18N.t('detail_proxy_iface', { name: info.virtualIface }));
 	lines.push(info?.coreVersion
 		? I18N.t('detail_proxy_version', { version: info.coreVersion })
 		: I18N.t('detail_proxy_version_unknown'));
-	if (transparent) lines.push(I18N.t('detail_proxy_tproxy'));
+	if (info?.tproxy || status === 'tproxy' || status.endsWith('_tproxy')) {
+		lines.push(I18N.t('detail_proxy_tproxy'));
+	} else if (transparent) {
+		lines.push(I18N.t('detail_proxy_transparent'));
+	}
 	return detailBlock(primary, lines, I18N.t('detail_proxy_note'));
 }
 
@@ -354,7 +362,11 @@ export function updateHomeUI() {
 	};
 	const proxyEl = document.getElementById('proxy-value');
 	const proxyCard = document.getElementById('proxy-card');
-	const coreLabel = proxyLabel[p.proxy_status] || p.proxy_info?.coreName || p.proxy_status;
+	const baseCoreLabel = p.proxy_info?.coreName || proxyLabel[p.proxy_status] || p.proxy_status;
+	const proxyMode = p.proxy_info?.mode;
+	const coreLabel = ['TPROXY', 'TUN', 'MIXED'].includes(proxyMode)
+		? `${baseCoreLabel} · ${proxyMode}`
+		: baseCoreLabel;
 	const managerLabel = p.proxy_info?.appName;
 	const hasDistinctManager = managerLabel && p.proxy_info?.coreName
 		&& managerLabel.toLowerCase() !== p.proxy_info.coreName.toLowerCase();
@@ -437,6 +449,16 @@ export async function initHome() {
 				} catch (e) {
 					showDetail(I18N.t('home_hosts'), cardLongDesc(id));
 				}
+			} else if (id === 'proxy') {
+				try {
+					const proxy = await getProxyStatus(true, true);
+					router_state.homePageParams.proxy_status = proxy?.status || 'unknown';
+					router_state.homePageParams.proxy_info = proxy || null;
+					updateHomeUI();
+				} catch (error) {
+					console.warn('Detailed proxy probe failed:', error);
+				}
+				showDetail(I18N.t('home_proxy'), cardLongDesc(id));
 			} else {
 				showDetail(I18N.t('home_' + id.replace('-', '_')), cardLongDesc(id));
 			}
