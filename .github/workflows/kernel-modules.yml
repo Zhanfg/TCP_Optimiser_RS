@@ -18,10 +18,18 @@ permissions:
   contents: read
 
 jobs:
-  android15-6-6:
-    name: Android 15 GKI 6.6 arm64
+  build:
+    name: ${{ matrix.kmi }} arm64
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        kmi:
+          - android12-5.10
+          - android13-5.15
+          - android14-6.1
+          - android15-6.6
     steps:
       - uses: actions/checkout@v7
 
@@ -29,11 +37,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison build-essential clang flex git libelf-dev libssl-dev \
+            bc binutils bison build-essential clang flex git kmod libelf-dev libssl-dev \
             lld llvm pahole python3 rsync
 
       - name: Build loadable GKI modules
-        run: bash scripts/build-kernel-modules.sh android15-6.6 kernel_modules
+        run: bash scripts/build-kernel-modules.sh "${{ matrix.kmi }}" kernel_modules
 
       - name: Validate module bundle
         shell: bash
@@ -41,9 +49,12 @@ jobs:
           set -euo pipefail
           test -s kernel_modules/manifest.json
           python3 - <<'PY'
+          import hashlib
           import json
           from pathlib import Path
-          data = json.loads(Path('kernel_modules/manifest.json').read_text())
+
+          root = Path('kernel_modules')
+          data = json.loads((root / 'manifest.json').read_text())
           expected = {
               'tcp_bbr', 'tcp_bbr3',
               'sch_fq', 'sch_codel', 'sch_fq_codel',
@@ -53,14 +64,22 @@ jobs:
           missing = sorted(expected - actual)
           if missing:
               raise SystemExit(f'missing modules: {missing}')
+          for entry in data['modules']:
+              path = root / entry['file']
+              if not path.is_file():
+                  raise SystemExit(f"missing file: {entry['file']}")
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if digest != entry['sha256']:
+                  raise SystemExit(f"hash mismatch: {entry['file']}")
           print(f"validated {len(actual)} kernel modules")
           PY
           find kernel_modules -name '*.ko' -print -exec file {} \;
-          sha256sum kernel_modules/android15-6.6/aarch64/*.ko
+          sha256sum kernel_modules/"${{ matrix.kmi }}"/aarch64/*.ko
+          modinfo kernel_modules/"${{ matrix.kmi }}"/aarch64/tcp_bbr3.ko | sed -n '1,20p'
 
       - uses: actions/upload-artifact@v7
         with:
-          name: kernel-modules-android15-6.6-arm64
+          name: kernel-modules-${{ matrix.kmi }}-arm64
           path: kernel_modules
           if-no-files-found: error
           retention-days: 30
