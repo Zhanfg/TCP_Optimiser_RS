@@ -30,12 +30,58 @@ pub fn current_kmi() -> Option<String> {
 }
 
 pub fn augment_algorithms(mut native: Vec<String>) -> Vec<String> {
+    let blocked = unavailable_algorithms();
     for algorithm in bundled_algorithms() {
-        if !native.iter().any(|item| item == &algorithm) {
+        if !blocked.contains(&algorithm) && !native.iter().any(|item| item == &algorithm) {
             native.push(algorithm);
         }
     }
     native
+}
+
+pub fn mark_algorithm_unavailable(algorithm: &str) -> io::Result<()> {
+    if !crate::config::is_known_algorithm(algorithm) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unknown congestion algorithm: {algorithm}"),
+        ));
+    }
+    let path = crate::config::module_dir().join("unavailable_algos");
+    let mut blocked = unavailable_algorithms();
+    blocked.insert(algorithm.to_string());
+    let mut values = blocked.into_iter().collect::<Vec<_>>();
+    values.sort();
+    fs::write(path, format!("{}\n", values.join(" ")))
+}
+
+pub fn clear_algorithm_unavailable(algorithm: &str) -> io::Result<()> {
+    let path = crate::config::module_dir().join("unavailable_algos");
+    let mut blocked = unavailable_algorithms();
+    if !blocked.remove(algorithm) {
+        return Ok(());
+    }
+    if blocked.is_empty() {
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+    let mut values = blocked.into_iter().collect::<Vec<_>>();
+    values.sort();
+    fs::write(path, format!("{}\n", values.join(" ")))
+}
+
+fn unavailable_algorithms() -> HashSet<String> {
+    fs::read_to_string(crate::config::module_dir().join("unavailable_algos"))
+        .ok()
+        .map(|content| {
+            content
+                .split_whitespace()
+                .filter(|algorithm| crate::config::is_known_algorithm(algorithm))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn bundled_algorithms() -> Vec<String> {

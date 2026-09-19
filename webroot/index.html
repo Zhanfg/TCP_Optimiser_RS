@@ -183,6 +183,33 @@
           </div>
 
           <div class="settings-dashboard">
+          <details class="settings-group settings-group--wide" id="auto-profile-group" open>
+            <summary class="settings-group__summary">
+              <span class="settings-group__icon" aria-hidden="true"><span class="ui-icon icon-sparkles"></span></span>
+              <span class="settings-group__title">
+                <strong data-i18n="settings_auto_profile">Automatic network profile</strong>
+                <small data-i18n="settings_auto_profile_summary">Detect the device and tune safe network defaults automatically</small>
+              </span>
+              <span class="settings-group__chevron ui-icon icon-chevron-down" aria-hidden="true"></span>
+            </summary>
+            <div class="settings-card settings-group__body">
+              <div class="toggle-container">
+                <div>
+                  <span style="display:block;color:var(--md-sys-color-on-surface);font-size:0.9rem;font-weight:500;margin-bottom:2px" data-i18n="settings_auto_profile_toggle">Managed automatic tuning</span>
+                  <span style="color:var(--md-sys-color-on-surface-variant);font-size:0.7rem;display:block" data-i18n="settings_auto_profile_hint">Advanced manual values remain higher priority.</span>
+                </div>
+                <label class="toggle">
+                  <input type="checkbox" id="auto-profile-toggle" checked>
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <p id="auto-profile-summary" class="selection-description" aria-live="polite" data-i18n="label_loading">Loading...</p>
+              <div class="settings-action-row">
+                <button id="auto-profile-refresh-btn" class="btn-tonal" data-i18n="settings_auto_profile_refresh">Re-detect network</button>
+              </div>
+            </div>
+          </details>
+
           <details class="settings-group settings-group--wide" id="network-policy-group" open>
             <summary class="settings-group__summary">
               <span class="settings-group__icon" aria-hidden="true"><span class="ui-icon icon-sliders"></span></span>

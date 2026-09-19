@@ -290,20 +290,45 @@ pub fn apply_base_sysctls() -> Vec<String> {
         write_optional(path, &value, &mut failures);
     }
 
+    let socket_floor = if crate::profile::auto_tuning_enabled() {
+        crate::profile::recommended_socket_buffer_floor()
+    } else {
+        16_777_216
+    };
     preserve_and_raise_triplet(
         "/proc/sys/net/ipv4/tcp_rmem",
-        (4096, 87380, 16_777_216),
+        (4096, 87380, socket_floor),
         &mut failures,
     );
     preserve_and_raise_triplet(
         "/proc/sys/net/ipv4/tcp_wmem",
-        (4096, 65536, 16_777_216),
+        (4096, 65536, socket_floor),
         &mut failures,
     );
-    preserve_and_raise_scalar("/proc/sys/net/core/rmem_max", 16_777_216, &mut failures);
-    preserve_and_raise_scalar("/proc/sys/net/core/wmem_max", 16_777_216, &mut failures);
+    preserve_and_raise_scalar("/proc/sys/net/core/rmem_max", socket_floor, &mut failures);
+    preserve_and_raise_scalar("/proc/sys/net/core/wmem_max", socket_floor, &mut failures);
+    apply_managed_overrides(&mut failures);
     apply_advanced_overrides(&mut failures);
     failures
+}
+
+fn apply_managed_overrides(failures: &mut Vec<String>) {
+    if !crate::profile::auto_tuning_enabled() {
+        return;
+    }
+    let (overrides, parse_failures) = configured_managed_overrides();
+    failures.extend(parse_failures);
+    for item in overrides {
+        write_optional(item.path, &item.value.to_string(), failures);
+    }
+}
+
+fn configured_managed_overrides() -> (Vec<AdvancedOverride>, Vec<String>) {
+    let path = crate::config::module_dir().join("auto.conf");
+    let Ok(content) = fs::read_to_string(path) else {
+        return (Vec::new(), Vec::new());
+    };
+    parse_overrides(&content, "auto.conf")
 }
 
 fn apply_advanced_overrides(failures: &mut Vec<String>) {
@@ -323,6 +348,10 @@ pub(crate) fn configured_advanced_overrides() -> (Vec<AdvancedOverride>, Vec<Str
 }
 
 fn parse_advanced_overrides(content: &str) -> (Vec<AdvancedOverride>, Vec<String>) {
+    parse_overrides(content, "advanced.conf")
+}
+
+fn parse_overrides(content: &str, source: &str) -> (Vec<AdvancedOverride>, Vec<String>) {
     let mut overrides = Vec::new();
     let mut failures = Vec::new();
     for line in content
@@ -331,7 +360,7 @@ fn parse_advanced_overrides(content: &str) -> (Vec<AdvancedOverride>, Vec<String
         .filter(|line| !line.is_empty())
     {
         let Some((key, raw_value)) = line.split_once('=') else {
-            failures.push(format!("advanced.conf: malformed entry {line:?}"));
+            failures.push(format!("{source}: malformed entry {line:?}"));
             continue;
         };
         let Some(&(known_key, sysctl_path, min, max)) = ADVANCED_SYSCTLS
@@ -341,7 +370,7 @@ fn parse_advanced_overrides(content: &str) -> (Vec<AdvancedOverride>, Vec<String
             continue;
         };
         let Some(value) = parse_bounded_value(raw_value, min, max) else {
-            failures.push(format!("advanced.conf: invalid value for {key}"));
+            failures.push(format!("{source}: invalid value for {key}"));
             continue;
         };
         overrides.push(AdvancedOverride {

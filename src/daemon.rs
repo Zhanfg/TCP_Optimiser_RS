@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use crate::config;
 use crate::logging;
 use crate::network::{self, IfaceMode};
+use crate::profile;
 use crate::proxy;
 use crate::sysctl;
 
@@ -19,6 +20,7 @@ const SLEEP_FAST: u64 = 2;
 const SLEEP_NORMAL: u64 = 30;
 const QDISC_CHECK_WIFI: u64 = 60;
 const QDISC_CHECK_CELLULAR: u64 = 120;
+const AUTO_PROFILE_REFRESH: u64 = 600;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedPolicy {
@@ -33,6 +35,9 @@ pub fn run() -> io::Result<()> {
     let _daemon_guard = DaemonGuard::acquire()?;
     logging::ensure_flag();
     reset_description();
+    if let Err(error) = profile::refresh_managed_profile() {
+        logging::log_print(&format!("[WARN] Auto profile refresh failed at startup: {error}"));
+    }
     for error in sysctl::apply_base_sysctls() {
         logging::log_print(&format!("[WARN] startup sysctl apply failed: {error}"));
     }
@@ -47,6 +52,7 @@ pub fn run() -> io::Result<()> {
     let mut adaptive_count: u32 = 0;
     let mut last_qdisc_check: Option<Instant> = None;
     let mut route_unavailable = false;
+    let mut last_profile_refresh = Instant::now();
     let mut route_monitor = match network::RouteMonitor::new() {
         Ok(monitor) => Some(monitor),
         Err(error) => {
@@ -117,6 +123,12 @@ pub fn run() -> io::Result<()> {
                     .unwrap_or(true);
             if debounce_elapsed {
                 if force_apply {
+                    if let Err(error) = profile::refresh_managed_profile() {
+                        logging::log_print(&format!(
+                            "[WARN] Forced auto profile refresh failed: {error}"
+                        ));
+                    }
+                    last_profile_refresh = Instant::now();
                     for error in sysctl::apply_base_sysctls() {
                         logging::log_print(&format!("[WARN] forced sysctl apply failed: {error}"));
                     }
@@ -197,6 +209,30 @@ pub fn run() -> io::Result<()> {
                 logging::log_print(&format!("[WARN] qdisc reconciliation failed: {error}"));
             }
             last_qdisc_check = Some(Instant::now());
+        }
+
+        if last_profile_refresh.elapsed() >= Duration::from_secs(AUTO_PROFILE_REFRESH) {
+            match profile::refresh_managed_profile() {
+                Ok((profile, changed)) => {
+                    if changed && profile.auto_tuning_enabled {
+                        logging::log_print(&format!(
+                            "[INFO] Auto network profile changed (proxy={}/{}, iface={}); reapplying managed sysctls",
+                            profile.proxy.family,
+                            profile.proxy.mode,
+                            profile.active_iface.as_deref().unwrap_or("unavailable")
+                        ));
+                        for error in sysctl::apply_base_sysctls() {
+                            logging::log_print(&format!(
+                                "[WARN] auto-profile sysctl apply failed: {error}"
+                            ));
+                        }
+                    }
+                }
+                Err(error) => logging::log_print(&format!(
+                    "[WARN] Periodic auto profile refresh failed: {error}"
+                )),
+            }
+            last_profile_refresh = Instant::now();
         }
 
         // Adaptive polling
@@ -342,9 +378,53 @@ fn apply_interface_settings_inner(
     mode: IfaceMode,
     allow_connection_kill: bool,
 ) -> io::Result<Vec<String>> {
-    let policy = resolve_policy(iface, mode)?;
-    let cfg = config::get_algo_config(&policy.algorithm);
+    let mut policy = resolve_policy(iface, mode)?;
+    let requested_algorithm = policy.algorithm.clone();
     let mut failures = Vec::new();
+
+    if !sysctl::algo_available(&policy.algorithm).unwrap_or(false) {
+        match crate::kernel_module::ensure_algorithm(&policy.algorithm) {
+            Ok(true) => {
+                let _ = crate::kernel_module::clear_algorithm_unavailable(&policy.algorithm);
+                logging::log_print(&format!(
+                    "[INFO] Loaded kernel module for congestion control {}",
+                    policy.algorithm
+                ));
+            }
+            Ok(false) => {
+                let _ = crate::kernel_module::mark_algorithm_unavailable(&policy.algorithm);
+            }
+            Err(error) => {
+                let _ = crate::kernel_module::mark_algorithm_unavailable(&policy.algorithm);
+                logging::log_print(&format!(
+                    "[WARN] Kernel module load for {} failed: {error}",
+                    policy.algorithm
+                ));
+            }
+        }
+    } else {
+        let _ = crate::kernel_module::clear_algorithm_unavailable(&policy.algorithm);
+    }
+
+    if !sysctl::algo_available(&policy.algorithm).unwrap_or(false) {
+        let native = sysctl::available_algorithms().unwrap_or_default();
+        if let Some(fallback) = runtime_fallback_algorithm(&native) {
+            logging::log_print(&format!(
+                "[WARN] Requested congestion control {requested_algorithm} is unavailable; falling back to {fallback}"
+            ));
+            policy.algorithm = fallback;
+            let cfg = config::get_algo_config(&policy.algorithm);
+            if qdisc_override().is_none() {
+                policy.qdisc = cfg.qdisc.to_string();
+            }
+            if pacing_override().is_none() {
+                (policy.pacing_ca, policy.pacing_ss) =
+                    adjusted_pacing(cfg.pacing_ca, cfg.pacing_ss, policy.wifi_frequency_mhz);
+            }
+        }
+    }
+
+    let cfg = config::get_algo_config(&policy.algorithm);
     logging::log_print(&format!("Selected {}: {}", policy.algorithm, cfg.desc));
     if let Some(frequency) = policy.wifi_frequency_mhz {
         logging::log_print(&format!("Wi-Fi band detected: {frequency} MHz"));
@@ -363,20 +443,6 @@ fn apply_interface_settings_inner(
             Err(error) => failures.push(format!(
                 "Interface qdisc {} ({iface}) failed: {error}",
                 policy.qdisc
-            )),
-        }
-    }
-
-    if !sysctl::algo_available(&policy.algorithm).unwrap_or(false) {
-        match crate::kernel_module::ensure_algorithm(&policy.algorithm) {
-            Ok(true) => logging::log_print(&format!(
-                "[INFO] Loaded kernel module for congestion control {}",
-                policy.algorithm
-            )),
-            Ok(false) => {}
-            Err(error) => failures.push(format!(
-                "Kernel module load for {} failed: {error}",
-                policy.algorithm
             )),
         }
     }
@@ -439,6 +505,18 @@ fn apply_interface_settings_inner(
     }
 
     Ok(failures)
+}
+
+fn runtime_fallback_algorithm(available: &[String]) -> Option<String> {
+    available
+        .iter()
+        .find(|algorithm| algorithm.as_str() == "cubic")
+        .or_else(|| {
+            available
+                .iter()
+                .find(|algorithm| config::is_known_algorithm(algorithm))
+        })
+        .cloned()
 }
 
 fn adjusted_pacing(base_ca: u32, base_ss: u32, wifi_frequency_mhz: Option<u32>) -> (u32, u32) {

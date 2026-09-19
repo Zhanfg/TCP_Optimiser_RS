@@ -198,6 +198,19 @@ export async function getRuntimeSnapshot(
 	return snapshot;
 }
 
+export async function getNetworkProfile(refresh = false, auto = null) {
+	const args = ['profile'];
+	if (refresh) args.push('--refresh');
+	if (auto === true) args.push('--auto', 'on');
+	else if (auto === false) args.push('--auto', 'off');
+	const { stdout } = await exec(rustBinaryCommand('network-auto-profile', args.join(' ')));
+	const profile = JSON.parse(stdout.trim());
+	if (!profile || typeof profile !== 'object' || profile.schema !== 1) {
+		throw new Error('Invalid network profile payload');
+	}
+	return profile;
+}
+
 export async function repairRuntimePolicy() {
 	const { stdout } = await exec(rustBinaryCommand('runtime-policy-repair', 'repair'));
 	const record = JSON.parse(stdout.trim());

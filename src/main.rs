@@ -11,6 +11,7 @@ mod logging;
 mod network;
 mod policy;
 mod proxy;
+mod profile;
 mod stats;
 mod sysctl;
 
@@ -62,6 +63,15 @@ enum Command {
     },
     /// Print fast JSON state for proxy-aware policy/UI integration
     Proxy,
+    /// Print or refresh the install/runtime auto-tuning profile
+    Profile {
+        /// Re-detect the device/network and rewrite the managed auto profile
+        #[arg(long)]
+        refresh: bool,
+        /// Enable or disable managed auto tuning (on/off)
+        #[arg(long, value_name = "on|off")]
+        auto: Option<String>,
+    },
     /// Print build provenance embedded in this binary
     BuildInfo,
     /// Verify the signed module payload before installation
@@ -87,6 +97,7 @@ fn main() {
         Command::Sample { iface, details } => print_sample(iface, details),
         Command::Repair { iface } => repair_policy(iface),
         Command::Proxy => print_proxy_status(),
+        Command::Profile { refresh, auto } => print_profile(refresh, auto),
         Command::BuildInfo => print_build_info(),
         Command::VerifyModule { path } => integrity::verify_module(&path),
     };
@@ -122,6 +133,30 @@ fn print_proxy_status() -> std::io::Result<()> {
     println!(
         "{}",
         serde_json::to_string(&snapshot).map_err(std::io::Error::other)?
+    );
+    Ok(())
+}
+
+fn print_profile(refresh: bool, auto: Option<String>) -> std::io::Result<()> {
+    let profile = if let Some(value) = auto {
+        match value.as_str() {
+            "on" | "true" | "1" => profile::set_auto_tuning(true)?,
+            "off" | "false" | "0" => profile::set_auto_tuning(false)?,
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "--auto must be on or off",
+                ))
+            }
+        }
+    } else if refresh {
+        profile::refresh_managed_profile()?.0
+    } else {
+        profile::load_or_refresh()?
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&profile).map_err(std::io::Error::other)?
     );
     Ok(())
 }
