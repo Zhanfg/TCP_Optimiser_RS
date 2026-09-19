@@ -1,5 +1,7 @@
+use std::fs;
 use std::io;
 use std::os::fd::RawFd;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -144,6 +146,37 @@ impl Drop for RouteMonitor {
             libc::close(self.fd);
         }
     }
+}
+
+pub fn cached_active_iface() -> Option<String> {
+    let value = fs::read_to_string(crate::config::module_dir().join("active_iface")).ok()?;
+    let iface = value.trim();
+    if iface.is_empty()
+        || !iface
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
+        || is_virtual_iface(iface)
+        || !Path::new("/sys/class/net").join(iface).exists()
+    {
+        return None;
+    }
+    Some(iface.to_string())
+}
+
+pub fn fast_active_iface() -> io::Result<String> {
+    cached_active_iface().map(Ok).unwrap_or_else(active_iface)
+}
+
+pub fn record_active_iface(iface: &str) {
+    if cached_active_iface().as_deref() == Some(iface) {
+        return;
+    }
+    let path = crate::config::module_dir().join("active_iface");
+    let _ = fs::write(path, format!("{iface}\n"));
+}
+
+pub fn clear_cached_active_iface() {
+    let _ = fs::remove_file(crate::config::module_dir().join("active_iface"));
 }
 
 /// Get the active network interface name
