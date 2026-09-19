@@ -8,6 +8,7 @@
  * payload/engineering budget on a BBRv2-compatible implementation.
  */
 #include "vmlinux.h"
+#include "bbr2_state_layout.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
