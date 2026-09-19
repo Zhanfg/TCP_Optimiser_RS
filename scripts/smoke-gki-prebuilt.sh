@@ -51,7 +51,8 @@ install -m 0644 "$OUT/prebuilt/vmlinux.symvers" "$KERNEL_DIR/Module.symvers"
 printf '%s\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/config/kernel.release"
 printf '#define UTS_RELEASE "%s"\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/generated/utsrelease.h"
 
-make -C "$KERNEL_DIR" -j"$(nproc)" "${KBUILD_ARGS[@]}" M=net/sched sch_codel.ko
+make -C "$KERNEL_DIR" -j"$(nproc)" "${KBUILD_ARGS[@]}" \
+  KERNELRELEASE="$OFFICIAL_RELEASE" M=net/sched sch_codel.ko
 
 local_vermagic=$(modinfo -F vermagic "$KERNEL_DIR/net/sched/sch_codel.ko")
 local_release=${local_vermagic%% *}

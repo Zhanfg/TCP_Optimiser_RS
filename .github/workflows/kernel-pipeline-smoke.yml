@@ -8,6 +8,10 @@ on:
       - 'scripts/build-kernel-modules.sh'
       - 'scripts/kernel-module-config.txt'
       - 'scripts/audit-gki-symbols.py'
+      - 'scripts/audit-module-exports.py'
+      - 'scripts/gki-release-pins.json'
+      - 'scripts/fetch-gki-prebuilt.sh'
+      - 'scripts/smoke-gki-prebuilt.sh'
       - '.github/workflows/kernel-pipeline-smoke.yml'
   workflow_dispatch:
 
@@ -110,5 +114,42 @@ jobs:
         with:
           name: kernel-kmi-preflight-android15-6.6
           path: preflight-report.json
+          if-no-files-found: error
+          retention-days: 7
+
+
+  official-gki-symvers:
+    name: Official GKI symvers + vermagic (android15-6.6)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install targeted module build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            bison build-essential clang curl flex git kmod libelf-dev libssl-dev \
+            lld llvm pahole python3 rsync
+
+      - name: Validate pinned official GKI symvers and vermagic
+        shell: bash
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          bash scripts/smoke-gki-prebuilt.sh android15-6.6 out/gki-prebuilt-smoke
+          elapsed=$(( $(date +%s) - start ))
+          echo "official_symvers_seconds=$elapsed" >> "$GITHUB_STEP_SUMMARY"
+          cat out/gki-prebuilt-smoke/validation.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: official-gki-symvers-android15-6.6
+          path: |
+            out/gki-prebuilt-smoke/validation.json
+            out/gki-prebuilt-smoke/export-audit.json
+            out/gki-prebuilt-smoke/prebuilt/metadata.json
+            out/gki-prebuilt-smoke/sch_codel.ko
           if-no-files-found: error
           retention-days: 7

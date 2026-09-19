@@ -52,8 +52,8 @@ jobs:
 
       - name: Validate module scripts
         run: |
-          bash -n customize.sh post-fs-data.sh service.sh uninstall.sh scripts/package-module.sh scripts/validate-package.sh scripts/build-kernel-modules.sh
-          shellcheck customize.sh post-fs-data.sh service.sh uninstall.sh scripts/package-module.sh scripts/validate-package.sh scripts/build-kernel-modules.sh
+          bash -n customize.sh post-fs-data.sh service.sh uninstall.sh scripts/package-module.sh scripts/validate-package.sh scripts/build-kernel-modules.sh scripts/fetch-gki-prebuilt.sh scripts/smoke-gki-prebuilt.sh
+          shellcheck customize.sh post-fs-data.sh service.sh uninstall.sh scripts/package-module.sh scripts/validate-package.sh scripts/build-kernel-modules.sh scripts/fetch-gki-prebuilt.sh scripts/smoke-gki-prebuilt.sh
 
   build-android:
     name: Build ${{ matrix.abi }}
