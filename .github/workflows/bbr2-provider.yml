@@ -65,6 +65,24 @@ jobs:
           sudo "$BPFTOOL" struct_ops show | grep -F tcpopt_probe
           echo "Host kernel accepted tcpopt_probe struct_ops registration."
 
+      - name: Generate light skeleton experiment
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          obj=out/bbr2-provider/tcpopt_structops_probe.bpf.o
+          header=out/bbr2-provider/tcpopt_structops_probe.lskel.h
+
+          "$BPFTOOL" gen skeleton -L "$obj" > "$header"
+          test -s "$header"
+          bytes=$(stat -c %s "$header")
+          echo "Light skeleton header: $bytes bytes"
+
+          echo "Generated lifecycle/API symbols:"
+          grep -oE 'tcpopt_structops_probe__[A-Za-z0-9_]+' "$header" | sort -u || true
+          echo "Generated struct_ops references:"
+          grep -nE 'struct_ops|tcpopt_probe|load_and_run|attach' "$header" | head -120 || true
+
       - name: Build minimal struct_ops loader and measure payload
         shell: bash
         run: |
@@ -104,6 +122,7 @@ jobs:
           name: bbr2-structops-probe
           path: |
             out/bbr2-provider/tcpopt_structops_probe.bpf.o
+            out/bbr2-provider/tcpopt_structops_probe.lskel.h
             out/bbr2-provider/tcpopt_structops_loader
             out/bbr2-provider/tcpopt_structops_loader.static
             out/bbr2-provider/static-loader.log
