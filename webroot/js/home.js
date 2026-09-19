@@ -19,7 +19,8 @@ export async function updateModuleStatus(force = false) {
 
 		let snapshot = null;
 		try {
-			snapshot = await getRuntimeSnapshot(force);
+			const includeVerification = force || !router_state.verification;
+			snapshot = await getRuntimeSnapshot(force, false, false, includeVerification);
 		} catch (error) {
 			console.warn('Unified runtime snapshot unavailable, using compatibility probes:', error);
 		}
@@ -37,14 +38,13 @@ export async function updateModuleStatus(force = false) {
 			hosts = snapshot.hosts || 'unknown';
 			router_state.available_algorithms = snapshot.available_algorithms || [];
 			router_state.runtimeSnapshot = snapshot;
-			router_state.verification = snapshot.verification;
+			if (snapshot.verification) router_state.verification = snapshot.verification;
 		} else {
 			[running, iface, algo, initcwndInitrwnd, defaultQdisc, hosts] = await Promise.all([
 				getModuleActiveState(), get_active_iface(), get_active_algorithm(),
 				getInitcwndInitrwndValue(), getDefaultQdisc(), getHostsStatus(),
 			]);
 			router_state.runtimeSnapshot = null;
-			router_state.verification = null;
 		}
 
 		router_state.homePageParams.module_status = running ? "Enabled" : "Disabled";
