@@ -15,21 +15,24 @@
  * This header defines layout only. It is not yet a BBRv2 implementation.
  */
 struct tcpopt_bbr2_hot_state {
+    /*
+     * Put the two 64-bit clocks first so the 104-byte ABI does not grow from
+     * alignment padding when compiled for BPF/64-bit Android kernels.
+     */
+    __u64 cycle_mstamp;
+    __u64 ack_epoch_mstamp;
+
     __u32 min_rtt_us;
     __u32 min_rtt_stamp;
     __u32 probe_rtt_done_stamp;
     __u32 probe_rtt_min_us;
     __u32 probe_rtt_min_stamp;
     __u32 next_rtt_delivered;
-    __u64 cycle_mstamp;
 
     /* Original BBR bitfields packed explicitly for stable BPF layout. */
     __u32 mode_flags;
     __u32 gain_flags;
-
     __u32 full_bw;
-    __u64 ack_epoch_mstamp;
-    __u16 extra_acked[2];
     __u32 ack_epoch_flags;
 
     __u32 bw_latest;
@@ -43,7 +46,9 @@ struct tcpopt_bbr2_hot_state {
     __u32 bw_probe_up_acks;
     __u32 ecn_flags;
     __u32 loss_round_delivered;
-};
+
+    __u16 extra_acked[2];
+}
 
 struct tcpopt_bbr2_cold_state {
     __u32 prior_rcv_nxt;
