@@ -45,6 +45,15 @@ enum Command {
         #[arg(long)]
         verify: bool,
     },
+    /// Sample network counters without running policy/proxy diagnostics
+    Sample {
+        /// Interface to sample; defaults to the active route interface
+        #[arg(long)]
+        iface: Option<String>,
+        /// Include slower DNS and per-connection RTT/CWND diagnostics
+        #[arg(long)]
+        details: bool,
+    },
     /// Reapply configured TCP policy without terminating existing connections
     Repair {
         /// Interface to repair; defaults to the active route interface
@@ -73,6 +82,7 @@ fn main() {
             details,
             verify,
         } => print_status(iface, runtime_only, details, verify),
+        Command::Sample { iface, details } => print_sample(iface, details),
         Command::Repair { iface } => repair_policy(iface),
         Command::BuildInfo => print_build_info(),
         Command::VerifyModule { path } => integrity::verify_module(&path),
@@ -90,6 +100,16 @@ fn repair_policy(iface: Option<String>) -> std::io::Result<()> {
     println!(
         "{}",
         serde_json::to_string(&record).map_err(std::io::Error::other)?
+    );
+    Ok(())
+}
+
+fn print_sample(iface: Option<String>, details: bool) -> std::io::Result<()> {
+    let iface = iface.map(Ok).unwrap_or_else(network::active_iface)?;
+    let snapshot = stats::stats_snapshot(&iface, details)?;
+    println!(
+        "{}",
+        serde_json::to_string(&snapshot).map_err(std::io::Error::other)?
     );
     Ok(())
 }
