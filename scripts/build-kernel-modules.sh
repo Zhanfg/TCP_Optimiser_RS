@@ -7,9 +7,9 @@ DEST=${2:-"$REPO_ROOT/kernel_modules"}
 BBR_SOURCE_REV=c5c557584175b5fed8939bf91ec249aed158597d
 
 case "$KMI" in
-  android15-6.6) ;;
+  android12-5.10|android13-5.15|android14-6.1|android15-6.6) ;;
   *)
-    printf 'unsupported initial KMI target: %s\n' "$KMI" >&2
+    printf 'unsupported KMI target: %s\n' "$KMI" >&2
     exit 2
     ;;
 esac
@@ -63,6 +63,13 @@ PY
 make -C "$BBR_DIR" \
   KDIR="$KERNEL_DIR" ARCH=arm64 LLVM=1 CC_PROBE=clang \
   PROBE_J="$(nproc)"
+
+# Compile-time API probes are not enough: verify every unresolved symbol in
+# tcp_bbr3.ko is actually exported by the target Android common kernel.
+(
+  cd "$BBR_DIR"
+  ./audit_symbols.sh "$KERNEL_DIR" tcp_bbr3.ko
+)
 
 rm -rf "$DEST"
 mkdir -p "$DEST/$KMI/aarch64"
