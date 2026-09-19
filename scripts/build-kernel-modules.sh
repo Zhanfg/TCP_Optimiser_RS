@@ -77,12 +77,12 @@ make -C "$BBR_DIR" \
   CROSS_COMPILE_COMPAT=arm-linux-gnueabi- "${BBR_CC_ARGS[@]}" CC_PROBE=clang \
   PROBE_J="$(nproc)"
 
-# Compile-time API probes are not enough: verify every unresolved symbol in
-# tcp_bbr3.ko is actually exported by the target Android common kernel.
-(
-  cd "$BBR_DIR"
-  ./audit_symbols.sh "$KERNEL_DIR" tcp_bbr3.ko
-)
+# Compile-time API probes are not enough. Verify the final KO against the
+# exact full-build Module.symvers. Do not use the upstream source-grep audit
+# here: its EXPORT_SYMBOL capture currently mis-parses GPL exports.
+python3 "$REPO_ROOT/scripts/audit-module-exports.py" \
+  "$KERNEL_DIR" "$BBR_DIR/tcp_bbr3.ko" \
+  --json "$WORK/bbr3-export-audit.json"
 
 rm -rf "$DEST"
 mkdir -p "$DEST/$KMI/aarch64"
