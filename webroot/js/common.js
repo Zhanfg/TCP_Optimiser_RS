@@ -209,11 +209,49 @@ export async function repairRuntimePolicy() {
 	return record;
 }
 
+let proxyFastStatusCache = null;
+let proxyFastStatusCheckedAt = 0;
 let proxyStatusCache = null;
 let proxyStatusCheckedAt = 0;
 
-export async function getProxyStatus(force = false) {
+function normalizeFastProxySnapshot(snapshot) {
+	const family = snapshot?.family || 'unknown';
+	const mode = snapshot?.mode || 'unknown';
+	let status = family;
+	if (mode === 'tproxy' || mode === 'mixed') {
+		status = family === 'none' || family === 'unknown' ? 'tproxy' : `${family}_tproxy`;
+	} else if (mode === 'tun' && (family === 'none' || family === 'unknown')) {
+		status = 'vpn';
+	}
+	return {
+		status,
+		coreName: snapshot?.label || '',
+		coreVersion: '',
+		packageName: '',
+		appName: '',
+		managerType: '',
+		managerId: '',
+		mode: mode === 'tun' ? 'TUN' : mode.toUpperCase(),
+		transparent: Boolean(snapshot?.transparent),
+		virtualIface: snapshot?.virtual_iface || '',
+		tproxy: Boolean(snapshot?.tproxy),
+	};
+}
+
+export async function getProxyStatus(force = false, detailed = false) {
 	const now = Date.now();
+	if (!detailed) {
+		if (!force && proxyFastStatusCache && now - proxyFastStatusCheckedAt < 15000) return proxyFastStatusCache;
+		try {
+			const { stdout } = await exec(rustBinaryCommand('proxy-status-fast', 'proxy'));
+			const snapshot = JSON.parse(stdout.trim());
+			proxyFastStatusCache = normalizeFastProxySnapshot(snapshot);
+			proxyFastStatusCheckedAt = now;
+			return proxyFastStatusCache;
+		} catch (error) {
+			console.warn('Rust proxy status unavailable, using detailed compatibility probe:', error);
+		}
+	}
 	if (!force && proxyStatusCache && now - proxyStatusCheckedAt < 60000) return proxyStatusCache;
 	try {
 		const { stdout } = await exec(`# proxy-status-probe
@@ -368,12 +406,15 @@ printf 'mode=%s\\n' "$mode"`);
 			managerType: fields.manager_type || '',
 			managerId: fields.manager_id || '',
 			mode: fields.mode || '',
+			transparent: fields.mode === 'TPROXY' || fields.mode === 'VPN',
+			virtualIface: '',
+			tproxy: fields.mode === 'TPROXY',
 		};
 		proxyStatusCheckedAt = now;
 		return proxyStatusCache;
 	} catch (error) {
 		console.error('Error detecting proxy:', error);
-		proxyStatusCache = { status: 'unknown', coreName: '', coreVersion: '', packageName: '', appName: '', managerType: '', managerId: '', mode: '' };
+		proxyStatusCache = { status: 'unknown', coreName: '', coreVersion: '', packageName: '', appName: '', managerType: '', managerId: '', mode: '', transparent: false, virtualIface: '', tproxy: false };
 		proxyStatusCheckedAt = now - 25000;
 		return proxyStatusCache;
 	}
