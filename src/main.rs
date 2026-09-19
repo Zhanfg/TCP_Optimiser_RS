@@ -37,6 +37,12 @@ enum Command {
         /// Skip throughput and connection statistics for lightweight UI refreshes
         #[arg(long)]
         runtime_only: bool,
+        /// Include slower DNS and per-connection RTT/CWND diagnostics
+        #[arg(long)]
+        details: bool,
+        /// Include full policy verification (tc/sysctl readback)
+        #[arg(long)]
+        verify: bool,
     },
     /// Reapply configured TCP policy without terminating existing connections
     Repair {
@@ -63,7 +69,9 @@ fn main() {
         Command::Status {
             iface,
             runtime_only,
-        } => print_status(iface, runtime_only),
+            details,
+            verify,
+        } => print_status(iface, runtime_only, details, verify),
         Command::Repair { iface } => repair_policy(iface),
         Command::BuildInfo => print_build_info(),
         Command::VerifyModule { path } => integrity::verify_module(&path),
@@ -93,9 +101,14 @@ fn print_build_info() -> std::io::Result<()> {
     Ok(())
 }
 
-fn print_status(iface: Option<String>, runtime_only: bool) -> std::io::Result<()> {
+fn print_status(
+    iface: Option<String>,
+    runtime_only: bool,
+    details: bool,
+    verify: bool,
+) -> std::io::Result<()> {
     let iface = iface.map(Ok).unwrap_or_else(network::active_iface)?;
-    let snapshot = stats::network_snapshot(&iface, !runtime_only)?;
+    let snapshot = stats::network_snapshot(&iface, !runtime_only, details, verify)?;
     println!(
         "{}",
         serde_json::to_string(&snapshot).map_err(std::io::Error::other)?
