@@ -42,6 +42,35 @@ pub struct TcpConnInfo {
     pub samples: usize,
 }
 
+#[derive(Debug, Serialize)]
+pub struct StatsSnapshot {
+    pub active_iface: String,
+    pub tcp: Option<TcpCounters>,
+    pub iface: Option<IfaceBytes>,
+    pub sock: Option<SockStat>,
+    pub established: u32,
+    pub dns: Option<Vec<DnsServer>>,
+    pub conn_info: Option<TcpConnInfo>,
+}
+
+pub fn stats_snapshot(active_iface: &str, include_details: bool) -> io::Result<StatsSnapshot> {
+    Ok(StatsSnapshot {
+        active_iface: active_iface.to_string(),
+        tcp: fs::read_to_string("/proc/net/snmp")
+            .and_then(|content| parse_tcp_snmp(&content))
+            .ok(),
+        iface: fs::read_to_string("/proc/net/dev")
+            .and_then(|content| parse_iface_bytes(&content, active_iface))
+            .ok(),
+        sock: fs::read_to_string("/proc/net/sockstat")
+            .and_then(|content| parse_sockstat(&content))
+            .ok(),
+        established: established_conns(),
+        dns: include_details.then(dns_servers),
+        conn_info: include_details.then(tcp_conn_info).flatten(),
+    })
+}
+
 /// Single-call stats: read /proc/net/{snmp,dev,sockstat} in one batch
 #[derive(Debug, Serialize)]
 pub struct NetworkSnapshot {
