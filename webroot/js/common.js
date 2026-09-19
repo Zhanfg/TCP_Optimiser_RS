@@ -181,11 +181,11 @@ export async function getRuntimeSnapshot(
 	if (!force && runtimeSnapshotCache.has(cacheKey) && now - (runtimeSnapshotCheckedAt.get(cacheKey) || 0) < ttl) {
 		return runtimeSnapshotCache.get(cacheKey);
 	}
-	const args = ['status'];
-	if (!includeStats) args.push('--runtime-only');
+	const args = includeStats ? ['sample'] : ['status', '--runtime-only'];
 	if (includeDetails) args.push('--details');
-	if (includeVerification) args.push('--verify');
-	const { stdout } = await exec(rustBinaryCommand('runtime-status-snapshot', args.join(' ')));
+	if (!includeStats && includeVerification) args.push('--verify');
+	const marker = includeStats ? 'runtime-stats-sample' : 'runtime-status-snapshot';
+	const { stdout } = await exec(rustBinaryCommand(marker, args.join(' ')));
 	const snapshot = JSON.parse(stdout.trim());
 	if (!snapshot || typeof snapshot !== 'object' || !snapshot.active_iface) {
 		throw new Error('Invalid runtime status payload');
