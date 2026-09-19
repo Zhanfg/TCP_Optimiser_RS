@@ -51,8 +51,8 @@ jobs:
 
       - name: Validate module scripts
         run: |
-          bash -n customize.sh post-fs-data.sh service.sh uninstall.sh scripts/package-module.sh scripts/validate-package.sh
-          shellcheck customize.sh post-fs-data.sh service.sh uninstall.sh scripts/package-module.sh scripts/validate-package.sh
+          bash -n customize.sh post-fs-data.sh service.sh uninstall.sh scripts/package-module.sh scripts/validate-package.sh scripts/build-kernel-modules.sh
+          shellcheck customize.sh post-fs-data.sh service.sh uninstall.sh scripts/package-module.sh scripts/validate-package.sh scripts/build-kernel-modules.sh
 
   build-android:
     name: Build ${{ matrix.abi }}
