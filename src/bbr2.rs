@@ -30,9 +30,9 @@ pub fn probe() -> Bbr2ProviderStatus {
     let tcp_congestion_ops_btf = btf
         .as_deref()
         .is_some_and(|bytes| contains_btf_name(bytes, b"tcp_congestion_ops"));
-    let struct_ops_wrapper_btf = btf.as_deref().is_some_and(|bytes| {
-        contains_btf_name(bytes, b"bpf_struct_ops_tcp_congestion_ops")
-    });
+    let struct_ops_wrapper_btf = btf
+        .as_deref()
+        .is_some_and(|bytes| contains_btf_name(bytes, b"bpf_struct_ops_tcp_congestion_ops"));
     let tcp_sock_btf = btf
         .as_deref()
         .is_some_and(|bytes| contains_btf_name(bytes, b"tcp_sock"));
