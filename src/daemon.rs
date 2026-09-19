@@ -330,6 +330,20 @@ fn apply_interface_settings_inner(
         }
     }
 
+    if !sysctl::algo_available(&policy.algorithm).unwrap_or(false) {
+        match crate::kernel_module::ensure_algorithm(&policy.algorithm) {
+            Ok(true) => logging::log_print(&format!(
+                "[INFO] Loaded kernel module for congestion control {}",
+                policy.algorithm
+            )),
+            Ok(false) => {}
+            Err(error) => failures.push(format!(
+                "Kernel module load for {} failed: {error}",
+                policy.algorithm
+            )),
+        }
+    }
+
     let algorithm_applied = match sysctl::algo_available(&policy.algorithm) {
         Ok(true) => match sysctl::set_congestion_control(&policy.algorithm) {
             Ok(()) => {
