@@ -359,12 +359,6 @@ fn apply_interface_settings_inner(
     }
 
     if !policy.qdisc.is_empty() {
-        if let Err(error) = crate::kernel_module::ensure_qdisc(&policy.qdisc) {
-            failures.push(format!(
-                "Kernel module load for qdisc {} failed: {error}",
-                policy.qdisc
-            ));
-        }
         if let Err(error) = sysctl::set_default_qdisc(&policy.qdisc) {
             failures.push(format!("Default qdisc {} failed: {error}", policy.qdisc));
         }
