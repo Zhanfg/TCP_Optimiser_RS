@@ -2,7 +2,7 @@
 
 The Android GKI module build uses two pinned source families:
 
-1. Android common kernel: `aosp-mirror/kernel_common`, branch
+1. Android common kernel: `android.googlesource.com/kernel/common`, branch
    `android15-6.6`. qdisc modules and the kernel-tree BBR module are built
    directly from that target kernel tree.
 2. BBRv3 compatibility source: `hrimfaxi/tcp_bbr_modules`, pinned to
