@@ -411,9 +411,12 @@ current=$(cat /proc/sys/net/core/default_qdisc 2>/dev/null); for q in ${names}; 
 		const byName = new Map(stdout.split('\n')
 			.map(line => line.trim().split(':', 2))
 			.filter(([name, state]) => ALL_QDISCS.includes(name) && ['supported', 'unsupported'].includes(state)));
+		const bundled = new Set(router_state.runtimeSnapshot?.bundled_qdiscs || []);
 		qdiscCapabilityCache = ALL_QDISCS.map(name => ({
 			name,
-			state: ['supported', 'unsupported'].includes(byName.get(name)) ? byName.get(name) : 'unknown',
+			state: bundled.has(name)
+				? 'supported'
+				: (['supported', 'unsupported'].includes(byName.get(name)) ? byName.get(name) : 'unknown'),
 		}));
 	} catch (error) {
 		qdiscCapabilityCache = ALL_QDISCS.map(name => ({ name, state: 'unknown' }));
@@ -427,7 +430,9 @@ export async function setDefaultQdisc(qdisc) {
 	if (capabilities.find(item => item.name === qdisc)?.state !== 'supported') return false;
 	try {
 		const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
-		await exec(`printf '%s\n' ${shellQuote(qdisc)} > /proc/sys/net/core/default_qdisc && printf '%s\n' ${shellQuote(qdisc)} > ${shellQuote(`${dir}/qdisc`)} && touch ${shellQuote(`${dir}/force_apply`)}`);
+		// Persist first. The Rust daemon will load a compatible sch_*.ko when
+		// required, then update both the kernel default and the live interface.
+		await exec(`printf '%s\n' ${shellQuote(qdisc)} > ${shellQuote(`${dir}/qdisc`)} && touch ${shellQuote(`${dir}/force_apply`)}`);
 		return true;
 	} catch (error) {
 		console.error('Error setting default_qdisc:', error);
