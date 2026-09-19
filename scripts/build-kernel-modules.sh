@@ -22,7 +22,7 @@ KERNEL_DIR="$WORK/kernel"
 BBR_DIR="$WORK/tcp_bbr_modules"
 
 git clone --filter=blob:none --depth=1 --branch "$KMI" \
-  https://github.com/aosp-mirror/kernel_common.git "$KERNEL_DIR"
+  https://android.googlesource.com/kernel/common "$KERNEL_DIR"
 
 make -C "$KERNEL_DIR" ARCH=arm64 LLVM=1 gki_defconfig
 
@@ -108,7 +108,7 @@ manifest = {
     "kmi": kmi,
     "kernel_release": release,
     "kernel_source": {
-        "repository": "https://github.com/aosp-mirror/kernel_common",
+        "repository": "https://android.googlesource.com/kernel/common",
         "revision": kernel_rev,
     },
     "bbr3_source": {
