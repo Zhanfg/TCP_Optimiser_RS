@@ -25,6 +25,7 @@ export TCP_OPTIMISER_MODULE_DIR="$MODPATH"
 export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:$PATH"
 "$RUST_BIN" verify-module "$MODPATH" || abort "! Module signature or file hash verification failed"
 "$RUST_BIN" install || abort "! Rust installer failed"
+ln -sf "$RUST_ABI/tcp_optimiser" "$MODPATH/bin/tcp_optimiser" || abort "! Cannot select active Rust binary"
 
 [ -s "$MODPATH/available_qdiscs" ] || printf '%s\n' "fq fq_codel cake pfifo_fast codel fq_pie pfifo pie pfifo_head_drop" > "$MODPATH/available_qdiscs"
 
