@@ -21,7 +21,7 @@ jobs:
       - name: Install BPF build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang gcc libbpf-dev libelf-dev linux-tools-common linux-tools-generic llvm pkg-config zlib1g-dev libzstd-dev
+          sudo apt-get install -y clang gcc libbpf-dev libelf-dev libssl-dev linux-tools-common linux-tools-generic llvm pkg-config zlib1g-dev libzstd-dev
           bpftool_bin=$(find /usr/lib -maxdepth 3 -type f -name bpftool -perm -111 2>/dev/null | sort -V | tail -n1)
           test -x "$bpftool_bin"
           echo "BPFTOOL=$bpftool_bin" >> "$GITHUB_ENV"
@@ -65,7 +65,19 @@ jobs:
           sudo "$BPFTOOL" struct_ops show | grep -F tcpopt_probe
           echo "Host kernel accepted tcpopt_probe struct_ops registration."
 
-      - name: Generate light skeleton experiment
+      - name: Build pinned upstream bpftool for light-skeleton research
+        shell: bash
+        run: |
+          set -euo pipefail
+          rev=1c304fc4b98301579dc2025284281e638775498e
+          git clone --filter=blob:none --recurse-submodules https://github.com/libbpf/bpftool.git /tmp/bpftool-upstream
+          git -C /tmp/bpftool-upstream checkout "$rev"
+          git -C /tmp/bpftool-upstream submodule update --init --recursive
+          make -C /tmp/bpftool-upstream/src -j2
+          test -x /tmp/bpftool-upstream/src/bpftool
+          echo "UPSTREAM_BPFTOOL=/tmp/bpftool-upstream/src/bpftool" >> "$GITHUB_ENV"
+
+      - name: Generate light skeleton with pinned upstream bpftool
         shell: bash
         continue-on-error: true
         run: |
@@ -73,7 +85,8 @@ jobs:
           obj=out/bbr2-provider/tcpopt_structops_probe.bpf.o
           header=out/bbr2-provider/tcpopt_structops_probe.lskel.h
 
-          "$BPFTOOL" gen skeleton -L "$obj" > "$header"
+          "$UPSTREAM_BPFTOOL" version
+          "$UPSTREAM_BPFTOOL" gen skeleton -L "$obj" > "$header"
           test -s "$header"
           bytes=$(stat -c %s "$header")
           echo "Light skeleton header: $bytes bytes"
@@ -81,7 +94,7 @@ jobs:
           echo "Generated lifecycle/API symbols:"
           grep -oE 'tcpopt_structops_probe__[A-Za-z0-9_]+' "$header" | sort -u || true
           echo "Generated struct_ops references:"
-          grep -nE 'struct_ops|tcpopt_probe|load_and_run|attach' "$header" | head -120 || true
+          grep -nE 'struct_ops|tcpopt_probe|load_and_run|attach' "$header" | head -160 || true
 
       - name: Build minimal struct_ops loader and measure payload
         shell: bash
