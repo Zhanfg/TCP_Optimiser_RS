@@ -121,7 +121,11 @@ pub fn network_snapshot(
         } else {
             "deferred".to_string()
         },
-        init_windows: crate::network::get_initcwnd_initrwnd().unwrap_or_default(),
+        init_windows: if include_verification {
+            crate::network::get_initcwnd_initrwnd().unwrap_or_default()
+        } else {
+            Vec::new()
+        },
         tcp: include_stats
             .then(|| {
                 fs::read_to_string("/proc/net/snmp")
