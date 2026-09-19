@@ -127,7 +127,7 @@ fn decode_sha256(value: &str) -> io::Result<[u8; 32]> {
         return Err(invalid_data("invalid SHA-256 length"));
     }
     let mut output = [0u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let text = std::str::from_utf8(pair).map_err(|_| invalid_data("invalid SHA-256"))?;
         output[index] =
             u8::from_str_radix(text, 16).map_err(|_| invalid_data("invalid SHA-256 encoding"))?;
