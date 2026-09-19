@@ -128,9 +128,9 @@ fn module_present(module_name: &str) -> bool {
         || fs::read_to_string("/proc/modules")
             .ok()
             .is_some_and(|content| {
-                content.lines().any(|line| {
-                    line.split_whitespace().next() == Some(module_name)
-                })
+                content
+                    .lines()
+                    .any(|line| line.split_whitespace().next() == Some(module_name))
             })
 }
 
@@ -156,9 +156,7 @@ fn derive_kmi(release: &str) -> Option<String> {
     let mut version_parts = version.split('.');
     let major = version_parts.next()?;
     let minor = version_parts.next()?;
-    if !major.chars().all(|c| c.is_ascii_digit())
-        || !minor.chars().all(|c| c.is_ascii_digit())
-    {
+    if !major.chars().all(|c| c.is_ascii_digit()) || !minor.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
 
