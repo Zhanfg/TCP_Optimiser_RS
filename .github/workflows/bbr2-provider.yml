@@ -21,7 +21,10 @@ jobs:
       - name: Install BPF build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y bpftool clang gcc libbpf-dev llvm
+          sudo apt-get install -y clang gcc libbpf-dev linux-tools-common linux-tools-generic llvm
+          bpftool_bin=$(find /usr/lib/linux-tools -type f -name bpftool -perm -111 | sort -V | tail -n1)
+          test -x "$bpftool_bin"
+          echo "BPFTOOL=$bpftool_bin" >> "$GITHUB_ENV"
 
       - name: Compile minimal CO-RE struct_ops probe
         run: bash scripts/build-bbr2-structops-probe.sh out/bbr2-provider
