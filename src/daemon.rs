@@ -417,9 +417,18 @@ fn apply_interface_settings_inner(
         && allow_connection_kill
         && config::module_dir().join("kill_connections").exists()
     {
-        logging::log_print(&format!("Killing TCP connections on {iface}"));
-        if let Err(error) = network::kill_connections(iface) {
-            failures.push(format!("Failed to kill TCP connections: {error}"));
+        let proxy_state = proxy::detect_proxy_snapshot();
+        let force_proxy_kill = config::module_dir().join("kill_connections_proxy").exists();
+        if proxy_state.transparent && !force_proxy_kill {
+            logging::log_print(&format!(
+                "[INFO] Preserving existing TCP sessions because transparent proxy mode is active: {} / {}",
+                proxy_state.family, proxy_state.mode
+            ));
+        } else {
+            logging::log_print(&format!("Killing TCP connections on {iface}"));
+            if let Err(error) = network::kill_connections(iface) {
+                failures.push(format!("Failed to kill TCP connections: {error}"));
+            }
         }
     }
 
