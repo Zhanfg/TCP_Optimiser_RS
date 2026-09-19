@@ -34,7 +34,9 @@ export async function updateModuleStatus(force = false) {
 			running = snapshot.module_active;
 			iface = snapshot.active_iface;
 			algo = snapshot.algorithm;
-			initcwndInitrwnd = snapshot.init_windows || [];
+			initcwndInitrwnd = snapshot.init_windows?.length
+				? snapshot.init_windows
+				: router_state.homePageParams.active_InitcwndInitrwndValue;
 			defaultQdisc = snapshot.default_qdisc;
 			hosts = hostsProbe;
 			router_state.available_algorithms = snapshot.available_algorithms || [];
