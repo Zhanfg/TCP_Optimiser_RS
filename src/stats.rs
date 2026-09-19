@@ -107,8 +107,16 @@ pub fn network_snapshot(
         algorithm: crate::sysctl::current_algorithm().unwrap_or_else(|_| "unknown".to_string()),
         default_qdisc: crate::sysctl::default_qdisc().unwrap_or_else(|_| "unknown".to_string()),
         available_algorithms: crate::sysctl::available_algorithms().unwrap_or_default(),
-        proxy: crate::proxy::detect_proxy().label().to_string(),
-        hosts: crate::proxy::detect_hosts().key(),
+        proxy: if include_details {
+            crate::proxy::detect_proxy().label().to_string()
+        } else {
+            "deferred".to_string()
+        },
+        hosts: if include_details {
+            crate::proxy::detect_hosts().key()
+        } else {
+            "deferred".to_string()
+        },
         init_windows: crate::network::get_initcwnd_initrwnd().unwrap_or_default(),
         tcp: include_stats
             .then(|| {
