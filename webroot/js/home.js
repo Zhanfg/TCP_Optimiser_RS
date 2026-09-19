@@ -26,14 +26,17 @@ export async function updateModuleStatus(force = false) {
 		}
 
 		let running, iface, algo, initcwndInitrwnd, defaultQdisc, hosts;
-		const proxy = await getProxyStatus(force);
+		const [proxy, hostsProbe] = await Promise.all([
+			getProxyStatus(force),
+			getHostsStatus(force),
+		]);
 		if (snapshot) {
 			running = snapshot.module_active;
 			iface = snapshot.active_iface;
 			algo = snapshot.algorithm;
 			initcwndInitrwnd = snapshot.init_windows || [];
 			defaultQdisc = snapshot.default_qdisc;
-			hosts = snapshot.hosts || 'unknown';
+			hosts = hostsProbe;
 			router_state.available_algorithms = snapshot.available_algorithms || [];
 			router_state.runtimeSnapshot = snapshot;
 			if (snapshot.verification) router_state.verification = snapshot.verification;
