@@ -60,6 +60,8 @@ enum Command {
         #[arg(long)]
         iface: Option<String>,
     },
+    /// Print fast JSON state for proxy-aware policy/UI integration
+    Proxy,
     /// Print build provenance embedded in this binary
     BuildInfo,
     /// Verify the signed module payload before installation
@@ -84,6 +86,7 @@ fn main() {
         } => print_status(iface, runtime_only, details, verify),
         Command::Sample { iface, details } => print_sample(iface, details),
         Command::Repair { iface } => repair_policy(iface),
+        Command::Proxy => print_proxy_status(),
         Command::BuildInfo => print_build_info(),
         Command::VerifyModule { path } => integrity::verify_module(&path),
     };
@@ -107,6 +110,15 @@ fn repair_policy(iface: Option<String>) -> std::io::Result<()> {
 fn print_sample(iface: Option<String>, details: bool) -> std::io::Result<()> {
     let iface = iface.map(Ok).unwrap_or_else(network::fast_active_iface)?;
     let snapshot = stats::stats_snapshot(&iface, details)?;
+    println!(
+        "{}",
+        serde_json::to_string(&snapshot).map_err(std::io::Error::other)?
+    );
+    Ok(())
+}
+
+fn print_proxy_status() -> std::io::Result<()> {
+    let snapshot = proxy::detect_proxy_snapshot();
     println!(
         "{}",
         serde_json::to_string(&snapshot).map_err(std::io::Error::other)?
