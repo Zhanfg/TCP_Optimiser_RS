@@ -229,24 +229,33 @@ fn current_arch() -> &'static str {
 }
 
 fn derive_kmi(release: &str) -> Option<String> {
-    let version = release.split('-').next()?;
+    // GKI kernel release:
+    //   w.x.y-androidN-k-suffix
+    // KMI version:
+    //   w.x-androidN-k
+    // The KMI generation (k) is ABI-significant and must not be discarded.
+    let mut fields = release.split('-');
+    let version = fields.next()?;
+    let android = fields.next()?;
+    let kmi_generation = fields.next()?;
+
     let mut version_parts = version.split('.');
     let major = version_parts.next()?;
     let minor = version_parts.next()?;
-    if !major.chars().all(|c| c.is_ascii_digit()) || !minor.chars().all(|c| c.is_ascii_digit()) {
+    let _sublevel = version_parts.next()?;
+
+    if !major.chars().all(|c| c.is_ascii_digit())
+        || !minor.chars().all(|c| c.is_ascii_digit())
+        || !android
+            .strip_prefix("android")
+            .is_some_and(|value| !value.is_empty() && value.chars().all(|c| c.is_ascii_digit()))
+        || kmi_generation.is_empty()
+        || !kmi_generation.chars().all(|c| c.is_ascii_digit())
+    {
         return None;
     }
 
-    let android_pos = release.find("android")? + "android".len();
-    let generation = release[android_pos..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect::<String>();
-    if generation.is_empty() {
-        return None;
-    }
-
-    Some(format!("android{generation}-{major}.{minor}"))
+    Some(format!("{major}.{minor}-{android}-{kmi_generation}"))
 }
 
 fn safe_relative_path(value: &str) -> io::Result<PathBuf> {
@@ -302,11 +311,11 @@ mod tests {
     fn derives_android_gki_family() {
         assert_eq!(
             derive_kmi("6.6.30-android15-8-g123456789abc-ab12345678"),
-            Some("android15-6.6".to_string())
+            Some("6.6-android15-8".to_string())
         );
         assert_eq!(
             derive_kmi("5.15.153-android13-8-00001-gdeadbeef"),
-            Some("android13-5.15".to_string())
+            Some("5.15-android13-8".to_string())
         );
         assert_eq!(derive_kmi("6.6.30-custom"), None);
     }
