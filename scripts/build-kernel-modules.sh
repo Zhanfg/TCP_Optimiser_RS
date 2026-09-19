@@ -8,8 +8,10 @@ BBR_SOURCE_REV=c5c557584175b5fed8939bf91ec249aed158597d
 CONFIG_SPEC="$REPO_ROOT/scripts/kernel-module-config.txt"
 JOBS=${TCP_OPTIMISER_BUILD_JOBS:-$(nproc)}
 KMI_PREFLIGHT=${TCP_OPTIMISER_KMI_PREFLIGHT:-1}
+PREFLIGHT_ONLY=${TCP_OPTIMISER_PREFLIGHT_ONLY:-0}
 MINIMAL_KERNEL_BUILD=${TCP_OPTIMISER_MINIMAL_KERNEL_BUILD:-0}
 SYMVERS_CACHE=${KERNEL_SYMVERS_CACHE:-}
+PREFLIGHT_REPORT=${TCP_OPTIMISER_PREFLIGHT_REPORT:-}
 
 case "$KMI" in
   android12-5.10|android13-5.15|android14-6.1|android15-6.6) ;;
@@ -145,9 +147,25 @@ if [[ "$KMI_PREFLIGHT" == "1" ]]; then
     build_bbr3 1
   fi
   stage_modules "$PREFLIGHT_DIR"
+  preflight_json="$WORK/kmi-preflight-$KMI.json"
+  set +e
   python3 "$REPO_ROOT/scripts/audit-gki-symbols.py" \
     "$KERNEL_DIR" "$PREFLIGHT_DIR" \
-    --json "$WORK/kmi-preflight-$KMI.json" --strict
+    --json "$preflight_json" --strict
+  preflight_rc=$?
+  set -e
+  if [[ -n "$PREFLIGHT_REPORT" && -s "$preflight_json" ]]; then
+    mkdir -p "$(dirname "$PREFLIGHT_REPORT")"
+    install -m 0644 "$preflight_json" "$PREFLIGHT_REPORT"
+  fi
+  if [[ "$preflight_rc" -ne 0 ]]; then
+    printf 'KMI preflight rejected %s before full GKI build\n' "$KMI" >&2
+    exit "$preflight_rc"
+  fi
+  if [[ "$PREFLIGHT_ONLY" == "1" ]]; then
+    printf 'KMI preflight-only mode completed for %s\n' "$KMI"
+    exit 0
+  fi
 fi
 
 if [[ "$SYMVERS_HIT" != "1" ]]; then
