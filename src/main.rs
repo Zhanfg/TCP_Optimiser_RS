@@ -6,6 +6,7 @@ mod config;
 mod daemon;
 mod install;
 mod integrity;
+mod kernel_module;
 mod logging;
 mod network;
 mod policy;
