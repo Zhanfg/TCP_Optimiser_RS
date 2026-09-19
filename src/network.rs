@@ -94,9 +94,7 @@ impl RouteMonitor {
     /// Wait until a relevant network event arrives or the timeout expires.
     /// Returns true when an event was received, false for a normal timeout.
     pub fn wait(&mut self, timeout: Duration) -> io::Result<bool> {
-        let timeout_ms = timeout
-            .as_millis()
-            .min(i32::MAX as u128) as libc::c_int;
+        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as libc::c_int;
         let mut poll_fd = libc::pollfd {
             fd: self.fd,
             events: libc::POLLIN,
