@@ -11,6 +11,8 @@ KMI_PREFLIGHT=${TCP_OPTIMISER_KMI_PREFLIGHT:-1}
 PREFLIGHT_ONLY=${TCP_OPTIMISER_PREFLIGHT_ONLY:-0}
 MINIMAL_KERNEL_BUILD=${TCP_OPTIMISER_MINIMAL_KERNEL_BUILD:-0}
 SYMVERS_CACHE=${KERNEL_SYMVERS_CACHE:-}
+THINLTO_CACHE=${KERNEL_THINLTO_CACHE:-}
+BBR_KCONFIG_CACHE=${BBR_KCONFIG_CACHE:-}
 PREFLIGHT_REPORT=${TCP_OPTIMISER_PREFLIGHT_REPORT:-}
 
 case "$KMI" in
@@ -33,6 +35,12 @@ PREFLIGHT_DIR="$WORK/kmi-preflight"
 
 git clone --filter=blob:none --depth=1 --branch "$KMI" \
   https://android.googlesource.com/kernel/common "$KERNEL_DIR"
+
+if [[ -n "$THINLTO_CACHE" ]]; then
+  mkdir -p "$THINLTO_CACHE"
+  rm -rf "$KERNEL_DIR/.thinlto-cache"
+  ln -s "$THINLTO_CACHE" "$KERNEL_DIR/.thinlto-cache"
+fi
 
 KBUILD_ARGS=(ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-)
 BBR_CC_ARGS=()
@@ -87,6 +95,28 @@ for line in text.splitlines():
         break
 path.write_text(text)
 PY
+
+prepare_bbr_probe() {
+  if [[ -n "$BBR_KCONFIG_CACHE" && -s "$BBR_KCONFIG_CACHE" ]]; then
+    install -m 0644 "$BBR_KCONFIG_CACHE" "$BBR_DIR/kernel_config.h"
+    # Fresh checkout mtimes would otherwise make Make regenerate the probe.
+    touch "$BBR_DIR/kernel_config.h"
+    printf 'using cached BBR3 API probe: %s\n' "$BBR_KCONFIG_CACHE"
+    return
+  fi
+
+  make -C "$BBR_DIR" \
+    KDIR="$KERNEL_DIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+    CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+    "${BBR_CC_ARGS[@]}" CC_PROBE=clang PROBE_J="$JOBS" probe
+
+  if [[ -n "$BBR_KCONFIG_CACHE" ]]; then
+    mkdir -p "$(dirname "$BBR_KCONFIG_CACHE")"
+    install -m 0644 "$BBR_DIR/kernel_config.h" "$BBR_KCONFIG_CACHE"
+  fi
+}
+
+prepare_bbr_probe
 
 build_in_tree_targets() {
   local warn=$1
