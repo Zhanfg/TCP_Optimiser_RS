@@ -44,6 +44,7 @@ void BPF_PROG(tcpopt_probe_init, struct sock *sk)
 {
     struct tcpopt_probe_ca *ca = tcpopt_probe_ca(sk);
     struct tcpopt_bbr2_cold_state *cold;
+    struct tcp_sock *tp = (struct tcp_sock *)sk;
 
     ca->magic = TCPOPT_PROBE_MAGIC;
     ca->init_count++;
@@ -51,7 +52,7 @@ void BPF_PROG(tcpopt_probe_init, struct sock *sk)
     cold = bpf_sk_storage_get(
         &tcpopt_bbr2_cold, sk, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
     if (cold)
-        cold->prior_cwnd = tcp_sk(sk)->snd_cwnd;
+        cold->prior_cwnd = tp->snd_cwnd;
 }
 
 SEC("struct_ops")
@@ -59,13 +60,14 @@ __u32 BPF_PROG(tcpopt_probe_ssthresh, struct sock *sk)
 {
     struct tcpopt_probe_ca *ca = tcpopt_probe_ca(sk);
     struct tcpopt_bbr2_cold_state *cold;
+    struct tcp_sock *tp = (struct tcp_sock *)sk;
 
     if (ca->magic != TCPOPT_PROBE_MAGIC)
         ca->magic = TCPOPT_PROBE_MAGIC;
 
     cold = bpf_sk_storage_get(&tcpopt_bbr2_cold, sk, 0, 0);
     if (cold)
-        cold->undo_inflight_hi = tcp_sk(sk)->snd_cwnd;
+        cold->undo_inflight_hi = tp->snd_cwnd;
 
     return tcp_reno_ssthresh(sk);
 }

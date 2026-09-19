@@ -62,8 +62,7 @@ pub fn probe() -> Bbr2ProviderStatus {
         && tcp_sock_btf
         && rate_sample_btf
         && reno_kfuncs_btf;
-    let zero_extra_loader_candidate =
-        bpf_struct_ops_candidate && system_libbpf_struct_ops_api;
+    let zero_extra_loader_candidate = bpf_struct_ops_candidate && system_libbpf_struct_ops_api;
 
     let (provider, note) = if native_available {
         (
