@@ -17,9 +17,36 @@ extern __u32 tcp_reno_ssthresh(struct sock *sk) __ksym;
 extern void tcp_reno_cong_avoid(struct sock *sk, __u32 ack, __u32 acked) __ksym;
 extern __u32 tcp_reno_undo_cwnd(struct sock *sk) __ksym;
 
+#define TCPOPT_PROBE_MAGIC 0x5450434fu
+
+struct tcpopt_probe_ca {
+    __u32 magic;
+    __u32 init_count;
+};
+
+static __always_inline struct tcpopt_probe_ca *tcpopt_probe_ca(struct sock *sk)
+{
+    struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
+
+    return (void *)icsk->icsk_ca_priv;
+}
+
+SEC("struct_ops")
+void BPF_PROG(tcpopt_probe_init, struct sock *sk)
+{
+    struct tcpopt_probe_ca *ca = tcpopt_probe_ca(sk);
+
+    ca->magic = TCPOPT_PROBE_MAGIC;
+    ca->init_count++;
+}
+
 SEC("struct_ops")
 __u32 BPF_PROG(tcpopt_probe_ssthresh, struct sock *sk)
 {
+    struct tcpopt_probe_ca *ca = tcpopt_probe_ca(sk);
+
+    if (ca->magic != TCPOPT_PROBE_MAGIC)
+        ca->magic = TCPOPT_PROBE_MAGIC;
     return tcp_reno_ssthresh(sk);
 }
 
@@ -37,6 +64,7 @@ __u32 BPF_PROG(tcpopt_probe_undo_cwnd, struct sock *sk)
 
 SEC(".struct_ops")
 struct tcp_congestion_ops tcpopt_probe = {
+    .init = (void *)tcpopt_probe_init,
     .ssthresh = (void *)tcpopt_probe_ssthresh,
     .cong_avoid = (void *)tcpopt_probe_cong_avoid,
     .undo_cwnd = (void *)tcpopt_probe_undo_cwnd,
