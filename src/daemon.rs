@@ -279,7 +279,7 @@ fn apply_interface_settings(iface: &str, mode: IfaceMode) {
 }
 
 pub(crate) fn resolve_policy(iface: &str, mode: IfaceMode) -> io::Result<ResolvedPolicy> {
-    let available = sysctl::available_algorithms()?;
+    let available = crate::kernel_module::augment_algorithms(sysctl::available_algorithms()?);
     let algorithm = select_algorithm(mode.prefix(), &available).to_string();
     let cfg = config::get_algo_config(&algorithm);
     let (base_ca, base_ss) = pacing_override().unwrap_or((cfg.pacing_ca, cfg.pacing_ss));
@@ -318,6 +318,9 @@ fn apply_interface_settings_inner(
     }
 
     if !policy.qdisc.is_empty() {
+        if let Err(error) = crate::kernel_module::ensure_qdisc(&policy.qdisc) {
+            failures.push(format!("Kernel module load for qdisc {} failed: {error}", policy.qdisc));
+        }
         if let Err(error) = sysctl::set_default_qdisc(&policy.qdisc) {
             failures.push(format!("Default qdisc {} failed: {error}", policy.qdisc));
         }
