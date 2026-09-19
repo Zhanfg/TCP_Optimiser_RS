@@ -132,10 +132,9 @@ fn build_module_index() -> Result<Option<ModuleIndex>, String> {
         return Ok(None);
     }
 
-    let manifest: BundleManifest = serde_json::from_slice(
-        &fs::read(&manifest_path).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| format!("invalid kernel module manifest: {error}"))?;
+    let manifest: BundleManifest =
+        serde_json::from_slice(&fs::read(&manifest_path).map_err(|error| error.to_string())?)
+            .map_err(|error| format!("invalid kernel module manifest: {error}"))?;
     if manifest.schema != 1 {
         return Err(format!(
             "unsupported kernel module manifest schema {}",
@@ -191,11 +190,7 @@ fn try_load(module_name: &str) -> io::Result<bool> {
     let Some(index) = module_index()? else {
         return Ok(false);
     };
-    let Some(entry) = index
-        .entries
-        .iter()
-        .find(|entry| entry.name == module_name)
-    else {
+    let Some(entry) = index.entries.iter().find(|entry| entry.name == module_name) else {
         return Ok(false);
     };
 
