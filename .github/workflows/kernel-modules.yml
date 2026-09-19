@@ -66,6 +66,22 @@ jobs:
           key: ${{ runner.os }}-gki-symvers-v1-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt') }}
           save-always: true
 
+      - name: Restore BBR3 API probe cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.bbr3-probe/${{ matrix.kmi }}
+          key: ${{ runner.os }}-bbr3-probe-v1-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-c5c5575-${{ hashFiles('scripts/kernel-module-config.txt') }}
+          save-always: true
+
+      - name: Restore ThinLTO cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.thinlto/${{ matrix.kmi }}
+          key: ${{ runner.os }}-gki-thinlto-v1-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-gki-thinlto-v1-${{ matrix.kmi }}-${{ steps.cache_key.outputs.clang_id }}-
+          save-always: true
+
       - name: Restore kernel compiler cache
         uses: actions/cache@v6
         with:
@@ -85,6 +101,8 @@ jobs:
       - name: Build loadable GKI modules
         env:
           KERNEL_SYMVERS_CACHE: ${{ github.workspace }}/.kernel-symvers/${{ matrix.kmi }}/Module.symvers
+          KERNEL_THINLTO_CACHE: ${{ github.workspace }}/.thinlto/${{ matrix.kmi }}
+          BBR_KCONFIG_CACHE: ${{ github.workspace }}/.bbr3-probe/${{ matrix.kmi }}/kernel_config.h
         run: bash scripts/build-kernel-modules.sh "${{ matrix.kmi }}" kernel_modules
 
       - name: Show compiler cache stats
