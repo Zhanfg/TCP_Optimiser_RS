@@ -290,11 +290,26 @@ pub fn set_qdisc(iface: &str, qdisc: &str) -> io::Result<()> {
     let options = qdisc_options(qdisc);
     let mut args = vec!["qdisc", "replace", "dev", iface, "root", qdisc];
     args.extend_from_slice(options);
-    let first = Command::new("tc").args(&args).output()?;
+    let mut first = Command::new("tc").args(&args).output()?;
+    let mut module_error = None;
+
+    if !first.status.success() {
+        match crate::kernel_module::ensure_qdisc(qdisc) {
+            Ok(true) => {
+                first = Command::new("tc").args(&args).output()?;
+            }
+            Ok(false) => {}
+            Err(error) => module_error = Some(error.to_string()),
+        }
+    }
 
     if !first.status.success() {
         if options.is_empty() {
-            return Err(command_error("tc qdisc replace", &first.stderr));
+            let base = command_error("tc qdisc replace", &first.stderr);
+            return match module_error {
+                Some(error) => Err(io::Error::other(format!("{base}; module load: {error}"))),
+                None => Err(base),
+            };
         }
 
         // Some Android tc builds expose a qdisc but not every optional
@@ -304,9 +319,13 @@ pub fn set_qdisc(iface: &str, qdisc: &str) -> io::Result<()> {
             .output()?;
         if !fallback.status.success() {
             return Err(io::Error::other(format!(
-                "tc qdisc replace failed (tuned: {}; fallback: {})",
+                "tc qdisc replace failed (tuned: {}; fallback: {}{})",
                 String::from_utf8_lossy(&first.stderr).trim(),
-                String::from_utf8_lossy(&fallback.stderr).trim()
+                String::from_utf8_lossy(&fallback.stderr).trim(),
+                module_error
+                    .as_deref()
+                    .map(|error| format!("; module load: {error}"))
+                    .unwrap_or_default()
             )));
         }
     }
