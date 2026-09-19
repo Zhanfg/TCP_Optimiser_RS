@@ -24,7 +24,7 @@ BBR_DIR="$WORK/tcp_bbr_modules"
 git clone --filter=blob:none --depth=1 --branch "$KMI" \
   https://android.googlesource.com/kernel/common "$KERNEL_DIR"
 
-KBUILD_ARGS=(ARCH=arm64 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-)
+KBUILD_ARGS=(ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-)
 BBR_CC_ARGS=()
 if command -v ccache >/dev/null 2>&1; then
   export CCACHE_BASEDIR="$WORK"
@@ -73,7 +73,7 @@ path.write_text(text)
 PY
 
 make -C "$BBR_DIR" \
-  KDIR="$KERNEL_DIR" ARCH=arm64 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- \
+  KDIR="$KERNEL_DIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
   CROSS_COMPILE_COMPAT=arm-linux-gnueabi- "${BBR_CC_ARGS[@]}" CC_PROBE=clang \
   PROBE_J="$(nproc)"
 
