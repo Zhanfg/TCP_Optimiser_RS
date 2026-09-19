@@ -94,11 +94,17 @@ python3 - "$DEST" "$KMI" "$KERNEL_RELEASE" "$KERNEL_REV" "$BBR_SOURCE_REV" <<'PY
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 
 root = Path(sys.argv[1])
-kmi, release, kernel_rev, bbr_rev = sys.argv[2:]
-module_dir = root / kmi / "aarch64"
+kernel_branch, release, kernel_rev, bbr_rev = sys.argv[2:]
+module_dir = root / kernel_branch / "aarch64"
+
+match = re.match(r"^(\d+)\.(\d+)\.\d+-(android\d+)-(\d+)", release)
+if not match:
+    raise SystemExit(f"cannot derive Android KMI from kernel release: {release}")
+kmi = f"{match.group(1)}.{match.group(2)}-{match.group(3)}-{match.group(4)}"
 
 modules = []
 for path in sorted(module_dir.glob("*.ko")):
@@ -113,6 +119,7 @@ for path in sorted(module_dir.glob("*.ko")):
 manifest = {
     "schema": 1,
     "kmi": kmi,
+    "kernel_branch": kernel_branch,
     "kernel_release": release,
     "kernel_source": {
         "repository": "https://android.googlesource.com/kernel/common",
