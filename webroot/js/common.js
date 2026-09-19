@@ -165,16 +165,29 @@ export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:$PATH"
 exec "$rust_bin" ${subcommand}`;
 }
 
-export async function getRuntimeSnapshot(force = false, includeStats = false) {
+export async function getRuntimeSnapshot(
+	force = false,
+	includeStats = false,
+	includeDetails = false,
+	includeVerification = false,
+) {
 	const now = Date.now();
-	const cacheKey = includeStats ? 'full' : 'runtime';
-	if (!force && runtimeSnapshotCache.has(cacheKey) && now - (runtimeSnapshotCheckedAt.get(cacheKey) || 0) < 1500) {
+	const cacheKey = [
+		includeStats ? 'stats' : 'runtime',
+		includeDetails ? 'details' : 'fast',
+		includeVerification ? 'verify' : 'plain',
+	].join(':');
+	const ttl = includeVerification ? 10000 : (includeDetails ? 5000 : (includeStats ? 1000 : 5000));
+	if (!force && runtimeSnapshotCache.has(cacheKey) && now - (runtimeSnapshotCheckedAt.get(cacheKey) || 0) < ttl) {
 		return runtimeSnapshotCache.get(cacheKey);
 	}
-	const subcommand = includeStats ? 'status' : 'status --runtime-only';
-	const { stdout } = await exec(rustBinaryCommand('runtime-status-snapshot', subcommand));
+	const args = ['status'];
+	if (!includeStats) args.push('--runtime-only');
+	if (includeDetails) args.push('--details');
+	if (includeVerification) args.push('--verify');
+	const { stdout } = await exec(rustBinaryCommand('runtime-status-snapshot', args.join(' ')));
 	const snapshot = JSON.parse(stdout.trim());
-	if (!snapshot || typeof snapshot !== 'object' || !snapshot.active_iface || !snapshot.verification) {
+	if (!snapshot || typeof snapshot !== 'object' || !snapshot.active_iface) {
 		throw new Error('Invalid runtime status payload');
 	}
 	runtimeSnapshotCache.set(cacheKey, snapshot);
