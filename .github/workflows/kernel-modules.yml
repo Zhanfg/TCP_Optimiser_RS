@@ -64,6 +64,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gki-ccache-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-
             ${{ runner.os }}-gki-ccache-${{ matrix.kmi }}-
+          save-always: true
 
       - name: Configure ccache
         run: |

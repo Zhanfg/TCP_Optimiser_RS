@@ -48,7 +48,7 @@ jobs:
           find webroot/js -name '*.js' -print0 | xargs -0 -n1 node --check
           node scripts/validate-webui.mjs
           node scripts/validate-release.mjs
-          python3 -m py_compile scripts/merge-kernel-modules.py scripts/audit-gki-symbols.py
+          python3 -m py_compile scripts/merge-kernel-modules.py scripts/audit-gki-symbols.py scripts/audit-module-exports.py
 
       - name: Validate module scripts
         run: |
@@ -171,6 +171,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gki-ccache-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-
             ${{ runner.os }}-gki-ccache-${{ matrix.kmi }}-
+          save-always: true
 
       - name: Configure ccache
         run: |
