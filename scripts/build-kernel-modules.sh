@@ -5,6 +5,11 @@ REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 KMI=${1:-android15-6.6}
 DEST=${2:-"$REPO_ROOT/kernel_modules"}
 BBR_SOURCE_REV=c5c557584175b5fed8939bf91ec249aed158597d
+CONFIG_SPEC="$REPO_ROOT/scripts/kernel-module-config.txt"
+JOBS=${TCP_OPTIMISER_BUILD_JOBS:-$(nproc)}
+KMI_PREFLIGHT=${TCP_OPTIMISER_KMI_PREFLIGHT:-1}
+MINIMAL_KERNEL_BUILD=${TCP_OPTIMISER_MINIMAL_KERNEL_BUILD:-0}
+SYMVERS_CACHE=${KERNEL_SYMVERS_CACHE:-}
 
 case "$KMI" in
   android12-5.10|android13-5.15|android14-6.1|android15-6.6) ;;
@@ -14,12 +19,15 @@ case "$KMI" in
     ;;
 esac
 
+test -s "$CONFIG_SPEC"
+
 WORK=$(mktemp -d)
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
 KERNEL_DIR="$WORK/kernel"
 BBR_DIR="$WORK/tcp_bbr_modules"
+PREFLIGHT_DIR="$WORK/kmi-preflight"
 
 git clone --filter=blob:none --depth=1 --branch "$KMI" \
   https://android.googlesource.com/kernel/common "$KERNEL_DIR"
@@ -35,31 +43,37 @@ if command -v ccache >/dev/null 2>&1; then
 fi
 
 make -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" gki_defconfig
-
 CONFIG="$KERNEL_DIR/.config"
-"$KERNEL_DIR/scripts/config" --file "$CONFIG" --module TCP_CONG_BBR
-"$KERNEL_DIR/scripts/config" --file "$CONFIG" --module NET_SCH_FQ
-"$KERNEL_DIR/scripts/config" --file "$CONFIG" --module NET_SCH_CODEL
-"$KERNEL_DIR/scripts/config" --file "$CONFIG" --module NET_SCH_FQ_CODEL
-"$KERNEL_DIR/scripts/config" --file "$CONFIG" --module NET_SCH_CAKE
-"$KERNEL_DIR/scripts/config" --file "$CONFIG" --module NET_SCH_PIE
-"$KERNEL_DIR/scripts/config" --file "$CONFIG" --module NET_SCH_FQ_PIE
+while IFS='=' read -r option value; do
+  [[ -z "$option" || "$option" == \#* ]] && continue
+  case "$value" in
+    m) "$KERNEL_DIR/scripts/config" --file "$CONFIG" --module "$option" ;;
+    y) "$KERNEL_DIR/scripts/config" --file "$CONFIG" --enable "$option" ;;
+    n) "$KERNEL_DIR/scripts/config" --file "$CONFIG" --disable "$option" ;;
+    *)
+      printf 'unsupported kernel config value: %s=%s\n' "$option" "$value" >&2
+      exit 2
+      ;;
+  esac
+done < "$CONFIG_SPEC"
 make -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" olddefconfig
 
-# A full GKI build is intentional: CONFIG_MODVERSIONS modules need the exact
-# Module.symvers/CRC data. modules_prepare alone can create a .ko that compiles
-# but is not a trustworthy loadable artifact.
-make -C "$KERNEL_DIR" -j"$(nproc)" "${KBUILD_ARGS[@]}" Image modules
+# modules_prepare is inexpensive and produces generated headers and host tools
+# required for targeted module compilation. It intentionally does not generate
+# Module.symvers when CONFIG_MODVERSIONS is enabled.
+make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" modules_prepare
 
-KERNEL_RELEASE=$(make -s -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" kernelrelease)
-KERNEL_REV=$(git -C "$KERNEL_DIR" rev-parse HEAD)
+SYMVERS_HIT=0
+if [[ -n "$SYMVERS_CACHE" && -s "$SYMVERS_CACHE" ]]; then
+  install -m 0644 "$SYMVERS_CACHE" "$KERNEL_DIR/Module.symvers"
+  SYMVERS_HIT=1
+  printf 'using cached exact Module.symvers: %s\n' "$SYMVERS_CACHE"
+fi
 
-git clone https://github.com/hrimfaxi/tcp_bbr_modules.git "$BBR_DIR"
+git clone --filter=blob:none https://github.com/hrimfaxi/tcp_bbr_modules.git "$BBR_DIR"
 git -C "$BBR_DIR" checkout --detach "$BBR_SOURCE_REV"
 
-# BBR v1 comes from the target Android kernel tree as tcp_bbr.ko.
-# Build only the out-of-tree BBRv3 module here; compiling tcp_bbr1.o is
-# unnecessary and breaks on older branches whose BPF kfunc API differs.
+# BBR v1 comes from the Android kernel tree. Build only the OOT BBRv3 object.
 python3 - "$BBR_DIR/Makefile" <<'PY'
 from pathlib import Path
 import sys
@@ -72,36 +86,114 @@ for line in text.splitlines():
 path.write_text(text)
 PY
 
-make -C "$BBR_DIR" \
-  KDIR="$KERNEL_DIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
-  CROSS_COMPILE_COMPAT=arm-linux-gnueabi- "${BBR_CC_ARGS[@]}" CC_PROBE=clang \
-  PROBE_J="$(nproc)"
+build_in_tree_targets() {
+  local warn=$1
+  local -a extra=()
+  if [[ "$warn" == "1" ]]; then
+    extra+=(KBUILD_MODPOST_WARN=1)
+  fi
+  make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
+    M=net/ipv4 tcp_bbr.ko
+  make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
+    M=net/sched \
+    sch_fq.ko sch_codel.ko sch_fq_codel.ko sch_cake.ko sch_pie.ko sch_fq_pie.ko
+}
 
-# Compile-time API probes are not enough. Verify the final KO against the
-# exact full-build Module.symvers. Do not use the upstream source-grep audit
-# here: its EXPORT_SYMBOL capture currently mis-parses GPL exports.
+build_bbr3() {
+  local warn=$1
+  local -a extra=()
+  if [[ "$warn" == "1" ]]; then
+    extra+=(KBUILD_MODPOST_WARN=1)
+  fi
+  make -C "$BBR_DIR" \
+    KDIR="$KERNEL_DIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+    CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+    "${BBR_CC_ARGS[@]}" "${extra[@]}" CC_PROBE=clang PROBE_J="$JOBS"
+}
+
+stage_modules() {
+  local root=$1
+  rm -rf "$root"
+  mkdir -p "$root"
+  install -m 0644 "$KERNEL_DIR/net/ipv4/tcp_bbr.ko" "$root/tcp_bbr.ko"
+  install -m 0644 "$BBR_DIR/tcp_bbr3.ko" "$root/tcp_bbr3.ko"
+  install -m 0644 "$KERNEL_DIR/net/sched/sch_fq.ko" "$root/sch_fq.ko"
+  install -m 0644 "$KERNEL_DIR/net/sched/sch_codel.ko" "$root/sch_codel.ko"
+  install -m 0644 "$KERNEL_DIR/net/sched/sch_fq_codel.ko" "$root/sch_fq_codel.ko"
+  install -m 0644 "$KERNEL_DIR/net/sched/sch_cake.ko" "$root/sch_cake.ko"
+  install -m 0644 "$KERNEL_DIR/net/sched/sch_pie.ko" "$root/sch_pie.ko"
+  install -m 0644 "$KERNEL_DIR/net/sched/sch_fq_pie.ko" "$root/sch_fq_pie.ko"
+}
+
+clean_target_outputs() {
+  make -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" M=net/ipv4 clean
+  make -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" M=net/sched clean
+  make -C "$BBR_DIR" \
+    KDIR="$KERNEL_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- clean || true
+}
+
+# Cheap KMI gate first. On a cache miss, KBUILD_MODPOST_WARN allows producing
+# temporary KOs without CRC data solely so undefined symbol names can be
+# compared against Android's GKI KMI lists. If this fails, a full GKI build
+# cannot make the module generically GKI-loadable, so stop before expensive LTO.
+if [[ "$KMI_PREFLIGHT" == "1" ]]; then
+  if [[ "$SYMVERS_HIT" == "1" ]]; then
+    build_in_tree_targets 0
+    build_bbr3 0
+  else
+    build_in_tree_targets 1
+    build_bbr3 1
+  fi
+  stage_modules "$PREFLIGHT_DIR"
+  python3 "$REPO_ROOT/scripts/audit-gki-symbols.py" \
+    "$KERNEL_DIR" "$PREFLIGHT_DIR" \
+    --json "$WORK/kmi-preflight-$KMI.json" --strict
+fi
+
+if [[ "$SYMVERS_HIT" != "1" ]]; then
+  clean_target_outputs
+
+  if [[ "$MINIMAL_KERNEL_BUILD" == "1" ]]; then
+    printf 'trying minimal vmlinux-only build for Module.symvers\n'
+    make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" vmlinux
+  fi
+
+  if [[ ! -s "$KERNEL_DIR/Module.symvers" ]]; then
+    printf 'Module.symvers unavailable; falling back to full GKI Image+modules build\n'
+    make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" Image modules
+  else
+    # A vmlinux-only build has not built our selected modular targets.
+    build_in_tree_targets 0
+  fi
+
+  test -s "$KERNEL_DIR/Module.symvers"
+  if [[ -n "$SYMVERS_CACHE" ]]; then
+    mkdir -p "$(dirname "$SYMVERS_CACHE")"
+    install -m 0644 "$KERNEL_DIR/Module.symvers" "$SYMVERS_CACHE"
+    printf 'stored exact Module.symvers cache candidate: %s\n' "$SYMVERS_CACHE"
+  fi
+
+  # The preflight BBR3 module was built without exact CRCs. Rebuild it against
+  # the exact target Module.symvers.
+  make -C "$BBR_DIR" \
+    KDIR="$KERNEL_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- clean || true
+  build_bbr3 0
+elif [[ "$KMI_PREFLIGHT" != "1" ]]; then
+  # Cache hit + preflight disabled: compile just the eight required modules.
+  build_in_tree_targets 0
+  build_bbr3 0
+fi
+
 python3 "$REPO_ROOT/scripts/audit-module-exports.py" \
   "$KERNEL_DIR" "$BBR_DIR/tcp_bbr3.ko" \
   --json "$WORK/bbr3-export-audit.json"
 
+KERNEL_RELEASE=$(make -s -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" kernelrelease)
+KERNEL_REV=$(git -C "$KERNEL_DIR" rev-parse HEAD)
+
 rm -rf "$DEST"
 mkdir -p "$DEST/$KMI/aarch64"
-
-copy_module() {
-  local source=$1
-  local name=$2
-  test -s "$source"
-  install -m 0644 "$source" "$DEST/$KMI/aarch64/$name"
-}
-
-copy_module "$KERNEL_DIR/net/ipv4/tcp_bbr.ko" tcp_bbr.ko
-copy_module "$BBR_DIR/tcp_bbr3.ko" tcp_bbr3.ko
-copy_module "$KERNEL_DIR/net/sched/sch_fq.ko" sch_fq.ko
-copy_module "$KERNEL_DIR/net/sched/sch_codel.ko" sch_codel.ko
-copy_module "$KERNEL_DIR/net/sched/sch_fq_codel.ko" sch_fq_codel.ko
-copy_module "$KERNEL_DIR/net/sched/sch_cake.ko" sch_cake.ko
-copy_module "$KERNEL_DIR/net/sched/sch_pie.ko" sch_pie.ko
-copy_module "$KERNEL_DIR/net/sched/sch_fq_pie.ko" sch_fq_pie.ko
+stage_modules "$DEST/$KMI/aarch64"
 
 python3 "$REPO_ROOT/scripts/audit-gki-symbols.py" \
   "$KERNEL_DIR" "$DEST/$KMI/aarch64" \
