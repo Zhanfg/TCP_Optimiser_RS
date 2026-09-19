@@ -48,7 +48,7 @@ struct tcpopt_bbr2_hot_state {
     __u32 loss_round_delivered;
 
     __u16 extra_acked[2];
-}
+};
 
 struct tcpopt_bbr2_cold_state {
     __u32 prior_rcv_nxt;
