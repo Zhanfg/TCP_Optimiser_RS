@@ -13,6 +13,7 @@ use crate::sysctl;
 
 const DEBOUNCE_TIME: u64 = 10;
 const VOWIFI_CONNECT_TIME: u64 = 10;
+const VOWIFI_PROBE_INTERVAL: u64 = 5;
 const ADAPTIVE_FAST_CYCLES: u32 = 3;
 const SLEEP_FAST: u64 = 2;
 const SLEEP_NORMAL: u64 = 30;
@@ -41,6 +42,8 @@ pub fn run() -> io::Result<()> {
     let mut last_change: Option<Instant> = None;
     let mut wifi_pending_since: Option<Instant> = None;
     let mut wifi_applied = false;
+    let mut last_vowifi_probe: Option<Instant> = None;
+    let mut last_vowifi_active = false;
     let mut adaptive_count: u32 = 0;
     let mut last_qdisc_check: Option<Instant> = None;
     let mut route_unavailable = false;
@@ -71,14 +74,32 @@ pub fn run() -> io::Result<()> {
                     last_change = None;
                     wifi_pending_since = None;
                     wifi_applied = false;
+                    last_vowifi_probe = None;
+                    last_vowifi_active = false;
                     last_qdisc_check = None;
                 }
-                thread::sleep(Duration::from_secs(SLEEP_NORMAL));
+
+                // Keep the low-frequency timeout as a safety net, but let a
+                // route/link event wake us immediately when connectivity returns.
+                let wait = Duration::from_secs(SLEEP_NORMAL);
+                if let Some(monitor) = route_monitor.as_mut() {
+                    if let Err(error) = monitor.wait(wait) {
+                        logging::log_print(&format!(
+                            "[WARN] rtnetlink monitor failed while offline; reverting to timeout polling: {error}"
+                        ));
+                        route_monitor = None;
+                        thread::sleep(wait);
+                    }
+                } else {
+                    thread::sleep(wait);
+                }
                 continue;
             }
         };
 
-        network::record_active_iface(&iface);
+        if iface != last_iface {
+            network::record_active_iface(&iface);
+        }
 
         if route_unavailable {
             logging::log_print(&format!("[INFO] Network route restored on {iface}"));
@@ -105,6 +126,8 @@ pub fn run() -> io::Result<()> {
                     IfaceMode::Cellular => {
                         apply_interface_settings(&iface, IfaceMode::Cellular);
                         last_qdisc_check = Some(Instant::now());
+                        last_vowifi_probe = None;
+                        last_vowifi_active = false;
                     }
                     IfaceMode::WiFi => {
                         if force_apply {
@@ -117,8 +140,14 @@ pub fn run() -> io::Result<()> {
                             wifi_pending_since = Some(Instant::now());
                             last_qdisc_check = None;
                         }
+                        last_vowifi_probe = None;
+                        last_vowifi_active = false;
                     }
-                    IfaceMode::Unknown => last_qdisc_check = None,
+                    IfaceMode::Unknown => {
+                        last_qdisc_check = None;
+                        last_vowifi_probe = None;
+                        last_vowifi_active = false;
+                    }
                 }
                 last_mode = new_mode;
                 last_iface.clone_from(&iface);
@@ -127,18 +156,25 @@ pub fn run() -> io::Result<()> {
             }
         }
 
-        // Unified Wi-Fi apply with VoWiFi detection
-        // Only complete the VoWiFi wait for the interface transition that was
-        // accepted above. Otherwise a rapid wlan0 -> wlan1 handover can reuse
-        // wlan0's timer and apply settings to wlan1 before the debounce ends.
+        // Unified Wi-Fi apply with VoWiFi detection. dumpsys is relatively
+        // expensive on Android, so probe it at a bounded cadence while keeping
+        // the original 10-second wait semantics.
         let current_wifi_transition =
             new_mode == IfaceMode::WiFi && last_mode == IfaceMode::WiFi && iface == last_iface;
         if current_wifi_transition && !wifi_applied {
             let pending_since = wifi_pending_since.get_or_insert_with(Instant::now);
-            let vowifi_active = proxy::wifi_calling_active().unwrap_or(false);
-            if should_apply_wifi(wifi_applied, vowifi_active, pending_since.elapsed()) {
+            if should_probe_vowifi(last_vowifi_probe.map(|probe| probe.elapsed())) {
+                last_vowifi_active = proxy::wifi_calling_active().unwrap_or(false);
+                last_vowifi_probe = Some(Instant::now());
+            }
+
+            if should_apply_wifi(
+                wifi_applied,
+                last_vowifi_active,
+                pending_since.elapsed(),
+            ) {
                 logging::log_print(&format!(
-                    "[INFO] Applying Wi-Fi settings (VoWiFi={vowifi_active})"
+                    "[INFO] Applying Wi-Fi settings (VoWiFi={last_vowifi_active})"
                 ));
                 apply_interface_settings(&iface, IfaceMode::WiFi);
                 wifi_applied = true;
@@ -147,6 +183,8 @@ pub fn run() -> io::Result<()> {
         } else if new_mode != IfaceMode::WiFi {
             wifi_applied = false;
             wifi_pending_since = None;
+            last_vowifi_probe = None;
+            last_vowifi_active = false;
         }
 
         let policy_active = match new_mode {
@@ -526,13 +564,21 @@ fn pacing_override() -> Option<(u32, u32)> {
     Some((read("pacing_ca")?, read("pacing_ss")?))
 }
 
+fn should_probe_vowifi(last_probe_elapsed: Option<Duration>) -> bool {
+    last_probe_elapsed
+        .map(|elapsed| elapsed >= Duration::from_secs(VOWIFI_PROBE_INTERVAL))
+        .unwrap_or(true)
+}
+
 fn should_apply_wifi(already_applied: bool, vowifi_active: bool, elapsed: Duration) -> bool {
     !already_applied && (vowifi_active || elapsed >= Duration::from_secs(VOWIFI_CONNECT_TIME))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{adjusted_pacing, qdisc_check_interval, should_apply_wifi};
+    use super::{
+        adjusted_pacing, qdisc_check_interval, should_apply_wifi, should_probe_vowifi,
+    };
     use crate::network::IfaceMode;
     use std::time::Duration;
 
@@ -542,6 +588,13 @@ mod tests {
         assert!(!should_apply_wifi(false, false, Duration::from_secs(9)));
         assert!(should_apply_wifi(false, false, Duration::from_secs(10)));
         assert!(!should_apply_wifi(true, true, Duration::from_secs(20)));
+    }
+
+    #[test]
+    fn vowifi_probe_is_rate_limited() {
+        assert!(should_probe_vowifi(None));
+        assert!(!should_probe_vowifi(Some(Duration::from_secs(4))));
+        assert!(should_probe_vowifi(Some(Duration::from_secs(5))));
     }
 
     #[test]
