@@ -1,6 +1,8 @@
 name: Kernel pipeline smoke
 
 on:
+  push:
+    branches: [perf/kernel-build-pipeline]
   pull_request:
     paths:
       - 'scripts/build-kernel-modules.sh'
