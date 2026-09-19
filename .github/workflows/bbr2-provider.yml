@@ -40,6 +40,31 @@ jobs:
           echo "Stripped probe payload: $bytes bytes"
           test "$bytes" -lt 131072
 
+      - name: Exercise host struct_ops verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          obj=out/bbr2-provider/tcpopt_structops_probe.bpf.o
+          if ! sudo "$BPFTOOL" struct_ops help >/dev/null 2>&1; then
+            echo "Host bpftool has no struct_ops support; compile-only result retained."
+            exit 0
+          fi
+
+          trap 'sudo "$BPFTOOL" struct_ops unregister name tcpopt_probe >/dev/null 2>&1 || true' EXIT
+          set +e
+          output=$(sudo "$BPFTOOL" -d struct_ops register "$obj" 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$rc" -ne 0 ]; then
+            echo "Host kernel rejected runtime registration; Android target validation is still required."
+            exit 0
+          fi
+
+          sudo "$BPFTOOL" struct_ops show
+          sudo "$BPFTOOL" struct_ops show | grep -F tcpopt_probe
+          echo "Host kernel accepted tcpopt_probe struct_ops registration."
+
       - uses: actions/upload-artifact@v7
         with:
           name: bbr2-structops-probe
