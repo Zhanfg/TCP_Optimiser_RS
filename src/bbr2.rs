@@ -15,6 +15,7 @@ pub struct Bbr2ProviderStatus {
     pub struct_ops_wrapper_btf: bool,
     pub tcp_sock_btf: bool,
     pub rate_sample_btf: bool,
+    pub reno_kfuncs_btf: bool,
     pub kernel_release: String,
     pub note: String,
 }
@@ -39,6 +40,15 @@ pub fn probe() -> Bbr2ProviderStatus {
     let rate_sample_btf = btf
         .as_deref()
         .is_some_and(|bytes| contains_btf_name(bytes, b"rate_sample"));
+    let reno_kfuncs_btf = btf.as_deref().is_some_and(|bytes| {
+        [
+            b"tcp_reno_ssthresh".as_slice(),
+            b"tcp_reno_cong_avoid".as_slice(),
+            b"tcp_reno_undo_cwnd".as_slice(),
+        ]
+        .iter()
+        .all(|name| contains_btf_name(bytes, name))
+    });
 
     let bpf_struct_ops_candidate = !native_available
         && bpf_syscall_present
@@ -46,7 +56,8 @@ pub fn probe() -> Bbr2ProviderStatus {
         && tcp_congestion_ops_btf
         && struct_ops_wrapper_btf
         && tcp_sock_btf
-        && rate_sample_btf;
+        && rate_sample_btf
+        && reno_kfuncs_btf;
 
     let (provider, note) = if native_available {
         (
@@ -75,6 +86,7 @@ pub fn probe() -> Bbr2ProviderStatus {
         struct_ops_wrapper_btf,
         tcp_sock_btf,
         rate_sample_btf,
+        reno_kfuncs_btf,
         kernel_release,
         note: note.to_string(),
     }
@@ -121,7 +133,7 @@ mod tests {
     #[test]
     fn finds_nul_terminated_btf_names_only() {
         let bytes =
-            b"prefix\0tcp_sock\0rate_sample\0tcp_congestion_ops\0bpf_struct_ops_tcp_congestion_ops\0suffix";
+            b"prefix\0tcp_sock\0rate_sample\0tcp_congestion_ops\0bpf_struct_ops_tcp_congestion_ops\0tcp_reno_ssthresh\0tcp_reno_cong_avoid\0tcp_reno_undo_cwnd\0suffix";
         assert!(contains_btf_name(bytes, b"tcp_sock"));
         assert!(contains_btf_name(bytes, b"rate_sample"));
         assert!(contains_btf_name(bytes, b"tcp_congestion_ops"));
@@ -129,6 +141,9 @@ mod tests {
             bytes,
             b"bpf_struct_ops_tcp_congestion_ops"
         ));
+        assert!(contains_btf_name(bytes, b"tcp_reno_ssthresh"));
+        assert!(contains_btf_name(bytes, b"tcp_reno_cong_avoid"));
+        assert!(contains_btf_name(bytes, b"tcp_reno_undo_cwnd"));
         assert!(!contains_btf_name(bytes, b"tcp"));
         assert!(!contains_btf_name(bytes, b"missing"));
     }
