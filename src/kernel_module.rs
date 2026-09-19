@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 #[derive(Debug, Deserialize)]
 struct BundleManifest {
@@ -12,7 +13,7 @@ struct BundleManifest {
     modules: Vec<ModuleEntry>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ModuleEntry {
     name: String,
     kmi: String,
@@ -21,8 +22,8 @@ struct ModuleEntry {
     sha256: String,
 }
 
-/// Return the Android GKI KMI family, e.g. `android15-6.6`, when it can be
-/// derived from the running kernel release string.
+/// Return the full Android GKI KMI version, e.g. `6.6-android15-8`, when it
+/// can be derived from the running kernel release string.
 pub fn current_kmi() -> Option<String> {
     let release = kernel_release().ok()?;
     derive_kmi(&release)
@@ -115,40 +116,71 @@ fn qdisc_modules(qdisc: &str) -> Option<&'static [&'static str]> {
     })
 }
 
-fn matching_module_names() -> io::Result<HashSet<String>> {
+#[derive(Debug)]
+struct ModuleIndex {
+    root: PathBuf,
+    entries: Vec<ModuleEntry>,
+    names: HashSet<String>,
+}
+
+static MODULE_INDEX: OnceLock<Result<Option<ModuleIndex>, String>> = OnceLock::new();
+
+fn build_module_index() -> Result<Option<ModuleIndex>, String> {
     let root = crate::config::module_dir().join("kernel_modules");
     let manifest_path = root.join("manifest.json");
     if !manifest_path.is_file() {
-        return Ok(HashSet::new());
+        return Ok(None);
     }
 
-    let manifest: BundleManifest = serde_json::from_slice(&fs::read(&manifest_path)?)
-        .map_err(|error| invalid_data(format!("invalid kernel module manifest: {error}")))?;
+    let manifest: BundleManifest = serde_json::from_slice(
+        &fs::read(&manifest_path).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("invalid kernel module manifest: {error}"))?;
     if manifest.schema != 1 {
-        return Err(invalid_data(format!(
+        return Err(format!(
             "unsupported kernel module manifest schema {}",
             manifest.schema
-        )));
+        ));
     }
 
     let Some(kmi) = current_kmi() else {
-        return Ok(HashSet::new());
+        return Ok(None);
     };
     let arch = current_arch();
+    let mut entries = Vec::new();
     let mut names = HashSet::new();
+
     for entry in manifest
         .modules
-        .iter()
+        .into_iter()
         .filter(|entry| entry.kmi == kmi && entry.arch == arch)
     {
-        let Ok(relative) = safe_relative_path(&entry.file) else {
-            continue;
-        };
+        let relative = safe_relative_path(&entry.file).map_err(|error| error.to_string())?;
         if root.join(relative).is_file() {
             names.insert(entry.name.clone());
+            entries.push(entry);
         }
     }
-    Ok(names)
+
+    Ok(Some(ModuleIndex {
+        root,
+        entries,
+        names,
+    }))
+}
+
+fn module_index() -> io::Result<Option<&'static ModuleIndex>> {
+    match MODULE_INDEX.get_or_init(build_module_index) {
+        Ok(Some(index)) => Ok(Some(index)),
+        Ok(None) => Ok(None),
+        Err(error) => Err(invalid_data(error.clone())),
+    }
+}
+
+fn matching_module_names() -> io::Result<HashSet<String>> {
+    Ok(module_index()?
+        .map(|index| index.names.clone())
+        .unwrap_or_default())
 }
 
 fn try_load(module_name: &str) -> io::Result<bool> {
@@ -156,35 +188,19 @@ fn try_load(module_name: &str) -> io::Result<bool> {
         return Ok(true);
     }
 
-    let root = crate::config::module_dir().join("kernel_modules");
-    let manifest_path = root.join("manifest.json");
-    if !manifest_path.is_file() {
-        return Ok(false);
-    }
-
-    let manifest: BundleManifest = serde_json::from_slice(&fs::read(&manifest_path)?)
-        .map_err(|error| invalid_data(format!("invalid kernel module manifest: {error}")))?;
-    if manifest.schema != 1 {
-        return Err(invalid_data(format!(
-            "unsupported kernel module manifest schema {}",
-            manifest.schema
-        )));
-    }
-
-    let Some(kmi) = current_kmi() else {
+    let Some(index) = module_index()? else {
         return Ok(false);
     };
-    let arch = current_arch();
-    let Some(entry) = manifest
-        .modules
+    let Some(entry) = index
+        .entries
         .iter()
-        .find(|entry| entry.name == module_name && entry.kmi == kmi && entry.arch == arch)
+        .find(|entry| entry.name == module_name)
     else {
         return Ok(false);
     };
 
     let relative = safe_relative_path(&entry.file)?;
-    let path = root.join(relative);
+    let path = index.root.join(relative);
     if !path.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
