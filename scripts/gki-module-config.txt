@@ -1,0 +1,9 @@
+# TCP Optimiser GKI module build profile.
+# Keep this file declarative: its content is part of the Module.symvers SDK cache key.
+TCP_CONG_BBR=m
+NET_SCH_FQ=m
+NET_SCH_CODEL=m
+NET_SCH_FQ_CODEL=m
+NET_SCH_CAKE=m
+NET_SCH_PIE=m
+NET_SCH_FQ_PIE=m

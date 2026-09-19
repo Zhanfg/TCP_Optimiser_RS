@@ -131,8 +131,9 @@ jobs:
     timeout-minutes: 120
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 768M
+      CCACHE_MAXSIZE: 1024M
       CCACHE_COMPRESS: "true"
+      GKI_SDK_CACHE_DIR: ${{ github.workspace }}/.gki-sdk/${{ matrix.kmi }}
     strategy:
       fail-fast: false
       matrix:
@@ -147,7 +148,7 @@ jobs:
       - name: Install kernel build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             bc binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
             bison build-essential ccache clang flex git kmod libelf-dev libssl-dev \
             lld llvm pahole python3 rsync
@@ -163,15 +164,22 @@ jobs:
           echo "kernel_rev=$kernel_rev" >> "$GITHUB_OUTPUT"
           echo "clang_id=$clang_id" >> "$GITHUB_OUTPUT"
 
-      - name: Restore kernel compiler cache
-        uses: actions/cache@v6
+      - id: ccache_restore
+        name: Restore kernel compiler cache
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ${{ runner.os }}-gki-ccache-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/build-kernel-modules.sh') }}
+          key: ${{ runner.os }}-gki-ccache-v2-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/gki-module-config.txt') }}
           restore-keys: |
-            ${{ runner.os }}-gki-ccache-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-
-            ${{ runner.os }}-gki-ccache-${{ matrix.kmi }}-
-          save-always: true
+            ${{ runner.os }}-gki-ccache-v2-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-
+            ${{ runner.os }}-gki-ccache-v2-${{ matrix.kmi }}-
+
+      - id: sdk_restore
+        name: Restore compact GKI build SDK
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.GKI_SDK_CACHE_DIR }}
+          key: ${{ runner.os }}-gki-sdk-v1-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ hashFiles('scripts/gki-module-config.txt') }}
 
       - name: Configure ccache
         run: |
@@ -185,6 +193,32 @@ jobs:
       - name: Show compiler cache stats
         if: always()
         run: ccache --show-stats || true
+
+      - id: sdk_state
+        name: Check reusable GKI SDK
+        if: always()
+        shell: bash
+        run: |
+          if [ -s "$GKI_SDK_CACHE_DIR/Module.symvers" ] && [ -s "$GKI_SDK_CACHE_DIR/metadata.json" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            du -sh "$GKI_SDK_CACHE_DIR" || true
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save compact GKI build SDK
+        if: ${{ always() && steps.sdk_restore.outputs.cache-hit != 'true' && steps.sdk_state.outputs.ready == 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.GKI_SDK_CACHE_DIR }}
+          key: ${{ steps.sdk_restore.outputs.cache-primary-key }}
+
+      - name: Save kernel compiler cache
+        if: ${{ always() && steps.ccache_restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.ccache_restore.outputs.cache-primary-key }}
 
       - name: Verify generated bundle
         run: |
