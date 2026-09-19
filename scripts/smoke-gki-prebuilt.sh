@@ -9,7 +9,7 @@ cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
 mkdir -p "$OUT"
-"$ROOT/scripts/fetch-gki-prebuilt.sh" "$KMI" "$OUT/prebuilt"
+bash "$ROOT/scripts/fetch-gki-prebuilt.sh" "$KMI" "$OUT/prebuilt"
 
 readarray -t meta < <(python3 - "$OUT/prebuilt/metadata.json" <<'PY'
 import json, sys
