@@ -1,0 +1,245 @@
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::io::{self, Read};
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
+
+#[derive(Debug, Deserialize)]
+struct BundleManifest {
+    schema: u32,
+    modules: Vec<ModuleEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModuleEntry {
+    name: String,
+    kmi: String,
+    arch: String,
+    file: String,
+    sha256: String,
+}
+
+/// Return the Android GKI KMI family, e.g. `android15-6.6`, when it can be
+/// derived from the running kernel release string.
+pub fn current_kmi() -> Option<String> {
+    let release = kernel_release().ok()?;
+    derive_kmi(&release)
+}
+
+pub fn ensure_algorithm(algorithm: &str) -> io::Result<bool> {
+    let module = match algorithm {
+        "bbr" => "tcp_bbr",
+        "bbr1" => "tcp_bbr1",
+        "bbr2" => "tcp_bbr2",
+        "bbr3" => "tcp_bbr3",
+        "bic" => "tcp_bic",
+        "cdg" => "tcp_cdg",
+        "dctcp" => "tcp_dctcp",
+        "highspeed" => "tcp_highspeed",
+        "htcp" => "tcp_htcp",
+        "hybla" => "tcp_hybla",
+        "illinois" => "tcp_illinois",
+        "lp" => "tcp_lp",
+        "nv" => "tcp_nv",
+        "scalable" => "tcp_scalable",
+        "vegas" => "tcp_vegas",
+        "westwood" | "westwood_plus" => "tcp_westwood",
+        "yeah" => "tcp_yeah",
+        _ => return Ok(false),
+    };
+    try_load(module)
+}
+
+pub fn ensure_qdisc(qdisc: &str) -> io::Result<bool> {
+    let modules: &[&str] = match qdisc {
+        "fq" => &["sch_fq"],
+        "fq_codel" => &["sch_codel", "sch_fq_codel"],
+        "codel" => &["sch_codel"],
+        "cake" => &["sch_cake"],
+        "pie" => &["sch_pie"],
+        "fq_pie" => &["sch_pie", "sch_fq_pie"],
+        _ => return Ok(false),
+    };
+
+    let mut loaded_any = false;
+    for module in modules {
+        loaded_any |= try_load(module)?;
+    }
+    Ok(loaded_any)
+}
+
+fn try_load(module_name: &str) -> io::Result<bool> {
+    if module_present(module_name) {
+        return Ok(true);
+    }
+
+    let root = crate::config::module_dir().join("kernel_modules");
+    let manifest_path = root.join("manifest.json");
+    if !manifest_path.is_file() {
+        return Ok(false);
+    }
+
+    let manifest: BundleManifest = serde_json::from_slice(&fs::read(&manifest_path)?)
+        .map_err(|error| invalid_data(format!("invalid kernel module manifest: {error}")))?;
+    if manifest.schema != 1 {
+        return Err(invalid_data(format!(
+            "unsupported kernel module manifest schema {}",
+            manifest.schema
+        )));
+    }
+
+    let Some(kmi) = current_kmi() else {
+        return Ok(false);
+    };
+    let arch = current_arch();
+    let Some(entry) = manifest
+        .modules
+        .iter()
+        .find(|entry| entry.name == module_name && entry.kmi == kmi && entry.arch == arch)
+    else {
+        return Ok(false);
+    };
+
+    let relative = safe_relative_path(&entry.file)?;
+    let path = root.join(relative);
+    if !path.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("bundled kernel module is missing: {}", path.display()),
+        ));
+    }
+    verify_sha256(&path, &entry.sha256)?;
+
+    let output = Command::new("insmod").arg(&path).output()?;
+    if output.status.success() || module_present(module_name) {
+        return Ok(true);
+    }
+
+    Err(io::Error::other(format!(
+        "insmod {} failed: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    )))
+}
+
+fn module_present(module_name: &str) -> bool {
+    Path::new("/sys/module").join(module_name).exists()
+        || fs::read_to_string("/proc/modules")
+            .ok()
+            .is_some_and(|content| {
+                content.lines().any(|line| {
+                    line.split_whitespace().next() == Some(module_name)
+                })
+            })
+}
+
+fn kernel_release() -> io::Result<String> {
+    let output = Command::new("uname").arg("-r").output()?;
+    if !output.status.success() {
+        return Err(io::Error::other("uname -r failed"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn current_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "aarch64",
+        "arm" => "arm",
+        "x86_64" => "x86_64",
+        other => other,
+    }
+}
+
+fn derive_kmi(release: &str) -> Option<String> {
+    let version = release.split('-').next()?;
+    let mut version_parts = version.split('.');
+    let major = version_parts.next()?;
+    let minor = version_parts.next()?;
+    if !major.chars().all(|c| c.is_ascii_digit())
+        || !minor.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let android_pos = release.find("android")? + "android".len();
+    let generation = release[android_pos..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>();
+    if generation.is_empty() {
+        return None;
+    }
+
+    Some(format!("android{generation}-{major}.{minor}"))
+}
+
+fn safe_relative_path(value: &str) -> io::Result<PathBuf> {
+    if value.is_empty() || value.contains('\\') || value.contains('\0') {
+        return Err(invalid_data("unsafe kernel module path"));
+    }
+    let path = Path::new(value);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(invalid_data("unsafe kernel module path"));
+    }
+    Ok(path.to_path_buf())
+}
+
+fn verify_sha256(path: &Path, expected: &str) -> io::Result<()> {
+    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(invalid_data("invalid kernel module SHA-256"));
+    }
+
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let actual = format!("{:x}", hasher.finalize());
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(invalid_data(format!(
+            "kernel module hash mismatch: {}",
+            path.display()
+        )))
+    }
+}
+
+fn invalid_data(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derives_android_gki_family() {
+        assert_eq!(
+            derive_kmi("6.6.30-android15-8-g123456789abc-ab12345678"),
+            Some("android15-6.6".to_string())
+        );
+        assert_eq!(
+            derive_kmi("5.15.153-android13-8-00001-gdeadbeef"),
+            Some("android13-5.15".to_string())
+        );
+        assert_eq!(derive_kmi("6.6.30-custom"), None);
+    }
+
+    #[test]
+    fn rejects_manifest_path_traversal() {
+        assert!(safe_relative_path("../tcp_bbr3.ko").is_err());
+        assert!(safe_relative_path("/data/local/tmp/tcp_bbr3.ko").is_err());
+        assert!(safe_relative_path("android15-6.6/aarch64/tcp_bbr3.ko").is_ok());
+    }
+}
