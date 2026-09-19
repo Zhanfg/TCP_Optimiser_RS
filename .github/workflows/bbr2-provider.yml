@@ -21,7 +21,7 @@ jobs:
       - name: Install BPF build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang gcc libbpf-dev linux-tools-common linux-tools-generic llvm
+          sudo apt-get install -y clang gcc libbpf-dev libelf-dev linux-tools-common linux-tools-generic llvm pkg-config zlib1g-dev libzstd-dev
           bpftool_bin=$(find /usr/lib -maxdepth 3 -type f -name bpftool -perm -111 2>/dev/null | sort -V | tail -n1)
           test -x "$bpftool_bin"
           echo "BPFTOOL=$bpftool_bin" >> "$GITHUB_ENV"
@@ -65,9 +65,47 @@ jobs:
           sudo "$BPFTOOL" struct_ops show | grep -F tcpopt_probe
           echo "Host kernel accepted tcpopt_probe struct_ops registration."
 
+      - name: Build minimal struct_ops loader and measure payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/bbr2-provider
+          cflags="-Os -ffunction-sections -fdata-sections"
+          ldflags="-Wl,--gc-sections -s"
+
+          gcc $cflags experiments/bbr2-provider/structops_loader.c \
+            -o out/bbr2-provider/tcpopt_structops_loader \
+            $ldflags $(pkg-config --cflags --libs libbpf)
+
+          dynamic_bytes=$(stat -c %s out/bbr2-provider/tcpopt_structops_loader)
+          echo "Dynamic libbpf loader: $dynamic_bytes bytes"
+
+          if gcc $cflags experiments/bbr2-provider/structops_loader.c \
+              -o out/bbr2-provider/tcpopt_structops_loader.static \
+              $ldflags -static $(pkg-config --cflags --libs --static libbpf) 2>out/bbr2-provider/static-loader.log; then
+            static_bytes=$(stat -c %s out/bbr2-provider/tcpopt_structops_loader.static)
+            echo "Static libbpf loader: $static_bytes bytes"
+          else
+            echo "Static loader unavailable with runner packages; keeping this as a size experiment."
+            cat out/bbr2-provider/static-loader.log
+            rm -f out/bbr2-provider/tcpopt_structops_loader.static
+          fi
+
+      - name: Host-kernel attach probe
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          sudo out/bbr2-provider/tcpopt_structops_loader \
+            out/bbr2-provider/tcpopt_structops_probe.bpf.o
+
       - uses: actions/upload-artifact@v7
         with:
           name: bbr2-structops-probe
-          path: out/bbr2-provider/tcpopt_structops_probe.bpf.o
+          path: |
+            out/bbr2-provider/tcpopt_structops_probe.bpf.o
+            out/bbr2-provider/tcpopt_structops_loader
+            out/bbr2-provider/tcpopt_structops_loader.static
+            out/bbr2-provider/static-loader.log
           if-no-files-found: error
           retention-days: 7
