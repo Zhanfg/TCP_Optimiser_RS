@@ -1,5 +1,7 @@
 use std::io;
+use std::os::fd::RawFd;
 use std::process::Command;
+use std::time::Duration;
 
 /// Network interface mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +33,117 @@ impl IfaceMode {
             IfaceMode::WiFi => "wlan",
             IfaceMode::Cellular => "rmnet_data",
             IfaceMode::Unknown => "unknown",
+        }
+    }
+}
+
+/// Lightweight rtnetlink listener used to wake the daemon immediately when
+/// links, addresses, or routes change. The daemon still keeps a long timeout
+/// as a safety net, but no longer needs to spawn `ip` every few seconds.
+pub struct RouteMonitor {
+    fd: RawFd,
+}
+
+impl RouteMonitor {
+    pub fn new() -> io::Result<Self> {
+        const RTMGRP_LINK: u32 = 0x0001;
+        const RTMGRP_IPV4_IFADDR: u32 = 0x0010;
+        const RTMGRP_IPV4_ROUTE: u32 = 0x0040;
+        const RTMGRP_IPV6_IFADDR: u32 = 0x0100;
+        const RTMGRP_IPV6_ROUTE: u32 = 0x0400;
+        const GROUPS: u32 = RTMGRP_LINK
+            | RTMGRP_IPV4_IFADDR
+            | RTMGRP_IPV4_ROUTE
+            | RTMGRP_IPV6_IFADDR
+            | RTMGRP_IPV6_ROUTE;
+
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_NETLINK,
+                libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+                libc::NETLINK_ROUTE,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut address: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+        address.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+        address.nl_pid = 0;
+        address.nl_groups = GROUPS;
+
+        let rc = unsafe {
+            libc::bind(
+                fd,
+                (&address as *const libc::sockaddr_nl).cast::<libc::sockaddr>(),
+                std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+            )
+        };
+        if rc != 0 {
+            let error = io::Error::last_os_error();
+            unsafe {
+                libc::close(fd);
+            }
+            return Err(error);
+        }
+
+        Ok(Self { fd })
+    }
+
+    /// Wait until a relevant network event arrives or the timeout expires.
+    /// Returns true when an event was received, false for a normal timeout.
+    pub fn wait(&mut self, timeout: Duration) -> io::Result<bool> {
+        let timeout_ms = timeout
+            .as_millis()
+            .min(i32::MAX as u128) as libc::c_int;
+        let mut poll_fd = libc::pollfd {
+            fd: self.fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+
+        let rc = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
+        if rc < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                return Ok(false);
+            }
+            return Err(error);
+        }
+        if rc == 0 || poll_fd.revents & libc::POLLIN == 0 {
+            return Ok(false);
+        }
+
+        // Drain one datagram. We only care that state changed; the regular
+        // route/interface resolver remains the single source of truth.
+        let mut buffer = [0u8; 8192];
+        let received = unsafe {
+            libc::recv(
+                self.fd,
+                buffer.as_mut_ptr().cast::<libc::c_void>(),
+                buffer.len(),
+                libc::MSG_DONTWAIT,
+            )
+        };
+        if received < 0 {
+            let error = io::Error::last_os_error();
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ) {
+                return Ok(true);
+            }
+            return Err(error);
+        }
+        Ok(true)
+    }
+}
+
+impl Drop for RouteMonitor {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.fd);
         }
     }
 }
