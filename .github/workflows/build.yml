@@ -129,6 +129,10 @@ jobs:
     needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    env:
+      CCACHE_DIR: ${{ runner.temp }}/kernel-ccache
+      CCACHE_MAXSIZE: 768M
+      CCACHE_COMPRESS: "true"
     strategy:
       fail-fast: false
       matrix:
@@ -144,11 +148,42 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc binutils bison build-essential clang flex git kmod libelf-dev libssl-dev \
+            bc binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            bison build-essential ccache clang flex git kmod libelf-dev libssl-dev \
             lld llvm pahole python3 rsync
+
+      - id: cache_key
+        name: Resolve compiler cache key
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel_rev=$(git ls-remote https://android.googlesource.com/kernel/common "refs/heads/${{ matrix.kmi }}" | awk 'NR==1{print $1}')
+          test -n "$kernel_rev"
+          clang_id=$(clang --version | head -1 | sha256sum | awk '{print $1}')
+          echo "kernel_rev=$kernel_rev" >> "$GITHUB_OUTPUT"
+          echo "clang_id=$clang_id" >> "$GITHUB_OUTPUT"
+
+      - name: Restore kernel compiler cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-gki-ccache-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/build-kernel-modules.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-gki-ccache-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-
+            ${{ runner.os }}-gki-ccache-${{ matrix.kmi }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size "$CCACHE_MAXSIZE"
+          ccache --set-config compression=true
+          ccache --zero-stats
 
       - name: Build loadable GKI modules
         run: bash scripts/build-kernel-modules.sh "${{ matrix.kmi }}" kernel_modules
+
+      - name: Show compiler cache stats
+        if: always()
+        run: ccache --show-stats || true
 
       - name: Verify generated bundle
         run: |

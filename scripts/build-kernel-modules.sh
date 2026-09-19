@@ -25,6 +25,14 @@ git clone --filter=blob:none --depth=1 --branch "$KMI" \
   https://android.googlesource.com/kernel/common "$KERNEL_DIR"
 
 KBUILD_ARGS=(ARCH=arm64 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-)
+BBR_CC_ARGS=()
+if command -v ccache >/dev/null 2>&1; then
+  export CCACHE_BASEDIR="$WORK"
+  export CCACHE_NOHASHDIR=true
+  export CCACHE_COMPILERCHECK=content
+  KBUILD_ARGS+=(CC="ccache clang")
+  BBR_CC_ARGS+=(CC="ccache clang")
+fi
 
 make -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" gki_defconfig
 
@@ -64,7 +72,7 @@ PY
 
 make -C "$BBR_DIR" \
   KDIR="$KERNEL_DIR" ARCH=arm64 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- \
-  CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CC_PROBE=clang \
+  CROSS_COMPILE_COMPAT=arm-linux-gnueabi- "${BBR_CC_ARGS[@]}" CC_PROBE=clang \
   PROBE_J="$(nproc)"
 
 # Compile-time API probes are not enough: verify every unresolved symbol in
