@@ -1,0 +1,62 @@
+name: Kernel modules
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/kernel_module.rs'
+      - 'scripts/build-kernel-modules.sh'
+      - 'kernel/**'
+      - '.github/workflows/kernel-modules.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  android15-6-6:
+    name: Android 15 GKI 6.6 arm64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential clang flex git libelf-dev libssl-dev \
+            lld llvm pahole python3 rsync
+
+      - name: Build loadable GKI modules
+        run: bash scripts/build-kernel-modules.sh android15-6.6 kernel_modules
+
+      - name: Validate module bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s kernel_modules/manifest.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('kernel_modules/manifest.json').read_text())
+          expected = {
+              'tcp_bbr', 'tcp_bbr3',
+              'sch_fq', 'sch_codel', 'sch_fq_codel',
+              'sch_cake', 'sch_pie', 'sch_fq_pie',
+          }
+          actual = {entry['name'] for entry in data['modules']}
+          missing = sorted(expected - actual)
+          if missing:
+              raise SystemExit(f'missing modules: {missing}')
+          print(f"validated {len(actual)} kernel modules")
+          PY
+          find kernel_modules -name '*.ko' -print -exec file {} \;
+          sha256sum kernel_modules/android15-6.6/aarch64/*.ko
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kernel-modules-android15-6.6-arm64
+          path: kernel_modules
+          if-no-files-found: error
+          retention-days: 30
