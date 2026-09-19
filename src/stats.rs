@@ -80,6 +80,7 @@ pub struct NetworkSnapshot {
     pub algorithm: String,
     pub default_qdisc: String,
     pub available_algorithms: Vec<String>,
+    pub bundled_qdiscs: Vec<String>,
     pub proxy: String,
     pub hosts: String,
     pub init_windows: Vec<u32>,
@@ -106,7 +107,10 @@ pub fn network_snapshot(
         module_active: crate::daemon::is_running(),
         algorithm: crate::sysctl::current_algorithm().unwrap_or_else(|_| "unknown".to_string()),
         default_qdisc: crate::sysctl::default_qdisc().unwrap_or_else(|_| "unknown".to_string()),
-        available_algorithms: crate::sysctl::available_algorithms().unwrap_or_default(),
+        available_algorithms: crate::kernel_module::augment_algorithms(
+            crate::sysctl::available_algorithms().unwrap_or_default(),
+        ),
+        bundled_qdiscs: crate::kernel_module::bundled_qdiscs(),
         proxy: if include_details {
             crate::proxy::detect_proxy().label().to_string()
         } else {
