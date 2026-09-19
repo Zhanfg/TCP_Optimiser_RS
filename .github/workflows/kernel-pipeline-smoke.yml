@@ -9,6 +9,10 @@ on:
       - '.github/workflows/kernel-pipeline-smoke.yml'
   workflow_dispatch:
 
+concurrency:
+  group: kernel-pipeline-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
