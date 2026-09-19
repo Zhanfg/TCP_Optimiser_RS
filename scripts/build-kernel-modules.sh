@@ -57,7 +57,9 @@ KERNEL_REV=$(git -C "$KERNEL_DIR" rev-parse HEAD)
 git clone https://github.com/hrimfaxi/tcp_bbr_modules.git "$BBR_DIR"
 git -C "$BBR_DIR" checkout --detach "$BBR_SOURCE_REV"
 
-# Only build the BBR modules we actually ship in this Android bundle.
+# BBR v1 comes from the target Android kernel tree as tcp_bbr.ko.
+# Build only the out-of-tree BBRv3 module here; compiling tcp_bbr1.o is
+# unnecessary and breaks on older branches whose BPF kfunc API differs.
 python3 - "$BBR_DIR/Makefile" <<'PY'
 from pathlib import Path
 import sys
@@ -65,7 +67,7 @@ path = Path(sys.argv[1])
 text = path.read_text()
 for line in text.splitlines():
     if line.startswith("obj-m"):
-        text = text.replace(line, "obj-m          := tcp_bbr1.o tcp_bbr3.o", 1)
+        text = text.replace(line, "obj-m          := tcp_bbr3.o", 1)
         break
 path.write_text(text)
 PY
