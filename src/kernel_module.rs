@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashSet;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{self, Read};
@@ -27,8 +28,48 @@ pub fn current_kmi() -> Option<String> {
     derive_kmi(&release)
 }
 
+pub fn augment_algorithms(mut native: Vec<String>) -> Vec<String> {
+    for algorithm in bundled_algorithms() {
+        if !native.iter().any(|item| item == &algorithm) {
+            native.push(algorithm);
+        }
+    }
+    native
+}
+
+pub fn bundled_algorithms() -> Vec<String> {
+    let modules = matching_module_names().unwrap_or_default();
+    crate::config::ALL_ALGOS
+        .iter()
+        .filter_map(|algorithm| {
+            algorithm_module(algorithm)
+                .filter(|module| modules.contains(*module))
+                .map(|_| (*algorithm).to_string())
+        })
+        .collect()
+}
+
+pub fn bundled_qdiscs() -> Vec<String> {
+    let modules = matching_module_names().unwrap_or_default();
+    crate::config::KNOWN_QDISCS
+        .iter()
+        .filter(|qdisc| {
+            qdisc_modules(qdisc)
+                .is_some_and(|required| required.iter().all(|module| modules.contains(*module)))
+        })
+        .map(|qdisc| (*qdisc).to_string())
+        .collect()
+}
+
 pub fn ensure_algorithm(algorithm: &str) -> io::Result<bool> {
-    let module = match algorithm {
+    let Some(module) = algorithm_module(algorithm) else {
+        return Ok(false);
+    };
+    try_load(module)
+}
+
+fn algorithm_module(algorithm: &str) -> Option<&'static str> {
+    Some(match algorithm {
         "bbr" => "tcp_bbr",
         "bbr1" => "tcp_bbr1",
         "bbr2" => "tcp_bbr2",
@@ -44,22 +85,15 @@ pub fn ensure_algorithm(algorithm: &str) -> io::Result<bool> {
         "nv" => "tcp_nv",
         "scalable" => "tcp_scalable",
         "vegas" => "tcp_vegas",
-        "westwood" | "westwood_plus" => "tcp_westwood",
+        "westwood" => "tcp_westwood",
         "yeah" => "tcp_yeah",
-        _ => return Ok(false),
-    };
-    try_load(module)
+        _ => return None,
+    })
 }
 
 pub fn ensure_qdisc(qdisc: &str) -> io::Result<bool> {
-    let modules: &[&str] = match qdisc {
-        "fq" => &["sch_fq"],
-        "fq_codel" => &["sch_codel", "sch_fq_codel"],
-        "codel" => &["sch_codel"],
-        "cake" => &["sch_cake"],
-        "pie" => &["sch_pie"],
-        "fq_pie" => &["sch_pie", "sch_fq_pie"],
-        _ => return Ok(false),
+    let Some(modules) = qdisc_modules(qdisc) else {
+        return Ok(false);
     };
 
     let mut loaded_any = false;
@@ -67,6 +101,54 @@ pub fn ensure_qdisc(qdisc: &str) -> io::Result<bool> {
         loaded_any |= try_load(module)?;
     }
     Ok(loaded_any)
+}
+
+fn qdisc_modules(qdisc: &str) -> Option<&'static [&'static str]> {
+    Some(match qdisc {
+        "fq" => &["sch_fq"],
+        "fq_codel" => &["sch_codel", "sch_fq_codel"],
+        "codel" => &["sch_codel"],
+        "cake" => &["sch_cake"],
+        "pie" => &["sch_pie"],
+        "fq_pie" => &["sch_pie", "sch_fq_pie"],
+        _ => return None,
+    })
+}
+
+fn matching_module_names() -> io::Result<HashSet<String>> {
+    let root = crate::config::module_dir().join("kernel_modules");
+    let manifest_path = root.join("manifest.json");
+    if !manifest_path.is_file() {
+        return Ok(HashSet::new());
+    }
+
+    let manifest: BundleManifest = serde_json::from_slice(&fs::read(&manifest_path)?)
+        .map_err(|error| invalid_data(format!("invalid kernel module manifest: {error}")))?;
+    if manifest.schema != 1 {
+        return Err(invalid_data(format!(
+            "unsupported kernel module manifest schema {}",
+            manifest.schema
+        )));
+    }
+
+    let Some(kmi) = current_kmi() else {
+        return Ok(HashSet::new());
+    };
+    let arch = current_arch();
+    let mut names = HashSet::new();
+    for entry in manifest
+        .modules
+        .iter()
+        .filter(|entry| entry.kmi == kmi && entry.arch == arch)
+    {
+        let Ok(relative) = safe_relative_path(&entry.file) else {
+            continue;
+        };
+        if root.join(relative).is_file() {
+            names.insert(entry.name.clone());
+        }
+    }
+    Ok(names)
 }
 
 fn try_load(module_name: &str) -> io::Result<bool> {
