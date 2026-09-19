@@ -539,11 +539,11 @@ mod tests {
     fn qdisc_watchdog_uses_interface_specific_intervals() {
         assert_eq!(
             qdisc_check_interval(IfaceMode::WiFi),
-            Duration::from_secs(30)
+            Duration::from_secs(60)
         );
         assert_eq!(
             qdisc_check_interval(IfaceMode::Cellular),
-            Duration::from_secs(60)
+            Duration::from_secs(120)
         );
     }
 
