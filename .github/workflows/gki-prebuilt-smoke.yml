@@ -58,6 +58,6 @@ jobs:
             out/gki-prebuilt-smoke/validation.json
             out/gki-prebuilt-smoke/export-audit.json
             out/gki-prebuilt-smoke/prebuilt/metadata.json
-            out/gki-prebuilt-smoke/sch_codel.ko
+            out/gki-prebuilt-smoke/tcpopt_gki_probe.ko
           if-no-files-found: error
           retention-days: 7
