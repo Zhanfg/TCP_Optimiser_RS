@@ -60,11 +60,17 @@ pub struct NetworkSnapshot {
     pub established: Option<u32>,
     pub dns: Option<Vec<DnsServer>>,
     pub conn_info: Option<TcpConnInfo>,
-    pub verification: crate::policy::VerificationSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification: Option<crate::policy::VerificationSnapshot>,
 }
 
 /// Take a full network snapshot with minimal syscalls
-pub fn network_snapshot(active_iface: &str, include_stats: bool) -> io::Result<NetworkSnapshot> {
+pub fn network_snapshot(
+    active_iface: &str,
+    include_stats: bool,
+    include_details: bool,
+    include_verification: bool,
+) -> io::Result<NetworkSnapshot> {
     Ok(NetworkSnapshot {
         build: crate::build_info::current(),
         active_iface: active_iface.to_string(),
@@ -97,9 +103,11 @@ pub fn network_snapshot(active_iface: &str, include_stats: bool) -> io::Result<N
             })
             .flatten(),
         established: include_stats.then(established_conns),
-        dns: include_stats.then(dns_servers),
-        conn_info: include_stats.then(tcp_conn_info).flatten(),
-        verification: crate::policy::verify_policy(active_iface),
+        dns: (include_stats && include_details).then(dns_servers),
+        conn_info: (include_stats && include_details)
+            .then(tcp_conn_info)
+            .flatten(),
+        verification: include_verification.then(|| crate::policy::verify_policy(active_iface)),
     })
 }
 
@@ -220,18 +228,19 @@ fn parse_u64(value: &str, name: &str) -> io::Result<u64> {
     })
 }
 
-/// Get established connections count via ss
+/// Get established TCP connection count without spawning `ss`.
 fn established_conns() -> u32 {
-    Command::new("ss")
-        .args(["-Htn", "state", "established"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|o| {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            stdout.lines().count() as u32
+    ["/proc/net/tcp", "/proc/net/tcp6"]
+        .iter()
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .map(|content| {
+            content
+                .lines()
+                .skip(1)
+                .filter(|line| line.split_whitespace().nth(3) == Some("01"))
+                .count() as u32
         })
-        .unwrap_or(0)
+        .sum()
 }
 
 /// Get DNS servers from system properties
