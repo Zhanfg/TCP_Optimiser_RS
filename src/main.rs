@@ -105,7 +105,7 @@ fn repair_policy(iface: Option<String>) -> std::io::Result<()> {
 }
 
 fn print_sample(iface: Option<String>, details: bool) -> std::io::Result<()> {
-    let iface = iface.map(Ok).unwrap_or_else(network::active_iface)?;
+    let iface = iface.map(Ok).unwrap_or_else(network::fast_active_iface)?;
     let snapshot = stats::stats_snapshot(&iface, details)?;
     println!(
         "{}",
@@ -128,7 +128,7 @@ fn print_status(
     details: bool,
     verify: bool,
 ) -> std::io::Result<()> {
-    let iface = iface.map(Ok).unwrap_or_else(network::active_iface)?;
+    let iface = iface.map(Ok).unwrap_or_else(network::fast_active_iface)?;
     let snapshot = stats::network_snapshot(&iface, !runtime_only, details, verify)?;
     println!(
         "{}",
