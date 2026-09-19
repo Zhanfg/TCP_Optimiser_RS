@@ -152,13 +152,16 @@ function rustBinaryCommand(marker, subcommand) {
 	const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
 	return `# ${marker}
 moddir=${shellQuote(dir)}
-case "$(getprop ro.product.cpu.abi 2>/dev/null)" in
-	arm64-v8a) rust_abi=arm64-v8a ;;
-	armeabi-v7a|armeabi) rust_abi=armeabi-v7a ;;
-	x86_64) rust_abi=x86_64 ;;
-	*) exit 126 ;;
-esac
-rust_bin="$moddir/bin/$rust_abi/tcp_optimiser"
+rust_bin="$moddir/bin/tcp_optimiser"
+if [ ! -x "$rust_bin" ]; then
+	case "$(getprop ro.product.cpu.abi 2>/dev/null)" in
+		arm64-v8a) rust_abi=arm64-v8a ;;
+		armeabi-v7a|armeabi) rust_abi=armeabi-v7a ;;
+		x86_64) rust_abi=x86_64 ;;
+		*) exit 126 ;;
+	esac
+	rust_bin="$moddir/bin/$rust_abi/tcp_optimiser"
+fi
 [ -x "$rust_bin" ] || exit 127
 export TCP_OPTIMISER_MODULE_DIR="$moddir"
 export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:$PATH"
