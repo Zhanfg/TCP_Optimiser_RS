@@ -82,6 +82,8 @@ pub struct NetworkSnapshot {
     pub available_algorithms: Vec<String>,
     pub bundled_qdiscs: Vec<String>,
     pub proxy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_state: Option<crate::proxy::ProxySnapshot>,
     pub hosts: String,
     pub init_windows: Vec<u32>,
     pub tcp: Option<TcpCounters>,
@@ -101,6 +103,12 @@ pub fn network_snapshot(
     include_details: bool,
     include_verification: bool,
 ) -> io::Result<NetworkSnapshot> {
+    let proxy_state = include_details.then(crate::proxy::detect_proxy_snapshot);
+    let proxy_label = proxy_state
+        .as_ref()
+        .map(|state| state.label.clone())
+        .unwrap_or_else(|| "deferred".to_string());
+
     Ok(NetworkSnapshot {
         build: crate::build_info::current(),
         active_iface: active_iface.to_string(),
@@ -111,11 +119,8 @@ pub fn network_snapshot(
             crate::sysctl::available_algorithms().unwrap_or_default(),
         ),
         bundled_qdiscs: crate::kernel_module::bundled_qdiscs(),
-        proxy: if include_details {
-            crate::proxy::detect_proxy().label().to_string()
-        } else {
-            "deferred".to_string()
-        },
+        proxy: proxy_label,
+        proxy_state,
         hosts: if include_details {
             crate::proxy::detect_hosts().key()
         } else {
