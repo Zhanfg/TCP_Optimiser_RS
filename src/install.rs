@@ -21,8 +21,14 @@ pub fn run() -> io::Result<()> {
         ));
         vec!["cubic".to_string()]
     });
-    let available = crate::kernel_module::augment_algorithms(native.clone());
-    fs::write(staging_dir.join("available_algos"), available.join(" "))?;
+    for algorithm in crate::kernel_module::bundled_algorithms() {
+        let _ = validate_algorithm_loadability(&algorithm);
+    }
+    preflight_bundled_qdiscs();
+
+    let available = crate::kernel_module::augment_algorithms(
+        sysctl::available_algorithms().unwrap_or_else(|_| native.clone()),
+    );
 
     let safe_fallback = safe_fallback_algorithm(&native);
     let default_algo =
@@ -123,6 +129,29 @@ fn validate_algorithm_loadability(algorithm: &str) -> bool {
             ));
             let _ = crate::kernel_module::mark_algorithm_unavailable(algorithm);
             false
+        }
+    }
+}
+
+fn preflight_bundled_qdiscs() {
+    for qdisc in crate::kernel_module::bundled_qdiscs() {
+        match crate::kernel_module::ensure_qdisc(&qdisc) {
+            Ok(true) => {
+                let _ = crate::kernel_module::clear_qdisc_unavailable(&qdisc);
+                logging::log_print(&format!("[INFO] Qdisc preflight passed: {qdisc}"));
+            }
+            Ok(false) => {
+                let _ = crate::kernel_module::mark_qdisc_unavailable(&qdisc);
+                logging::log_print(&format!(
+                    "[WARN] Qdisc {qdisc} is bundled but did not become loadable"
+                ));
+            }
+            Err(error) => {
+                let _ = crate::kernel_module::mark_qdisc_unavailable(&qdisc);
+                logging::log_print(&format!(
+                    "[WARN] Qdisc {qdisc} preflight load failed: {error}"
+                ));
+            }
         }
     }
 }
