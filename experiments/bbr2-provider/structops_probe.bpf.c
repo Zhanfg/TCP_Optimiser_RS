@@ -14,6 +14,13 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
+struct {
+    __uint(type, BPF_MAP_TYPE_SK_STORAGE);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __type(key, int);
+    __type(value, struct tcpopt_bbr2_cold_state);
+} tcpopt_bbr2_cold SEC(".maps");
+
 extern __u32 tcp_reno_ssthresh(struct sock *sk) __ksym;
 extern void tcp_reno_cong_avoid(struct sock *sk, __u32 ack, __u32 acked) __ksym;
 extern __u32 tcp_reno_undo_cwnd(struct sock *sk) __ksym;
@@ -36,18 +43,30 @@ SEC("struct_ops")
 void BPF_PROG(tcpopt_probe_init, struct sock *sk)
 {
     struct tcpopt_probe_ca *ca = tcpopt_probe_ca(sk);
+    struct tcpopt_bbr2_cold_state *cold;
 
     ca->magic = TCPOPT_PROBE_MAGIC;
     ca->init_count++;
+
+    cold = bpf_sk_storage_get(
+        &tcpopt_bbr2_cold, sk, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
+    if (cold)
+        cold->prior_cwnd = tcp_sk(sk)->snd_cwnd;
 }
 
 SEC("struct_ops")
 __u32 BPF_PROG(tcpopt_probe_ssthresh, struct sock *sk)
 {
     struct tcpopt_probe_ca *ca = tcpopt_probe_ca(sk);
+    struct tcpopt_bbr2_cold_state *cold;
 
     if (ca->magic != TCPOPT_PROBE_MAGIC)
         ca->magic = TCPOPT_PROBE_MAGIC;
+
+    cold = bpf_sk_storage_get(&tcpopt_bbr2_cold, sk, 0, 0);
+    if (cold)
+        cold->undo_inflight_hi = tcp_sk(sk)->snd_cwnd;
+
     return tcp_reno_ssthresh(sk);
 }
 
