@@ -214,7 +214,7 @@ let proxyStatusCheckedAt = 0;
 
 export async function getProxyStatus(force = false) {
 	const now = Date.now();
-	if (!force && proxyStatusCache && now - proxyStatusCheckedAt < 30000) return proxyStatusCache;
+	if (!force && proxyStatusCache && now - proxyStatusCheckedAt < 60000) return proxyStatusCache;
 	try {
 		const { stdout } = await exec(`# proxy-status-probe
 proc_rows=$(
@@ -384,7 +384,7 @@ let hostsStatusCheckedAt = 0;
 
 export async function getHostsStatus(force = false) {
 	const now = Date.now();
-	if (!force && hostsStatusCache && now - hostsStatusCheckedAt < 30000) return hostsStatusCache;
+	if (!force && hostsStatusCache && now - hostsStatusCheckedAt < 60000) return hostsStatusCache;
 	try {
 		const cmd = `hs=/etc/hosts; sz=0; blk=0; [ -f "$hs" ] && sz=$(wc -c < "$hs" 2>/dev/null) && blk=$(grep -cE '^[[:space:]]*(0\\.0\\.0\\.0|127\\.0\\.0\\.1)[[:space:]]+' "$hs" 2>/dev/null); [ -z "$blk" ] && blk=0; [ -d /data/adb/modules/hosts ] && echo "systemless" || [ -n "$(ps -A -o comm= 2>/dev/null | grep -iE 'birdhost')" ] && echo "birdhost" || [ -n "$(ps -A -o comm= 2>/dev/null | grep -iE 'adaway')" ] && echo "adaway" || [ -n "$(ps -A -o comm= 2>/dev/null | grep -iE 'blokada|dns66|netguard')" ] && echo "blocker" || [ "$sz" -gt 200 ] && [ "$blk" -gt 5 ] && echo "blocked:$blk" || [ "$sz" -gt 200 ] && echo "modified" || echo "none"`;
 		const { stdout: result } = await exec(cmd);
