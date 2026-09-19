@@ -118,9 +118,7 @@ fn transparent_virtual_iface() -> Option<String> {
     names.into_iter().find(|name| {
         let path = Path::new("/sys/class/net").join(name);
         path.join("tun_flags").exists()
-            || ["tun", "tap"]
-                .iter()
-                .any(|prefix| name.starts_with(prefix))
+            || ["tun", "tap"].iter().any(|prefix| name.starts_with(prefix))
     })
 }
 
@@ -363,7 +361,10 @@ mod tests {
 
     #[test]
     fn classifies_transparent_proxy_modes() {
-        assert_eq!(classify_proxy_mode(&ProxyType::Mihomo, true, false), "tproxy");
+        assert_eq!(
+            classify_proxy_mode(&ProxyType::Mihomo, true, false),
+            "tproxy"
+        );
         assert_eq!(classify_proxy_mode(&ProxyType::SingBox, false, true), "tun");
         assert_eq!(classify_proxy_mode(&ProxyType::Mihomo, true, true), "mixed");
         assert_eq!(classify_proxy_mode(&ProxyType::None, false, false), "none");
