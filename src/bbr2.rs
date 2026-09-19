@@ -16,6 +16,8 @@ pub struct Bbr2ProviderStatus {
     pub tcp_sock_btf: bool,
     pub rate_sample_btf: bool,
     pub reno_kfuncs_btf: bool,
+    pub system_libbpf_struct_ops_api: bool,
+    pub zero_extra_loader_candidate: bool,
     pub kernel_release: String,
     pub note: String,
 }
@@ -50,6 +52,8 @@ pub fn probe() -> Bbr2ProviderStatus {
         .all(|name| contains_btf_name(bytes, name))
     });
 
+    let system_libbpf_struct_ops_api = system_libbpf_struct_ops_api();
+
     let bpf_struct_ops_candidate = !native_available
         && bpf_syscall_present
         && vmlinux_btf
@@ -58,6 +62,8 @@ pub fn probe() -> Bbr2ProviderStatus {
         && tcp_sock_btf
         && rate_sample_btf
         && reno_kfuncs_btf;
+    let zero_extra_loader_candidate =
+        bpf_struct_ops_candidate && system_libbpf_struct_ops_api;
 
     let (provider, note) = if native_available {
         (
@@ -87,6 +93,8 @@ pub fn probe() -> Bbr2ProviderStatus {
         tcp_sock_btf,
         rate_sample_btf,
         reno_kfuncs_btf,
+        system_libbpf_struct_ops_api,
+        zero_extra_loader_candidate,
         kernel_release,
         note: note.to_string(),
     }
@@ -99,6 +107,42 @@ fn contains_btf_name(bytes: &[u8], name: &[u8]) -> bool {
     bytes
         .windows(name.len() + 1)
         .any(|window| window.starts_with(name) && window[name.len()] == 0)
+}
+
+fn system_libbpf_struct_ops_api() -> bool {
+    const LIBRARIES: &[&[u8]] = &[b"libbpf.so\0", b"libbpf.so.1\0", b"libbpf.so.0\0"];
+    const REQUIRED: &[&[u8]] = &[
+        b"bpf_object__open_file\0",
+        b"bpf_object__find_map_by_name\0",
+        b"bpf_object__load\0",
+        b"bpf_map__attach_struct_ops\0",
+        b"bpf_link__destroy\0",
+        b"bpf_object__close\0",
+        b"libbpf_get_error\0",
+    ];
+
+    for library in LIBRARIES {
+        let handle = unsafe {
+            libc::dlopen(
+                library.as_ptr().cast::<libc::c_char>(),
+                libc::RTLD_NOW | libc::RTLD_LOCAL,
+            )
+        };
+        if handle.is_null() {
+            continue;
+        }
+
+        let available = REQUIRED.iter().all(|symbol| unsafe {
+            !libc::dlsym(handle, symbol.as_ptr().cast::<libc::c_char>()).is_null()
+        });
+        unsafe {
+            libc::dlclose(handle);
+        }
+        if available {
+            return true;
+        }
+    }
+    false
 }
 
 fn kernel_release() -> Option<String> {
