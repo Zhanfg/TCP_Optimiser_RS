@@ -7,6 +7,9 @@ on:
     paths:
       - 'src/kernel_module.rs'
       - 'scripts/build-kernel-modules.sh'
+      - 'scripts/kernel-module-config.txt'
+      - 'scripts/audit-gki-symbols.py'
+      - 'scripts/audit-module-exports.py'
       - 'kernel/**'
       - '.github/workflows/kernel-modules.yml'
 
@@ -24,7 +27,7 @@ jobs:
     timeout-minutes: 120
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 768M
+      CCACHE_MAXSIZE: 1024M
       CCACHE_COMPRESS: "true"
     strategy:
       fail-fast: false
@@ -56,6 +59,13 @@ jobs:
           echo "kernel_rev=$kernel_rev" >> "$GITHUB_OUTPUT"
           echo "clang_id=$clang_id" >> "$GITHUB_OUTPUT"
 
+      - name: Restore exact GKI Module.symvers
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.kernel-symvers/${{ matrix.kmi }}
+          key: ${{ runner.os }}-gki-symvers-v1-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt') }}
+          save-always: true
+
       - name: Restore kernel compiler cache
         uses: actions/cache@v6
         with:
@@ -73,6 +83,8 @@ jobs:
           ccache --zero-stats
 
       - name: Build loadable GKI modules
+        env:
+          KERNEL_SYMVERS_CACHE: ${{ github.workspace }}/.kernel-symvers/${{ matrix.kmi }}/Module.symvers
         run: bash scripts/build-kernel-modules.sh "${{ matrix.kmi }}" kernel_modules
 
       - name: Show compiler cache stats
