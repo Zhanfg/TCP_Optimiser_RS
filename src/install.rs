@@ -15,12 +15,14 @@ pub fn run() -> io::Result<()> {
     logging::log_print("Starting module customization (Rust)...");
     let live_dir = config::live_module_dir();
 
-    let available = sysctl::available_algorithms().unwrap_or_else(|error| {
-        logging::log_print(&format!(
-            "[WARN] Cannot read congestion algorithms: {error}"
-        ));
-        vec!["cubic".to_string()]
-    });
+    let available = crate::kernel_module::augment_algorithms(
+        sysctl::available_algorithms().unwrap_or_else(|error| {
+            logging::log_print(&format!(
+                "[WARN] Cannot read congestion algorithms: {error}"
+            ));
+            vec!["cubic".to_string()]
+        }),
+    );
     fs::write(staging_dir.join("available_algos"), available.join(" "))?;
 
     let safe_fallback = safe_fallback_algorithm(&available);
