@@ -29,8 +29,9 @@ git clone --filter=blob:none --depth=1 --branch "$KMI" \
   https://android.googlesource.com/kernel/common "$KERNEL_DIR"
 
 KERNEL_REV=$(git -C "$KERNEL_DIR" rev-parse HEAD)
-export SOURCE_DATE_EPOCH=$(git -C "$KERNEL_DIR" show -s --format=%ct HEAD)
-export KBUILD_BUILD_TIMESTAMP=$(git -C "$KERNEL_DIR" show -s --format=%cD HEAD)
+SOURCE_DATE_EPOCH=$(git -C "$KERNEL_DIR" show -s --format=%ct HEAD)
+KBUILD_BUILD_TIMESTAMP=$(git -C "$KERNEL_DIR" show -s --format=%cD HEAD)
+export SOURCE_DATE_EPOCH KBUILD_BUILD_TIMESTAMP
 export KBUILD_BUILD_USER=tcp-optimiser
 export KBUILD_BUILD_HOST=github-actions
 
@@ -260,7 +261,7 @@ printf 'built %s kernel modules for %s (%s); mode=%s target_modules=%ss total=%s
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     printf '### GKI build %s\n\n' "$KMI"
-    printf -- '- Build mode: `%s`\n' "$BUILD_MODE"
+    printf -- '- Build mode: %s\n' "$BUILD_MODE"
     printf -- '- Target-module phase: %ss\n' "$TARGET_BUILD_SECONDS"
     printf -- '- Total script time: %ss\n' "$TOTAL_SECONDS"
     if [ -n "$SDK_CACHE_DIR" ] && [ -s "$SDK_CACHE_DIR/Module.symvers" ]; then
