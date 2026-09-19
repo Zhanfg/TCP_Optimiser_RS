@@ -12,6 +12,7 @@ pub struct Bbr2ProviderStatus {
     pub bpf_syscall_present: bool,
     pub vmlinux_btf: bool,
     pub tcp_congestion_ops_btf: bool,
+    pub struct_ops_wrapper_btf: bool,
     pub tcp_sock_btf: bool,
     pub rate_sample_btf: bool,
     pub kernel_release: String,
@@ -29,6 +30,9 @@ pub fn probe() -> Bbr2ProviderStatus {
     let tcp_congestion_ops_btf = btf
         .as_deref()
         .is_some_and(|bytes| contains_btf_name(bytes, b"tcp_congestion_ops"));
+    let struct_ops_wrapper_btf = btf.as_deref().is_some_and(|bytes| {
+        contains_btf_name(bytes, b"bpf_struct_ops_tcp_congestion_ops")
+    });
     let tcp_sock_btf = btf
         .as_deref()
         .is_some_and(|bytes| contains_btf_name(bytes, b"tcp_sock"));
@@ -40,6 +44,7 @@ pub fn probe() -> Bbr2ProviderStatus {
         && bpf_syscall_present
         && vmlinux_btf
         && tcp_congestion_ops_btf
+        && struct_ops_wrapper_btf
         && tcp_sock_btf
         && rate_sample_btf;
 
@@ -67,6 +72,7 @@ pub fn probe() -> Bbr2ProviderStatus {
         bpf_syscall_present,
         vmlinux_btf,
         tcp_congestion_ops_btf,
+        struct_ops_wrapper_btf,
         tcp_sock_btf,
         rate_sample_btf,
         kernel_release,
@@ -114,10 +120,15 @@ mod tests {
 
     #[test]
     fn finds_nul_terminated_btf_names_only() {
-        let bytes = b"prefix\0tcp_sock\0rate_sample\0tcp_congestion_ops\0suffix";
+        let bytes =
+            b"prefix\0tcp_sock\0rate_sample\0tcp_congestion_ops\0bpf_struct_ops_tcp_congestion_ops\0suffix";
         assert!(contains_btf_name(bytes, b"tcp_sock"));
         assert!(contains_btf_name(bytes, b"rate_sample"));
         assert!(contains_btf_name(bytes, b"tcp_congestion_ops"));
+        assert!(contains_btf_name(
+            bytes,
+            b"bpf_struct_ops_tcp_congestion_ops"
+        ));
         assert!(!contains_btf_name(bytes, b"tcp"));
         assert!(!contains_btf_name(bytes, b"missing"));
     }
