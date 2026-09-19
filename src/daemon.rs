@@ -63,6 +63,7 @@ pub fn run() -> io::Result<()> {
                         "[WARN] Network route lost ({e}); policy will be reapplied when it returns"
                     ));
                     route_unavailable = true;
+                    network::clear_cached_active_iface();
                 }
                 if last_mode != IfaceMode::Unknown || !last_iface.is_empty() {
                     last_mode = IfaceMode::Unknown;
@@ -76,6 +77,8 @@ pub fn run() -> io::Result<()> {
                 continue;
             }
         };
+
+        network::record_active_iface(&iface);
 
         if route_unavailable {
             logging::log_print(&format!("[INFO] Network route restored on {iface}"));
