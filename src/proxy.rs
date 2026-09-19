@@ -1,9 +1,11 @@
+use serde::Serialize;
 use std::fs;
 use std::io;
+use std::path::Path;
 use std::process::Command;
 
 /// Proxy family detected
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProxyType {
     None,
     Mihomo,
@@ -32,6 +34,94 @@ impl ProxyType {
             ProxyType::Unknown => "...",
         }
     }
+
+    pub fn key(&self) -> &'static str {
+        match self {
+            ProxyType::None => "none",
+            ProxyType::Mihomo => "mihomo",
+            ProxyType::Clash => "clash",
+            ProxyType::Surfing => "surfing",
+            ProxyType::V2Ray => "v2ray",
+            ProxyType::SingBox => "sing-box",
+            ProxyType::Shadowsocks => "shadowsocks",
+            ProxyType::Other => "other",
+            ProxyType::Multiple => "multiple",
+            ProxyType::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ProxySnapshot {
+    pub family: String,
+    pub label: String,
+    pub mode: String,
+    pub transparent: bool,
+    pub tproxy: bool,
+    pub virtual_iface: Option<String>,
+}
+
+pub fn detect_proxy_snapshot() -> ProxySnapshot {
+    let family = detect_proxy();
+    let tproxy = tproxy_active();
+    let virtual_iface = transparent_virtual_iface();
+    let mode = classify_proxy_mode(&family, tproxy, virtual_iface.is_some());
+
+    ProxySnapshot {
+        family: family.key().to_string(),
+        label: family.label().to_string(),
+        mode: mode.to_string(),
+        transparent: tproxy || virtual_iface.is_some(),
+        tproxy,
+        virtual_iface,
+    }
+}
+
+fn classify_proxy_mode(family: &ProxyType, tproxy: bool, has_virtual_iface: bool) -> &'static str {
+    match (tproxy, has_virtual_iface) {
+        (true, true) => "mixed",
+        (true, false) => "tproxy",
+        (false, true) => "tun",
+        (false, false) if *family == ProxyType::None => "none",
+        (false, false) if *family == ProxyType::Unknown => "unknown",
+        (false, false) => "process",
+    }
+}
+
+fn tproxy_active() -> bool {
+    const PROBES: &[(&str, &[&str])] = &[
+        ("iptables-save", &["-t", "mangle"]),
+        ("ip6tables-save", &["-t", "mangle"]),
+        ("nft", &["list", "ruleset"]),
+    ];
+
+    PROBES.iter().any(|(program, args)| {
+        let Ok(output) = Command::new(program).args(*args).output() else {
+            return false;
+        };
+        if !output.status.success() {
+            return false;
+        }
+        let text = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+        text.contains("tproxy") || text.contains("--tproxy-mark")
+    })
+}
+
+fn transparent_virtual_iface() -> Option<String> {
+    let entries = fs::read_dir("/sys/class/net").ok()?;
+    let mut names = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect::<Vec<_>>();
+    names.sort();
+
+    names.into_iter().find(|name| {
+        let path = Path::new("/sys/class/net").join(name);
+        path.join("tun_flags").exists()
+            || ["tun", "tap"]
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+    })
 }
 
 /// Detect running proxy applications
@@ -260,12 +350,23 @@ fn systemui_has_vowifi(output: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_proxy_from_text, parse_ims_registration, systemui_has_vowifi, ProxyType};
+    use super::{
+        classify_proxy_mode, detect_proxy_from_text, parse_ims_registration, systemui_has_vowifi,
+        ProxyType,
+    };
 
     #[test]
     fn distinguishes_mihomo_and_reads_full_command_lines() {
         assert_eq!(detect_proxy_from_text("mihomo\n"), ProxyType::Mihomo);
         assert_eq!(detect_proxy_from_text("clash\n"), ProxyType::Clash);
+    }
+
+    #[test]
+    fn classifies_transparent_proxy_modes() {
+        assert_eq!(classify_proxy_mode(&ProxyType::Mihomo, true, false), "tproxy");
+        assert_eq!(classify_proxy_mode(&ProxyType::SingBox, false, true), "tun");
+        assert_eq!(classify_proxy_mode(&ProxyType::Mihomo, true, true), "mixed");
+        assert_eq!(classify_proxy_mode(&ProxyType::None, false, false), "none");
     }
 
     #[test]
