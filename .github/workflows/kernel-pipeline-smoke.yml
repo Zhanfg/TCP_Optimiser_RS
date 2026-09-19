@@ -1,0 +1,67 @@
+name: Kernel pipeline smoke
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/build-kernel-modules.sh'
+      - 'scripts/kernel-module-config.txt'
+      - 'scripts/audit-gki-symbols.py'
+      - '.github/workflows/kernel-pipeline-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kmi-preflight:
+    name: Fast KMI preflight (android15-6.6)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install minimal kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            bison build-essential ccache clang flex git kmod libelf-dev libssl-dev \
+            lld llvm pahole python3 rsync
+
+      - name: Run fail-fast KMI preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$GITHUB_WORKSPACE/preflight-report.json"
+          start=$(date +%s)
+          set +e
+          TCP_OPTIMISER_PREFLIGHT_ONLY=1 \
+          TCP_OPTIMISER_PREFLIGHT_REPORT="$report" \
+          bash scripts/build-kernel-modules.sh android15-6.6 kernel_modules
+          rc=$?
+          set -e
+          elapsed=$(( $(date +%s) - start ))
+          echo "preflight_seconds=$elapsed" >> "$GITHUB_STEP_SUMMARY"
+          echo "preflight_exit=$rc" >> "$GITHUB_STEP_SUMMARY"
+          test -s "$report"
+          python3 - "$report" <<'PY'
+          import json
+          import sys
+          data = json.load(open(sys.argv[1]))
+          bad = [m for m in data["modules"] if not m["compatible"]]
+          print(f"checked={len(data['modules'])} incompatible={len(bad)}")
+          for item in bad:
+              print(item["file"], ", ".join(item["non_kmi_symbols"]))
+          PY
+          # The current bundle is known to contain non-KMI imports on stock 6.6.
+          # That is a successful fail-fast result, not a smoke-test failure.
+          if [ "$rc" -ne 0 ]; then
+            echo "KMI rejection happened before the expensive full GKI build, as intended."
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kernel-kmi-preflight-android15-6.6
+          path: preflight-report.json
+          if-no-files-found: error
+          retention-days: 7
