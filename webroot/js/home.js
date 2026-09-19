@@ -8,6 +8,27 @@ import { haptic, setAnimatedText } from './motion.js';
 let _lastAlgoSet = '';
 let _lastActiveAlgo = '';
 let _lastEnabled = false;
+let _detailRefreshPromise = null;
+
+async function refreshHomeDetails(force = false) {
+	if (_detailRefreshPromise) return _detailRefreshPromise;
+	_detailRefreshPromise = Promise.all([
+		getProxyStatus(force),
+		getHostsStatus(force),
+	]).then(([proxy, hosts]) => {
+		router_state.homePageParams.proxy_status = proxy?.status || 'unknown';
+		router_state.homePageParams.proxy_info = proxy || null;
+		router_state.homePageParams.hosts_status = hosts || 'unknown';
+		if (!router_state.isInitializing && router_state.current_active_page === 'home') {
+			updateHomeUI();
+		}
+	}).catch(error => {
+		console.warn('Deferred home details unavailable:', error);
+	}).finally(() => {
+		_detailRefreshPromise = null;
+	});
+	return _detailRefreshPromise;
+}
 
 export async function updateModuleStatus(force = false) {
 	try {
@@ -25,11 +46,7 @@ export async function updateModuleStatus(force = false) {
 			console.warn('Unified runtime snapshot unavailable, using compatibility probes:', error);
 		}
 
-		let running, iface, algo, initcwndInitrwnd, defaultQdisc, hosts;
-		const [proxy, hostsProbe] = await Promise.all([
-			getProxyStatus(force),
-			getHostsStatus(force),
-		]);
+		let running, iface, algo, initcwndInitrwnd, defaultQdisc;
 		if (snapshot) {
 			running = snapshot.module_active;
 			iface = snapshot.active_iface;
@@ -38,14 +55,13 @@ export async function updateModuleStatus(force = false) {
 				? snapshot.init_windows
 				: router_state.homePageParams.active_InitcwndInitrwndValue;
 			defaultQdisc = snapshot.default_qdisc;
-			hosts = hostsProbe;
 			router_state.available_algorithms = snapshot.available_algorithms || [];
 			router_state.runtimeSnapshot = snapshot;
 			if (snapshot.verification) router_state.verification = snapshot.verification;
 		} else {
-			[running, iface, algo, initcwndInitrwnd, defaultQdisc, hosts] = await Promise.all([
+			[running, iface, algo, initcwndInitrwnd, defaultQdisc] = await Promise.all([
 				getModuleActiveState(), get_active_iface(), get_active_algorithm(),
-				getInitcwndInitrwndValue(), getDefaultQdisc(), getHostsStatus(),
+				getInitcwndInitrwndValue(), getDefaultQdisc(),
 			]);
 			router_state.runtimeSnapshot = null;
 		}
@@ -57,9 +73,15 @@ export async function updateModuleStatus(force = false) {
 		router_state.homePageParams.active_algorithm = algo || "Unknown";
 		router_state.homePageParams.active_InitcwndInitrwndValue = initcwndInitrwnd;
 		router_state.homePageParams.default_qdisc = defaultQdisc;
-		router_state.homePageParams.proxy_status = proxy?.status || 'unknown';
-		router_state.homePageParams.proxy_info = proxy || null;
-		router_state.homePageParams.hosts_status = hosts;
+
+		// Proxy/Hosts discovery is intentionally decoupled from the critical
+		// status path. It can scan many processes and firewall rules, so never
+		// block first paint or normal 10-second status refreshes on it.
+		if (force) {
+			await refreshHomeDetails(true);
+		} else if (router_state.current_active_page === 'home') {
+			void refreshHomeDetails(false);
+		}
 	} catch (error) {
 		console.error('Error updating status:', error);
 	}
