@@ -90,6 +90,10 @@ copy_module "$KERNEL_DIR/net/sched/sch_cake.ko" sch_cake.ko
 copy_module "$KERNEL_DIR/net/sched/sch_pie.ko" sch_pie.ko
 copy_module "$KERNEL_DIR/net/sched/sch_fq_pie.ko" sch_fq_pie.ko
 
+python3 "$REPO_ROOT/scripts/audit-gki-symbols.py" \
+  "$KERNEL_DIR" "$DEST/$KMI/aarch64" \
+  --json "$DEST/kmi-symbol-audit-$KMI.json" --strict
+
 python3 - "$DEST" "$KMI" "$KERNEL_RELEASE" "$KERNEL_REV" "$BBR_SOURCE_REV" <<'PY'
 import hashlib
 import json
