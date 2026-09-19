@@ -18,6 +18,9 @@ let _prevBytes = null;
 let _prevTime = 0;
 let _sampling = false;
 let _warmupTimer = null;
+let _lastDetailAt = 0;
+let _detailCache = { dns: null, ssInfo: null };
+const DETAIL_INTERVAL_MS = 15000;
 
 function pushHistory(arr, v) {
 	arr.push(v);
@@ -140,7 +143,8 @@ async function sampleStats() {
 	let activeIface = router_state.homePageParams.active_iface;
 	let tcp, iface, sock, conns, dns, ssInfo;
 	try {
-		const snapshot = await getRuntimeSnapshot(true, true);
+		const includeDetails = !_lastDetailAt || Date.now() - _lastDetailAt >= DETAIL_INTERVAL_MS;
+		const snapshot = await getRuntimeSnapshot(true, true, includeDetails, false);
 		activeIface = snapshot.active_iface || activeIface;
 		tcp = snapshot.tcp ? {
 			retrans: snapshot.tcp.retrans,
@@ -159,14 +163,19 @@ async function sampleStats() {
 			tcpMem: snapshot.sock.tcp_mem,
 		} : null;
 		conns = snapshot.established ?? null;
-		dns = snapshot.dns ?? null;
-		ssInfo = snapshot.conn_info ? {
-			avgRTT: snapshot.conn_info.avg_rtt_ms,
-			maxRTT: snapshot.conn_info.max_rtt_ms,
-			avgCWND: snapshot.conn_info.avg_cwnd,
-			maxCWND: snapshot.conn_info.max_cwnd,
-			count: snapshot.conn_info.samples,
-		} : null;
+		if (snapshot.dns) _detailCache.dns = snapshot.dns;
+		if (snapshot.conn_info) {
+			_detailCache.ssInfo = {
+				avgRTT: snapshot.conn_info.avg_rtt_ms,
+				maxRTT: snapshot.conn_info.max_rtt_ms,
+				avgCWND: snapshot.conn_info.avg_cwnd,
+				maxCWND: snapshot.conn_info.max_cwnd,
+				count: snapshot.conn_info.samples,
+			};
+		}
+		if (includeDetails) _lastDetailAt = Date.now();
+		dns = _detailCache.dns;
+		ssInfo = _detailCache.ssInfo;
 	} catch (error) {
 		console.warn('Unified stats snapshot unavailable, using compatibility probes:', error);
 		[tcp, iface, sock, conns, dns, ssInfo] = await Promise.all([
