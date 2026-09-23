@@ -97,16 +97,19 @@ if [[ -z "$kernel_release" && -s "$OUT/official-kernel-image" ]]; then
   kernel_release=$(python3 - "$OUT/official-kernel-image" <<'PY'
 import re, sys
 data = open(sys.argv[1], "rb").read()
-matches = re.findall(rb"Linux version ([^\x00\n\r ]+)", data)
+matches = re.findall(
+    rb"Linux version ([0-9]+\.[0-9]+\.[0-9]+-[^\x00\n\r ]+)",
+    data,
+)
 if not matches:
-    raise SystemExit("official Image has no readable Linux version banner")
+    raise SystemExit("official Image has no readable concrete Linux version banner")
 values = []
 for value in matches:
     text = value.decode("ascii", "strict")
     if text not in values:
         values.append(text)
 if len(values) != 1:
-    raise SystemExit(f"official Image has ambiguous Linux version banners: {values}")
+    raise SystemExit(f"official Image has ambiguous concrete Linux version banners: {values}")
 print(values[0])
 PY
 )
