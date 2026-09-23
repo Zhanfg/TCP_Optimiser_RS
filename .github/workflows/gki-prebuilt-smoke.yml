@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: gki-prebuilt-smoke-${{ github.event.pull_request.number || github.ref }}
+  group: gki-prebuilt-smoke-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 permissions:
