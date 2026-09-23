@@ -15,6 +15,9 @@ THINLTO_CACHE=${KERNEL_THINLTO_CACHE:-}
 BBR_KCONFIG_CACHE=${BBR_KCONFIG_CACHE:-}
 PREFLIGHT_REPORT=${TCP_OPTIMISER_PREFLIGHT_REPORT:-}
 PREFLIGHT_CACHE=${TCP_OPTIMISER_PREFLIGHT_CACHE:-}
+GKI_RELEASE_PINS=${GKI_RELEASE_PINS:-"$REPO_ROOT/scripts/gki-release-pins.json"}
+USE_OFFICIAL_GKI=${TCP_OPTIMISER_OFFICIAL_GKI:-1}
+OFFICIAL_RELEASE=
 
 case "$KMI" in
   android12-5.10|android13-5.15|android14-6.1|android15-6.6) ;;
@@ -25,6 +28,23 @@ case "$KMI" in
 esac
 
 test -s "$CONFIG_SPEC"
+test -s "$GKI_RELEASE_PINS"
+
+readarray -t GKI_PIN < <(python3 - "$GKI_RELEASE_PINS" "$KMI" <<'PY'
+import json
+import sys
+
+pins = json.load(open(sys.argv[1]))
+try:
+    item = pins["targets"][sys.argv[2]]
+except KeyError:
+    raise SystemExit(f"missing GKI release pin: {sys.argv[2]}")
+print(item["tag"])
+print(item["sha1"])
+PY
+)
+GKI_TAG=${GKI_PIN[0]}
+GKI_SHA1=${GKI_PIN[1]}
 
 # A workflow-level cache key guards this report with the exact kernel revision,
 # compiler identity, module config and audit/build scripts. When present, reuse
@@ -69,8 +89,14 @@ KERNEL_DIR="$WORK/kernel"
 BBR_DIR="$WORK/tcp_bbr_modules"
 PREFLIGHT_DIR="$WORK/kmi-preflight"
 
-git clone --filter=blob:none --depth=1 --branch "$KMI" \
+git clone --filter=blob:none --depth=1 --branch "$GKI_TAG" \
   https://android.googlesource.com/kernel/common "$KERNEL_DIR"
+actual_kernel_rev=$(git -C "$KERNEL_DIR" rev-parse HEAD)
+if [[ "$actual_kernel_rev" != "$GKI_SHA1" ]]; then
+  printf 'pinned GKI source mismatch: %s expected %s got %s\n' \
+    "$GKI_TAG" "$GKI_SHA1" "$actual_kernel_rev" >&2
+  exit 1
+fi
 
 if [[ -n "$THINLTO_CACHE" ]]; then
   mkdir -p "$THINLTO_CACHE"
@@ -110,7 +136,27 @@ make -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" olddefconfig
 make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" modules_prepare
 
 SYMVERS_HIT=0
-if [[ -n "$SYMVERS_CACHE" && -s "$SYMVERS_CACHE" ]]; then
+if [[ "$USE_OFFICIAL_GKI" == "1" ]]; then
+  GKI_PREBUILT_DIR="$WORK/gki-prebuilt"
+  bash "$REPO_ROOT/scripts/fetch-gki-prebuilt.sh" "$KMI" "$GKI_PREBUILT_DIR"
+  install -m 0644 "$GKI_PREBUILT_DIR/vmlinux.symvers" "$KERNEL_DIR/Module.symvers"
+  OFFICIAL_RELEASE=$(python3 - "$GKI_PREBUILT_DIR/metadata.json" <<'PY'
+import json
+import sys
+print(json.load(open(sys.argv[1]))["kernel_release"])
+PY
+)
+  test -n "$OFFICIAL_RELEASE"
+  printf '%s\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/config/kernel.release"
+  printf '#define UTS_RELEASE "%s"\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/generated/utsrelease.h"
+  KBUILD_ARGS+=(KERNELRELEASE="$OFFICIAL_RELEASE")
+  SYMVERS_HIT=1
+  printf 'using pinned official GKI symvers: %s (%s)\n' "$GKI_TAG" "$OFFICIAL_RELEASE"
+  if [[ -n "$SYMVERS_CACHE" ]]; then
+    mkdir -p "$(dirname "$SYMVERS_CACHE")"
+    install -m 0644 "$KERNEL_DIR/Module.symvers" "$SYMVERS_CACHE"
+  fi
+elif [[ -n "$SYMVERS_CACHE" && -s "$SYMVERS_CACHE" ]]; then
   install -m 0644 "$SYMVERS_CACHE" "$KERNEL_DIR/Module.symvers"
   SYMVERS_HIT=1
   printf 'using cached exact Module.symvers: %s\n' "$SYMVERS_CACHE"
@@ -170,13 +216,17 @@ build_in_tree_targets() {
 build_bbr3() {
   local warn=$1
   local -a extra=()
+  local -a release_arg=()
   if [[ "$warn" == "1" ]]; then
     extra+=(KBUILD_MODPOST_WARN=1)
+  fi
+  if [[ -n "$OFFICIAL_RELEASE" ]]; then
+    release_arg+=(KERNELRELEASE="$OFFICIAL_RELEASE")
   fi
   make -C "$BBR_DIR" \
     KDIR="$KERNEL_DIR" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
     CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-    "${BBR_CC_ARGS[@]}" "${extra[@]}" CC_PROBE=clang PROBE_J="$JOBS"
+    "${BBR_CC_ARGS[@]}" "${release_arg[@]}" "${extra[@]}" CC_PROBE=clang PROBE_J="$JOBS"
 }
 
 stage_modules() {
