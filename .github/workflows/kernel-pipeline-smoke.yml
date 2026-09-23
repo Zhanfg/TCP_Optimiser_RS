@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: kernel-pipeline-smoke-${{ github.event.pull_request.number || github.ref }}
+  group: kernel-pipeline-smoke-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 permissions:
