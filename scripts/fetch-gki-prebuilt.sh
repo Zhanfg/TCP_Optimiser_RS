@@ -34,37 +34,87 @@ fi
 base="https://ci.android.com/builds/submitted/$KERNEL_BID/$ARTIFACT_TARGET/latest/raw"
 curl --fail --location --retry 3 --retry-all-errors "$base/BUILD_INFO" -o "$OUT/BUILD_INFO"
 
-python3 - "$OUT/BUILD_INFO" "$OUT/artifacts.txt" <<'PY'
+python3 - "$OUT/BUILD_INFO" "$OUT/artifacts.txt" "$OUT/selection.json" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1]))
 files = data["target"]["dir_list"]
 open(sys.argv[2], "w").write("\n".join(files) + "\n")
 if "vmlinux.symvers" not in files:
     raise SystemExit("official GKI build is missing required artifact: vmlinux.symvers")
+
 mods = sorted(x for x in files if x.endswith(".ko"))
-if not mods:
-    raise SystemExit("official GKI build exposes no individual .ko artifact for vermagic validation")
-print(mods[0])
+image = "Image" if "Image" in files else None
+if not mods and image is None:
+    raise SystemExit(
+        "official GKI build exposes neither an individual .ko nor an uncompressed Image "
+        "for exact kernel-release validation"
+    )
+
+selection = {
+    "official_module": mods[0] if mods else None,
+    "official_image": image,
+    "gki_info": "gki-info.txt" if "gki-info.txt" in files else None,
+}
+open(sys.argv[3], "w").write(json.dumps(selection, sort_keys=True) + "\n")
 PY
 
-official_module=$(python3 - "$OUT/artifacts.txt" <<'PY'
-import sys
-mods = sorted(x.strip() for x in open(sys.argv[1]) if x.strip().endswith(".ko"))
-print(mods[0])
+readarray -t selected < <(python3 - "$OUT/selection.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+for key in ("official_module", "official_image", "gki_info"):
+    print(data.get(key) or "")
 PY
 )
+official_module=${selected[0]}
+official_image=${selected[1]}
+gki_info=${selected[2]}
 
 curl --fail --location --retry 3 --retry-all-errors   "$base/vmlinux.symvers" -o "$OUT/vmlinux.symvers"
-curl --fail --location --retry 3 --retry-all-errors   "$base/$official_module" -o "$OUT/official-module.ko"
 
-if grep -Fxq 'gki-info.txt' "$OUT/artifacts.txt"; then
-  curl --fail --location --retry 3 --retry-all-errors     "$base/gki-info.txt" -o "$OUT/gki-info.txt"
+if [[ -n "$official_module" ]]; then
+  curl --fail --location --retry 3 --retry-all-errors     "$base/$official_module" -o "$OUT/official-module.ko"
 fi
 
-official_vermagic=$(modinfo -F vermagic "$OUT/official-module.ko")
-kernel_release=${official_vermagic%% *}
+if [[ -n "$official_image" ]]; then
+  curl --fail --location --retry 3 --retry-all-errors     "$base/$official_image" -o "$OUT/official-kernel-image"
+fi
+
+if [[ -n "$gki_info" ]]; then
+  curl --fail --location --retry 3 --retry-all-errors     "$base/$gki_info" -o "$OUT/gki-info.txt"
+fi
+
+official_vermagic=""
+kernel_release=""
+kernel_release_source=""
+
+if [[ -s "$OUT/official-module.ko" ]]; then
+  official_vermagic=$(modinfo -F vermagic "$OUT/official-module.ko")
+  kernel_release=${official_vermagic%% *}
+  kernel_release_source="official_module_vermagic"
+fi
+
+if [[ -z "$kernel_release" && -s "$OUT/official-kernel-image" ]]; then
+  kernel_release=$(python3 - "$OUT/official-kernel-image" <<'PY'
+import re, sys
+data = open(sys.argv[1], "rb").read()
+matches = re.findall(rb"Linux version ([^\x00\n\r ]+)", data)
+if not matches:
+    raise SystemExit("official Image has no readable Linux version banner")
+values = []
+for value in matches:
+    text = value.decode("ascii", "strict")
+    if text not in values:
+        values.append(text)
+if len(values) != 1:
+    raise SystemExit(f"official Image has ambiguous Linux version banners: {values}")
+print(values[0])
+PY
+)
+  kernel_release_source="official_image_banner"
+fi
+
 if [[ -z "$kernel_release" ]]; then
-  printf 'official module has empty vermagic release: %s\n' "$official_module" >&2
+  printf 'cannot determine exact kernel release from official GKI artifacts\n' >&2
   exit 1
 fi
 
@@ -80,39 +130,45 @@ for raw in open(sys.argv[1], errors="replace"):
 PY
 )
   if [[ -n "$gki_info_release" && "$gki_info_release" != "$kernel_release" ]]; then
-    printf 'official artifact mismatch: gki-info=%s module-vermagic=%s\n'       "$gki_info_release" "$kernel_release" >&2
+    printf 'official artifact mismatch: gki-info=%s authoritative-release=%s\n'       "$gki_info_release" "$kernel_release" >&2
     exit 1
   fi
 fi
 
-python3 - "$OUT" "$KMI" "$TAG" "$SHA1" "$KERNEL_BID" "$ARTIFACT_TARGET"   "$kernel_release" "$official_module" "$official_vermagic" <<'PY'
+python3 - "$OUT" "$KMI" "$TAG" "$SHA1" "$KERNEL_BID" "$ARTIFACT_TARGET"   "$kernel_release" "$kernel_release_source" "$official_module" "$official_image"   "$official_vermagic" <<'PY'
 import hashlib, json, pathlib, sys
+
 out = pathlib.Path(sys.argv[1])
 gki_info = out / "gki-info.txt"
+official_module_path = out / "official-module.ko"
+official_image_path = out / "official-kernel-image"
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
 meta = {
-    "schema": 1,
+    "schema": 2,
     "kmi": sys.argv[2],
     "tag": sys.argv[3],
     "sha1": sys.argv[4],
     "kernel_bid": sys.argv[5],
     "artifact_target": sys.argv[6],
     "kernel_release": sys.argv[7],
-    "kernel_release_source": "official_module_vermagic",
-    "official_module": sys.argv[8],
-    "official_vermagic": sys.argv[9],
-    "vmlinux_symvers_sha256": hashlib.sha256((out / "vmlinux.symvers").read_bytes()).hexdigest(),
-    "official_module_sha256": hashlib.sha256((out / "official-module.ko").read_bytes()).hexdigest(),
+    "kernel_release_source": sys.argv[8],
+    "official_module": sys.argv[9] or None,
+    "official_image": sys.argv[10] or None,
+    "official_vermagic": sys.argv[11] or None,
+    "vmlinux_symvers_sha256": digest(out / "vmlinux.symvers"),
+    "official_module_sha256": digest(official_module_path),
+    "official_image_sha256": digest(official_image_path),
+    "gki_info_sha256": digest(gki_info),
 }
-if gki_info.is_file():
-    meta["gki_info_sha256"] = hashlib.sha256(gki_info.read_bytes()).hexdigest()
-else:
-    meta["gki_info_sha256"] = None
 (out / "metadata.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
 PY
 
-printf 'official GKI: %s %s BID=%s release=%s\n' "$KMI" "$TAG" "$KERNEL_BID" "$kernel_release"
-if [[ -s "$OUT/gki-info.txt" ]]; then
-  printf 'downloaded vmlinux.symvers + gki-info.txt + %s\n' "$official_module"
+printf 'official GKI: %s %s BID=%s release=%s source=%s\n'   "$KMI" "$TAG" "$KERNEL_BID" "$kernel_release" "$kernel_release_source"
+if [[ -n "$official_module" ]]; then
+  printf 'release witness: %s\n' "$official_module"
 else
-  printf 'downloaded vmlinux.symvers + %s (no gki-info.txt on this GKI generation)\n' "$official_module"
+  printf 'release witness: %s (legacy GKI publishes no individual KO)\n' "$official_image"
 fi
