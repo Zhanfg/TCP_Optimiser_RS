@@ -247,19 +247,34 @@ jobs:
       - name: Verify generated bundle
         run: |
           test -s kernel_modules/manifest.json
-          test "$(find kernel_modules -name '*.ko' | wc -l)" -ge 8
           python3 - <<'PY'
           import hashlib
           import json
           from pathlib import Path
           root = Path("kernel_modules")
           data = json.loads((root / "manifest.json").read_text())
+          expected = {
+              "tcp_bbr", "tcp_bbr3",
+              "sch_fq", "sch_codel", "sch_fq_codel",
+              "sch_cake", "sch_pie", "sch_fq_pie",
+          }
+          actual = {entry["name"] for entry in data["modules"]}
+          builtins = set(data.get("builtin_capabilities", []))
+          unavailable = set(data.get("unavailable_capabilities", []))
+          if unavailable:
+              raise SystemExit(f"unavailable required capabilities: {sorted(unavailable)}")
+          missing = sorted(expected - actual - builtins)
+          if missing:
+              raise SystemExit(f"missing capabilities: {missing}")
+          if "tcp_bbr3" not in actual:
+              raise SystemExit("tcp_bbr3 must be a shipped KO")
           for entry in data["modules"]:
               path = root / entry["file"]
               if not path.is_file():
                   raise SystemExit(f"missing module: {entry['file']}")
               if hashlib.sha256(path.read_bytes()).hexdigest() != entry["sha256"]:
                   raise SystemExit(f"hash mismatch: {entry['file']}")
+          print(f"modules={len(actual)} builtins={len(builtins)}")
           PY
 
       - uses: actions/upload-artifact@v7
@@ -303,7 +318,33 @@ jobs:
           rm -rf kernel_modules
           python3 scripts/merge-kernel-modules.py kernel-module-input kernel_modules
           test -s kernel_modules/manifest.json
-          test "$(find kernel_modules -name '*.ko' | wc -l)" -ge 32
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("kernel_modules/manifest.json").read_text())
+          expected = {
+              "tcp_bbr", "tcp_bbr3",
+              "sch_fq", "sch_codel", "sch_fq_codel",
+              "sch_cake", "sch_pie", "sch_fq_pie",
+          }
+          modules_by_kmi = {}
+          for module in data.get("modules", []):
+              modules_by_kmi.setdefault(module["kmi"], set()).add(module["name"])
+          for build in data.get("builds", []):
+              kmi = build["kmi"]
+              builtins = set(build.get("builtin_capabilities", []))
+              unavailable = set(build.get("unavailable_capabilities", []))
+              if unavailable:
+                  raise SystemExit(f"{kmi}: unavailable capabilities: {sorted(unavailable)}")
+              actual = modules_by_kmi.get(kmi, set())
+              missing = sorted(expected - actual - builtins)
+              if missing:
+                  raise SystemExit(f"{kmi}: missing capabilities: {missing}")
+              if "tcp_bbr3" not in actual:
+                  raise SystemExit(f"{kmi}: missing shipped tcp_bbr3 KO")
+          print(f"validated {len(data.get('builds', []))} merged KMI builds")
+          PY
 
       - id: metadata
         name: Resolve package metadata
