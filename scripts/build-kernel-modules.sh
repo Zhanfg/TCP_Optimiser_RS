@@ -321,6 +321,28 @@ if [[ "$KMI_PREFLIGHT" == "1" ]]; then
     --json "$preflight_json" --strict
   preflight_rc=$?
   set -e
+
+  builtin_csv=$(IFS=,; printf '%s' "${BUILTIN_CAPABILITIES[*]-}")
+  unavailable_csv=$(IFS=,; printf '%s' "${UNAVAILABLE_CAPABILITIES[*]-}")
+  if [[ -s "$preflight_json" ]]; then
+    python3 - "$preflight_json" "$builtin_csv" "$unavailable_csv" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data["builtin_capabilities"] = [x for x in sys.argv[2].split(",") if x]
+data["unavailable_capabilities"] = [x for x in sys.argv[3].split(",") if x]
+path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+PY
+  fi
+  if (( ${#UNAVAILABLE_CAPABILITIES[@]} )); then
+    printf 'required kernel capabilities unavailable on %s: %s\n' \
+      "$KMI" "${UNAVAILABLE_CAPABILITIES[*]}" >&2
+    preflight_rc=3
+  fi
+
   if [[ -n "$PREFLIGHT_REPORT" && -s "$preflight_json" ]]; then
     mkdir -p "$(dirname "$PREFLIGHT_REPORT")"
     install -m 0644 "$preflight_json" "$PREFLIGHT_REPORT"
@@ -395,7 +417,10 @@ python3 "$REPO_ROOT/scripts/audit-gki-symbols.py" \
   "$KERNEL_DIR" "$DEST/$KMI/aarch64" \
   --json "$DEST/kmi-symbol-audit-$KMI.json" --strict
 
-python3 - "$DEST" "$KMI" "$KERNEL_RELEASE" "$KERNEL_REV" "$BBR_SOURCE_REV" <<'PY'
+builtin_csv=$(IFS=,; printf '%s' "${BUILTIN_CAPABILITIES[*]-}")
+unavailable_csv=$(IFS=,; printf '%s' "${UNAVAILABLE_CAPABILITIES[*]-}")
+python3 - "$DEST" "$KMI" "$KERNEL_RELEASE" "$KERNEL_REV" "$BBR_SOURCE_REV" \
+  "$builtin_csv" "$unavailable_csv" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -403,8 +428,10 @@ import re
 import sys
 
 root = Path(sys.argv[1])
-kernel_branch, release, kernel_rev, bbr_rev = sys.argv[2:]
+kernel_branch, release, kernel_rev, bbr_rev, builtin_csv, unavailable_csv = sys.argv[2:]
 module_dir = root / kernel_branch / "aarch64"
+builtin_capabilities = [x for x in builtin_csv.split(",") if x]
+unavailable_capabilities = [x for x in unavailable_csv.split(",") if x]
 
 match = re.match(r"^(\d+)\.(\d+)\.\d+-(android\d+)-(\d+)", release)
 if not match:
@@ -434,6 +461,8 @@ manifest = {
         "repository": "https://github.com/hrimfaxi/tcp_bbr_modules",
         "revision": bbr_rev,
     },
+    "builtin_capabilities": sorted(builtin_capabilities),
+    "unavailable_capabilities": sorted(unavailable_capabilities),
     "modules": modules,
 }
 (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
