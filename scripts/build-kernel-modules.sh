@@ -130,6 +130,54 @@ while IFS='=' read -r option value; do
 done < "$CONFIG_SPEC"
 make -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" olddefconfig
 
+config_state() {
+  local option=$1
+  if grep -qx "CONFIG_${option}=m" "$CONFIG"; then
+    printf 'm\n'
+  elif grep -qx "CONFIG_${option}=y" "$CONFIG"; then
+    printf 'y\n'
+  else
+    printf 'n\n'
+  fi
+}
+
+declare -a IPV4_TARGETS=()
+declare -a QDISC_TARGETS=()
+declare -a BUILTIN_CAPABILITIES=()
+declare -a UNAVAILABLE_CAPABILITIES=()
+
+register_in_tree_target() {
+  local option=$1
+  local target=$2
+  local family=$3
+  local state
+  state=$(config_state "$option")
+  case "$state" in
+    m)
+      if [[ "$family" == "ipv4" ]]; then
+        IPV4_TARGETS+=("$target")
+      else
+        QDISC_TARGETS+=("$target")
+      fi
+      ;;
+    y)
+      BUILTIN_CAPABILITIES+=("${target%.ko}")
+      ;;
+    *)
+      UNAVAILABLE_CAPABILITIES+=("${target%.ko}")
+      ;;
+  esac
+  printf 'kernel capability: CONFIG_%s=%s (%s)\n' "$option" "$state" "${target%.ko}"
+}
+
+register_in_tree_target TCP_CONG_BBR tcp_bbr.ko ipv4
+register_in_tree_target NET_SCH_FQ sch_fq.ko sched
+register_in_tree_target NET_SCH_CODEL sch_codel.ko sched
+register_in_tree_target NET_SCH_FQ_CODEL sch_fq_codel.ko sched
+register_in_tree_target NET_SCH_CAKE sch_cake.ko sched
+register_in_tree_target NET_SCH_PIE sch_pie.ko sched
+register_in_tree_target NET_SCH_FQ_PIE sch_fq_pie.ko sched
+
 # modules_prepare is inexpensive and produces generated headers and host tools
 # required for targeted module compilation. It intentionally does not generate
 # Module.symvers when CONFIG_MODVERSIONS is enabled.
@@ -206,11 +254,14 @@ build_in_tree_targets() {
   if [[ "$warn" == "1" ]]; then
     extra+=(KBUILD_MODPOST_WARN=1)
   fi
-  make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
-    M=net/ipv4 tcp_bbr.ko
-  make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
-    M=net/sched \
-    sch_fq.ko sch_codel.ko sch_fq_codel.ko sch_cake.ko sch_pie.ko sch_fq_pie.ko
+  if (( ${#IPV4_TARGETS[@]} )); then
+    make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
+      M=net/ipv4 "${IPV4_TARGETS[@]}"
+  fi
+  if (( ${#QDISC_TARGETS[@]} )); then
+    make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
+      M=net/sched "${QDISC_TARGETS[@]}"
+  fi
 }
 
 build_bbr3() {
@@ -233,14 +284,17 @@ stage_modules() {
   local root=$1
   rm -rf "$root"
   mkdir -p "$root"
-  install -m 0644 "$KERNEL_DIR/net/ipv4/tcp_bbr.ko" "$root/tcp_bbr.ko"
+  local target
+  for target in "${IPV4_TARGETS[@]}"; do
+    test -s "$KERNEL_DIR/net/ipv4/$target"
+    install -m 0644 "$KERNEL_DIR/net/ipv4/$target" "$root/$target"
+  done
+  for target in "${QDISC_TARGETS[@]}"; do
+    test -s "$KERNEL_DIR/net/sched/$target"
+    install -m 0644 "$KERNEL_DIR/net/sched/$target" "$root/$target"
+  done
+  test -s "$BBR_DIR/tcp_bbr3.ko"
   install -m 0644 "$BBR_DIR/tcp_bbr3.ko" "$root/tcp_bbr3.ko"
-  install -m 0644 "$KERNEL_DIR/net/sched/sch_fq.ko" "$root/sch_fq.ko"
-  install -m 0644 "$KERNEL_DIR/net/sched/sch_codel.ko" "$root/sch_codel.ko"
-  install -m 0644 "$KERNEL_DIR/net/sched/sch_fq_codel.ko" "$root/sch_fq_codel.ko"
-  install -m 0644 "$KERNEL_DIR/net/sched/sch_cake.ko" "$root/sch_cake.ko"
-  install -m 0644 "$KERNEL_DIR/net/sched/sch_pie.ko" "$root/sch_pie.ko"
-  install -m 0644 "$KERNEL_DIR/net/sched/sch_fq_pie.ko" "$root/sch_fq_pie.ko"
 }
 
 clean_target_outputs() {
@@ -255,13 +309,10 @@ clean_target_outputs() {
 # compared against Android's GKI KMI lists. If this fails, a full GKI build
 # cannot make the module generically GKI-loadable, so stop before expensive LTO.
 if [[ "$KMI_PREFLIGHT" == "1" ]]; then
-  if [[ "$SYMVERS_HIT" == "1" ]]; then
-    build_in_tree_targets 0
-    build_bbr3 0
-  else
-    build_in_tree_targets 1
-    build_bbr3 1
-  fi
+  # Produce classification samples even when an import is not in official
+  # symvers. These warn-only objects are never used as release artifacts.
+  build_in_tree_targets 1
+  build_bbr3 1
   stage_modules "$PREFLIGHT_DIR"
   preflight_json="$WORK/kmi-preflight-$KMI.json"
   set +e
@@ -286,6 +337,13 @@ if [[ "$KMI_PREFLIGHT" == "1" ]]; then
     printf 'KMI preflight-only mode completed for %s\n' "$KMI"
     exit 0
   fi
+
+  # Rebuild strictly after classification so warn-only objects can never
+  # escape into a distributable bundle.
+  clean_target_outputs
+  build_in_tree_targets 0
+  prepare_bbr_probe
+  build_bbr3 0
 fi
 
 if [[ "$SYMVERS_HIT" != "1" ]]; then
@@ -317,7 +375,7 @@ if [[ "$SYMVERS_HIT" != "1" ]]; then
     KDIR="$KERNEL_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- clean || true
   build_bbr3 0
 elif [[ "$KMI_PREFLIGHT" != "1" ]]; then
-  # Cache hit + preflight disabled: compile just the eight required modules.
+  # Cached accepted classification: compile modular capabilities plus BBRv3.
   build_in_tree_targets 0
   build_bbr3 0
 fi
