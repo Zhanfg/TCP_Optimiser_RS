@@ -46,7 +46,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          kernel_rev=$(git ls-remote https://android.googlesource.com/kernel/common "refs/heads/${{ matrix.kmi }}" | awk 'NR==1{print $1}')
+          kernel_rev=$(python3 - scripts/gki-release-pins.json "${{ matrix.kmi }}" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1]))["targets"][sys.argv[2]]["sha1"])
+          PY
+          )
           test -n "$kernel_rev"
           clang_id=$(clang --version | head -1 | sha256sum | awk '{print $1}')
           echo "kernel_rev=$kernel_rev" >> "$GITHUB_OUTPUT"
@@ -57,7 +61,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.kmi-preflight/${{ matrix.kmi }}
-          key: ${{ runner.os }}-kmi-preflight-v3-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt', 'scripts/build-kernel-modules.sh', 'scripts/audit-gki-symbols.py') }}
+          key: ${{ runner.os }}-kmi-preflight-v3-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt', 'scripts/build-kernel-modules.sh', 'scripts/audit-gki-symbols.py', 'scripts/gki-release-pins.json', 'scripts/fetch-gki-prebuilt.sh') }}
           save-always: true
 
       - name: Reuse cached KMI classification
@@ -88,7 +92,10 @@ jobs:
         if: steps.preflight_cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y             bc binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi             bison build-essential ccache clang flex git kmod libelf-dev libssl-dev             lld llvm pahole python3 rsync
+          sudo apt-get install -y \
+            bc binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            bison build-essential ccache clang curl flex git kmod libelf-dev libssl-dev \
+            lld llvm pahole python3 rsync
 
       - name: Run fail-fast KMI preflight
         if: steps.preflight_cache.outputs.cache-hit != 'true'
@@ -98,7 +105,10 @@ jobs:
           report="$GITHUB_WORKSPACE/preflight-report.json"
           start=$(date +%s)
           set +e
-          TCP_OPTIMISER_PREFLIGHT_ONLY=1           TCP_OPTIMISER_PREFLIGHT_REPORT="$report"           TCP_OPTIMISER_PREFLIGHT_CACHE="$GITHUB_WORKSPACE/.kmi-preflight/${{ matrix.kmi }}/report.json"           bash scripts/build-kernel-modules.sh "${{ matrix.kmi }}" kernel_modules
+          TCP_OPTIMISER_PREFLIGHT_ONLY=1 \
+          TCP_OPTIMISER_PREFLIGHT_REPORT="$report" \
+          TCP_OPTIMISER_PREFLIGHT_CACHE="$GITHUB_WORKSPACE/.kmi-preflight/${{ matrix.kmi }}/report.json" \
+          bash scripts/build-kernel-modules.sh "${{ matrix.kmi }}" kernel_modules
           rc=$?
           set -e
           elapsed=$(( $(date +%s) - start ))
