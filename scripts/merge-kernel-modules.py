@@ -44,7 +44,14 @@ def main() -> None:
 
         builds.append({
             key: data[key]
-            for key in ("kmi", "kernel_release", "kernel_source", "bbr3_source")
+            for key in (
+                "kmi",
+                "kernel_release",
+                "kernel_source",
+                "bbr3_source",
+                "builtin_capabilities",
+                "unavailable_capabilities",
+            )
             if key in data
         })
 
