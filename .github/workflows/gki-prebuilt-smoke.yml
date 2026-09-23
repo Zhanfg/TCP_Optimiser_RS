@@ -1,14 +1,6 @@
 name: Official GKI prebuilt smoke
 
 on:
-  push:
-    branches: [perf/kernel-build-pipeline]
-    paths:
-      - 'scripts/gki-release-pins.json'
-      - 'scripts/fetch-gki-prebuilt.sh'
-      - 'scripts/smoke-gki-prebuilt.sh'
-      - 'scripts/audit-module-exports.py'
-      - '.github/workflows/gki-prebuilt-smoke.yml'
   pull_request:
     paths:
       - 'scripts/gki-release-pins.json'
