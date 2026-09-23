@@ -24,10 +24,20 @@ permissions:
 
 jobs:
   kmi-preflight:
-    # Warm-cache runs should finish before dependency installation.
-    name: Fast KMI preflight (android15-6.6)
+    # This matrix classifies the generic GKI feasibility of every target bundle.
+    # A KMI rejection is a valid result: the report tells us which modules must
+    # use a native/built-in path or an exact-device kernel build.
+    name: Fast KMI preflight (${{ matrix.kmi }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        kmi:
+          - android12-5.10
+          - android13-5.15
+          - android14-6.1
+          - android15-6.6
     steps:
       - uses: actions/checkout@v7
 
@@ -36,7 +46,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          kernel_rev=$(git ls-remote https://android.googlesource.com/kernel/common "refs/heads/android15-6.6" | awk 'NR==1{print $1}')
+          kernel_rev=$(git ls-remote https://android.googlesource.com/kernel/common "refs/heads/${{ matrix.kmi }}" | awk 'NR==1{print $1}')
           test -n "$kernel_rev"
           clang_id=$(clang --version | head -1 | sha256sum | awk '{print $1}')
           echo "kernel_rev=$kernel_rev" >> "$GITHUB_OUTPUT"
@@ -46,36 +56,39 @@ jobs:
         name: Restore KMI compatibility result
         uses: actions/cache@v6
         with:
-          path: ${{ github.workspace }}/.kmi-preflight/android15-6.6
-          key: ${{ runner.os }}-kmi-preflight-v2-android15-6.6-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt', 'scripts/build-kernel-modules.sh', 'scripts/audit-gki-symbols.py') }}
+          path: ${{ github.workspace }}/.kmi-preflight/${{ matrix.kmi }}
+          key: ${{ runner.os }}-kmi-preflight-v3-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt', 'scripts/build-kernel-modules.sh', 'scripts/audit-gki-symbols.py') }}
           save-always: true
 
-      - name: Reuse cached rejection
+      - name: Reuse cached KMI classification
         if: steps.preflight_cache.outputs.cache-hit == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          report="$GITHUB_WORKSPACE/.kmi-preflight/android15-6.6/report.json"
+          report="$GITHUB_WORKSPACE/.kmi-preflight/${{ matrix.kmi }}/report.json"
           test -s "$report"
           cp "$report" "$GITHUB_WORKSPACE/preflight-report.json"
-          python3 - "$report" <<'PY'
+          python3 - "$report" "$GITHUB_STEP_SUMMARY" <<'PY'
           import json, sys
-          data = json.load(open(sys.argv[1]))
+          report, summary = sys.argv[1:3]
+          data = json.load(open(report))
           bad = [m for m in data["modules"] if not m["compatible"]]
-          print(f"cached checked={len(data['modules'])} incompatible={len(bad)}")
-          if not bad:
-              raise SystemExit("smoke expects the current 6.6 bundle to be rejected")
+          good = [m for m in data["modules"] if m["compatible"]]
+          print(f"cached checked={len(data['modules'])} compatible={len(good)} incompatible={len(bad)}")
+          with open(summary, "a") as out:
+              out.write(f"### KMI classification: ${{ matrix.kmi }}\n")
+              out.write(f"- cache: hit\n")
+              out.write(f"- compatible modules: {len(good)}\n")
+              out.write(f"- incompatible modules: {len(bad)}\n")
+              for item in bad:
+                  out.write(f"- `{item['file']}`: {', '.join(item['non_kmi_symbols'])}\n")
           PY
-          echo "warm_preflight_cache=true" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install minimal kernel build dependencies
         if: steps.preflight_cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            bc binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
-            bison build-essential ccache clang flex git kmod libelf-dev libssl-dev \
-            lld llvm pahole python3 rsync
+          sudo apt-get install -y             bc binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi             bison build-essential ccache clang flex git kmod libelf-dev libssl-dev             lld llvm pahole python3 rsync
 
       - name: Run fail-fast KMI preflight
         if: steps.preflight_cache.outputs.cache-hit != 'true'
@@ -85,35 +98,37 @@ jobs:
           report="$GITHUB_WORKSPACE/preflight-report.json"
           start=$(date +%s)
           set +e
-          TCP_OPTIMISER_PREFLIGHT_ONLY=1 \
-          TCP_OPTIMISER_PREFLIGHT_REPORT="$report" \
-          TCP_OPTIMISER_PREFLIGHT_CACHE="$GITHUB_WORKSPACE/.kmi-preflight/android15-6.6/report.json" \
-          bash scripts/build-kernel-modules.sh android15-6.6 kernel_modules
+          TCP_OPTIMISER_PREFLIGHT_ONLY=1           TCP_OPTIMISER_PREFLIGHT_REPORT="$report"           TCP_OPTIMISER_PREFLIGHT_CACHE="$GITHUB_WORKSPACE/.kmi-preflight/${{ matrix.kmi }}/report.json"           bash scripts/build-kernel-modules.sh "${{ matrix.kmi }}" kernel_modules
           rc=$?
           set -e
           elapsed=$(( $(date +%s) - start ))
-          echo "preflight_seconds=$elapsed" >> "$GITHUB_STEP_SUMMARY"
-          echo "preflight_exit=$rc" >> "$GITHUB_STEP_SUMMARY"
           test -s "$report"
-          python3 - "$report" <<'PY'
-          import json
-          import sys
-          data = json.load(open(sys.argv[1]))
+          python3 - "$report" "$GITHUB_STEP_SUMMARY" "$elapsed" "$rc" <<'PY'
+          import json, sys
+          report, summary, elapsed, rc = sys.argv[1:5]
+          data = json.load(open(report))
           bad = [m for m in data["modules"] if not m["compatible"]]
-          print(f"checked={len(data['modules'])} incompatible={len(bad)}")
+          good = [m for m in data["modules"] if m["compatible"]]
+          print(f"checked={len(data['modules'])} compatible={len(good)} incompatible={len(bad)}")
           for item in bad:
               print(item["file"], ", ".join(item["non_kmi_symbols"]))
+          with open(summary, "a") as out:
+              out.write(f"### KMI classification: ${{ matrix.kmi }}\n")
+              out.write(f"- preflight seconds: {elapsed}\n")
+              out.write(f"- preflight exit: {rc}\n")
+              out.write(f"- compatible modules: {len(good)}\n")
+              out.write(f"- incompatible modules: {len(bad)}\n")
+              for item in bad:
+                  out.write(f"- `{item['file']}`: {', '.join(item['non_kmi_symbols'])}\n")
           PY
-          # The current bundle is known to contain non-KMI imports on stock 6.6.
-          # That is a successful fail-fast result, not a smoke-test failure.
-          if [ "$rc" -ne 0 ]; then
-            echo "KMI rejection happened before the expensive full GKI build, as intended."
-          fi
+          # Both outcomes are useful:
+          # rc=0 means the whole bundle is generic-GKI compatible.
+          # rc!=0 means the report precisely identifies the device-specific set.
+          exit 0
 
       - uses: actions/upload-artifact@v7
         with:
-          name: kernel-kmi-preflight-android15-6.6
+          name: kernel-kmi-preflight-${{ matrix.kmi }}
           path: preflight-report.json
           if-no-files-found: error
-          retention-days: 7
-
+          retention-days: 14
