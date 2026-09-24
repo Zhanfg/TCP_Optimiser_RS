@@ -98,7 +98,10 @@ impl RuntimeObserver {
         if self.iface != active_iface {
             self.clear();
             self.iface = active_iface.to_string();
-            self.previous = Some((Instant::now(), crate::stats::adaptive_counters(active_iface)));
+            self.previous = Some((
+                Instant::now(),
+                crate::stats::adaptive_counters(active_iface),
+            ));
             return None;
         }
 
@@ -110,13 +113,8 @@ impl RuntimeObserver {
 
         let after = crate::stats::adaptive_counters(active_iface);
         let proxy = crate::proxy::detect_proxy_snapshot();
-        let mut sample = telemetry_between(
-            active_iface,
-            before,
-            &after,
-            elapsed,
-            proxy.transparent,
-        );
+        let mut sample =
+            telemetry_between(active_iface, before, &after, elapsed, proxy.transparent);
         self.baseline.apply(&mut sample);
         let latest = classify(sample);
         self.hysteresis.update(&latest);
