@@ -241,7 +241,20 @@ jobs:
           TCP_OPTIMISER_PAIRED_KERNEL_BUNDLE: "1"
           TCP_OPTIMISER_KMI_PREFLIGHT: "0"
           TCP_OPTIMISER_OFFICIAL_GKI: "0"
-        run: bash scripts/build-kernel-modules.sh "${{ matrix.kmi }}" kernel_modules
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/build-kernel-modules.sh "${{ matrix.kmi }}" kernel_modules \
+            2>&1 | tee "paired-build-${{ matrix.kmi }}.log"
+
+      - name: Upload paired build log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: paired-build-log-${{ matrix.kmi }}
+          path: paired-build-${{ matrix.kmi }}.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Show compiler cache stats
         if: always()
