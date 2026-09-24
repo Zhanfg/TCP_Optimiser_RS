@@ -138,11 +138,8 @@ fn repair_policy(iface: Option<String>) -> std::io::Result<()> {
 
 fn print_adaptive(iface: Option<String>, sample_ms: u64, samples: u8) -> std::io::Result<()> {
     let iface = iface.map(Ok).unwrap_or_else(network::fast_active_iface)?;
-    let report = adaptive::observe_series(
-        &iface,
-        std::time::Duration::from_millis(sample_ms),
-        samples,
-    )?;
+    let report =
+        adaptive::observe_series(&iface, std::time::Duration::from_millis(sample_ms), samples)?;
     println!(
         "{}",
         serde_json::to_string(&report).map_err(std::io::Error::other)?
