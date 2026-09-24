@@ -55,17 +55,92 @@ pub struct Classification {
     pub sample: TelemetrySample,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AdaptiveReport {
+    pub stable_state: PathState,
+    pub baseline_rtt_ms: Option<f64>,
+    pub baseline_samples: u8,
+    pub observations: Vec<Classification>,
+}
+
+#[derive(Debug, Default)]
+struct BaselineEstimator {
+    rtt_ms: Option<f64>,
+    samples: u8,
+}
+
+impl BaselineEstimator {
+    fn apply(&mut self, sample: &mut TelemetrySample) {
+        sample.baseline_rtt_ms = self.rtt_ms;
+
+        let Some(rtt) = sample.avg_rtt_ms else {
+            return;
+        };
+        let quiet = sample.aggregate_mbps() <= 5.0
+            && sample.retrans_ratio.unwrap_or(0.0) <= 0.005
+            && sample.qdisc_backlog_bytes.unwrap_or(0) <= 8_000
+            && sample.qdisc_drop_delta.unwrap_or(0) == 0;
+        if !quiet {
+            return;
+        }
+
+        self.rtt_ms = Some(self.rtt_ms.map_or(rtt, |baseline| baseline.min(rtt)));
+        self.samples = self.samples.saturating_add(1);
+        sample.baseline_rtt_ms = self.rtt_ms;
+    }
+}
+
+
 /// Observe a physical interface without changing any kernel/network setting.
 ///
-/// The sampler deliberately uses two counter snapshots so cumulative kernel
-/// counters become interval deltas. It performs no active traffic generation.
-pub fn observe(active_iface: &str, interval: Duration) -> io::Result<Classification> {
+/// Consecutive snapshots reuse the previous sample as the next interval's
+/// starting point. This keeps the observer passive while producing real
+/// counter deltas for retransmissions, throughput and qdisc pressure.
+pub fn observe_series(
+    active_iface: &str,
+    interval: Duration,
+    samples: u8,
+) -> io::Result<AdaptiveReport> {
     let interval = interval.max(Duration::from_millis(250));
-    let before = crate::stats::adaptive_counters(active_iface);
-    thread::sleep(interval);
-    let after = crate::stats::adaptive_counters(active_iface);
-    let proxy = crate::proxy::detect_proxy_snapshot();
+    let samples = samples.clamp(1, 12);
+    let mut before = crate::stats::adaptive_counters(active_iface);
+    let mut baseline = BaselineEstimator::default();
+    let mut hysteresis = HysteresisClassifier::default();
+    let mut observations = Vec::with_capacity(usize::from(samples));
 
+    for _ in 0..samples {
+        thread::sleep(interval);
+        let after = crate::stats::adaptive_counters(active_iface);
+        let proxy = crate::proxy::detect_proxy_snapshot();
+        let mut sample = telemetry_between(
+            active_iface,
+            &before,
+            &after,
+            interval,
+            proxy.transparent,
+        );
+        baseline.apply(&mut sample);
+        let classification = classify(sample);
+        hysteresis.update(&classification);
+        observations.push(classification);
+        before = after;
+    }
+
+    Ok(AdaptiveReport {
+        stable_state: hysteresis.current(),
+        baseline_rtt_ms: baseline.rtt_ms,
+        baseline_samples: baseline.samples,
+        observations,
+    })
+}
+
+fn telemetry_between(
+    active_iface: &str,
+    before: &crate::stats::AdaptiveCounters,
+    after: &crate::stats::AdaptiveCounters,
+    interval: Duration,
+    transparent_proxy: bool,
+) -> TelemetrySample {
     let seconds = interval.as_secs_f64();
     let interval_ms = interval.as_millis().min(u64::MAX as u128) as u64;
 
@@ -116,12 +191,10 @@ pub fn observe(active_iface: &str, interval: Duration) -> io::Result<Classificat
         .map(|(a, b)| b.requeues.saturating_sub(a.requeues));
 
     let conn = after.conn_info.as_ref();
-    let sample = TelemetrySample {
+    TelemetrySample {
         interval_ms,
         avg_rtt_ms: conn.map(|value| value.avg_rtt_ms),
         max_rtt_ms: conn.map(|value| value.max_rtt_ms),
-        // Baseline learning belongs to the persistent daemon controller. The
-        // one-shot observer must not invent a path baseline from one sample.
         baseline_rtt_ms: None,
         retrans_ratio,
         rx_mbps,
@@ -134,11 +207,9 @@ pub fn observe(active_iface: &str, interval: Duration) -> io::Result<Classificat
         qdisc_requeue_delta,
         established: after.established,
         tcp_in_use: after.sock.as_ref().map(|value| value.tcp_in_use),
-        transparent_proxy: proxy.transparent,
+        transparent_proxy,
         wifi_frequency_mhz: crate::network::wifi_freq(active_iface),
-    };
-
-    Ok(classify(sample))
+    }
 }
 
 fn bytes_to_mbps(bytes: u64, seconds: f64) -> f64 {
@@ -282,9 +353,8 @@ pub fn classify(sample: TelemetrySample) -> Classification {
     }
 }
 
-/// Small state machine used by the future daemon integration to prevent a
-/// transient sample from flipping the active path state.
-#[cfg(test)]
+/// Small state machine that prevents a transient sample from flipping the
+/// reported path state.
 #[derive(Debug, Clone)]
 struct HysteresisClassifier {
     current: PathState,
@@ -294,7 +364,6 @@ struct HysteresisClassifier {
     min_confidence: u8,
 }
 
-#[cfg(test)]
 impl Default for HysteresisClassifier {
     fn default() -> Self {
         Self {
@@ -307,7 +376,6 @@ impl Default for HysteresisClassifier {
     }
 }
 
-#[cfg(test)]
 impl HysteresisClassifier {
     fn current(&self) -> PathState {
         self.current
@@ -367,6 +435,26 @@ mod tests {
             transparent_proxy: false,
             wifi_frequency_mhz: Some(5180),
         }
+    }
+
+    #[test]
+    fn baseline_learns_only_from_quiet_samples() {
+        let mut estimator = BaselineEstimator::default();
+
+        let mut quiet = sample();
+        quiet.rx_mbps = Some(1.0);
+        quiet.tx_mbps = Some(0.2);
+        estimator.apply(&mut quiet);
+        assert_eq!(estimator.rtt_ms, Some(35.0));
+        assert_eq!(estimator.samples, 1);
+
+        let mut loaded = sample();
+        loaded.avg_rtt_ms = Some(120.0);
+        loaded.rx_mbps = Some(80.0);
+        estimator.apply(&mut loaded);
+        assert_eq!(loaded.baseline_rtt_ms, Some(35.0));
+        assert_eq!(estimator.rtt_ms, Some(35.0));
+        assert_eq!(estimator.samples, 1);
     }
 
     #[test]
