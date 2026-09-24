@@ -245,18 +245,14 @@ fn build_module_index() -> Result<Option<ModuleIndex>, String> {
     let mut entries = Vec::new();
     let mut names = HashSet::new();
 
-    for entry in manifest
-        .modules
-        .into_iter()
-        .filter(|entry| {
-            entry.kmi == kmi
-                && entry.arch == arch
-                && entry
-                    .kernel_release
-                    .as_deref()
-                    .is_none_or(|expected| expected == release)
-        })
-    {
+    for entry in manifest.modules.into_iter().filter(|entry| {
+        entry.kmi == kmi
+            && entry.arch == arch
+            && entry
+                .kernel_release
+                .as_deref()
+                .is_none_or(|expected| expected == release)
+    }) {
         let relative = safe_relative_path(&entry.file).map_err(|error| error.to_string())?;
         if root.join(relative).is_file() {
             names.insert(entry.name.clone());
@@ -442,9 +438,7 @@ mod tests {
             arch: "aarch64".to_string(),
             file: "android15-6.6/aarch64/tcp_bbr3.ko".to_string(),
             sha256: "0".repeat(64),
-            kernel_release: Some(
-                "6.6.30-android15-8-g123456789abc-ab12345678".to_string(),
-            ),
+            kernel_release: Some("6.6.30-android15-8-g123456789abc-ab12345678".to_string()),
         };
         let release = "6.6.30-android15-8-g123456789abc-ab12345678";
         assert_eq!(entry.kernel_release.as_deref(), Some(release));
