@@ -55,6 +55,9 @@ enum Command {
         /// Passive sampling interval in milliseconds
         #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(250..=10000))]
         sample_ms: u64,
+        /// Number of consecutive passive intervals used for baseline/hysteresis
+        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u8).range(1..=12))]
+        samples: u8,
     },
     /// Sample network counters without running policy/proxy diagnostics
     Sample {
@@ -104,7 +107,11 @@ fn main() {
             details,
             verify,
         } => print_status(iface, runtime_only, details, verify),
-        Command::Adaptive { iface, sample_ms } => print_adaptive(iface, sample_ms),
+        Command::Adaptive {
+            iface,
+            sample_ms,
+            samples,
+        } => print_adaptive(iface, sample_ms, samples),
         Command::Sample { iface, details } => print_sample(iface, details),
         Command::Repair { iface } => repair_policy(iface),
         Command::Proxy => print_proxy_status(),
@@ -129,12 +136,16 @@ fn repair_policy(iface: Option<String>) -> std::io::Result<()> {
     Ok(())
 }
 
-fn print_adaptive(iface: Option<String>, sample_ms: u64) -> std::io::Result<()> {
+fn print_adaptive(iface: Option<String>, sample_ms: u64, samples: u8) -> std::io::Result<()> {
     let iface = iface.map(Ok).unwrap_or_else(network::fast_active_iface)?;
-    let observation = adaptive::observe(&iface, std::time::Duration::from_millis(sample_ms))?;
+    let report = adaptive::observe_series(
+        &iface,
+        std::time::Duration::from_millis(sample_ms),
+        samples,
+    )?;
     println!(
         "{}",
-        serde_json::to_string(&observation).map_err(std::io::Error::other)?
+        serde_json::to_string(&report).map_err(std::io::Error::other)?
     );
     Ok(())
 }
