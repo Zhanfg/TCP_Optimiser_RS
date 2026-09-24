@@ -1,7 +1,8 @@
 use serde::Serialize;
+use std::fs;
 use std::io;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,6 +62,91 @@ pub struct AdaptiveReport {
     pub baseline_rtt_ms: Option<f64>,
     pub baseline_samples: u8,
     pub observations: Vec<Classification>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdaptiveRuntimeState {
+    pub schema: u32,
+    pub updated_epoch: u64,
+    pub iface: String,
+    pub stable_state: PathState,
+    pub baseline_rtt_ms: Option<f64>,
+    pub baseline_samples: u8,
+    pub latest: Classification,
+}
+
+#[derive(Debug, Default)]
+pub struct RuntimeObserver {
+    iface: String,
+    previous: Option<(Instant, crate::stats::AdaptiveCounters)>,
+    baseline: BaselineEstimator,
+    hysteresis: HysteresisClassifier,
+}
+
+impl RuntimeObserver {
+    pub fn clear(&mut self) {
+        self.iface.clear();
+        self.previous = None;
+        self.baseline = BaselineEstimator::default();
+        self.hysteresis = HysteresisClassifier::default();
+    }
+
+    /// Consume one daemon-loop observation without sleeping or mutating the
+    /// network. The first observation for an interface only establishes the
+    /// counter baseline; later observations produce interval deltas.
+    pub fn tick(&mut self, active_iface: &str) -> Option<AdaptiveRuntimeState> {
+        if self.iface != active_iface {
+            self.clear();
+            self.iface = active_iface.to_string();
+            self.previous = Some((Instant::now(), crate::stats::adaptive_counters(active_iface)));
+            return None;
+        }
+
+        let (sampled_at, before) = self.previous.as_ref()?;
+        let elapsed = sampled_at.elapsed();
+        if elapsed < Duration::from_secs(2) {
+            return None;
+        }
+
+        let after = crate::stats::adaptive_counters(active_iface);
+        let proxy = crate::proxy::detect_proxy_snapshot();
+        let mut sample = telemetry_between(
+            active_iface,
+            before,
+            &after,
+            elapsed,
+            proxy.transparent,
+        );
+        self.baseline.apply(&mut sample);
+        let latest = classify(sample);
+        self.hysteresis.update(&latest);
+        self.previous = Some((Instant::now(), after));
+
+        Some(AdaptiveRuntimeState {
+            schema: 1,
+            updated_epoch: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            iface: active_iface.to_string(),
+            stable_state: self.hysteresis.current(),
+            baseline_rtt_ms: self.baseline.rtt_ms,
+            baseline_samples: self.baseline.samples,
+            latest,
+        })
+    }
+}
+
+pub fn persist_runtime_state(state: &AdaptiveRuntimeState) -> io::Result<()> {
+    let path = crate::config::module_dir().join("adaptive_state.json");
+    let temporary = path.with_extension("json.tmp");
+    let payload = serde_json::to_vec(state).map_err(io::Error::other)?;
+    fs::write(&temporary, payload)?;
+    fs::rename(temporary, path)
+}
+
+pub fn clear_runtime_state() {
+    let _ = fs::remove_file(crate::config::module_dir().join("adaptive_state.json"));
 }
 
 #[derive(Debug, Default)]
@@ -429,6 +515,27 @@ mod tests {
             transparent_proxy: false,
             wifi_frequency_mhz: Some(5180),
         }
+    }
+
+    #[test]
+    fn runtime_observer_clear_resets_learned_state() {
+        let mut observer = RuntimeObserver {
+            iface: "wlan0".to_string(),
+            previous: None,
+            baseline: BaselineEstimator {
+                rtt_ms: Some(25.0),
+                samples: 4,
+            },
+            hysteresis: HysteresisClassifier {
+                current: PathState::Stable,
+                ..HysteresisClassifier::default()
+            },
+        };
+        observer.clear();
+        assert!(observer.iface.is_empty());
+        assert!(observer.previous.is_none());
+        assert_eq!(observer.baseline.rtt_ms, None);
+        assert_eq!(observer.hysteresis.current(), PathState::Unknown);
     }
 
     #[test]
