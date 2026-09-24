@@ -311,8 +311,17 @@ build_in_tree_targets() {
     extra+=(KBUILD_MODPOST_WARN=1)
   fi
   if (( ${#IPV4_TARGETS[@]} )); then
-    make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
-      M=net/ipv4 "${IPV4_TARGETS[@]}"
+    if [[ "$KMI" == "android13-5.15" ]]; then
+      # Android 13 / 5.15 ThinLTO has the same single-target issue here as
+      # net/sched: tcp_bbr.ko may depend on a generated tcp_bbr.lto.o that
+      # single_modpost never creates. Build the directory as a unit, then stage
+      # only the allowlisted tcp_bbr.ko.
+      make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
+        M=net/ipv4 modules
+    else
+      make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
+        M=net/ipv4 "${IPV4_TARGETS[@]}"
+    fi
   fi
   if (( ${#QDISC_TARGETS[@]} )); then
     if [[ "$KMI" == "android13-5.15" ]]; then
