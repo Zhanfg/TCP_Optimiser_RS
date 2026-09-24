@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::process;
 
+mod adaptive;
 mod build_info;
 mod config;
 mod daemon;
@@ -45,6 +46,15 @@ enum Command {
         /// Include full policy verification (tc/sysctl readback)
         #[arg(long)]
         verify: bool,
+    },
+    /// Observe and classify current path conditions without applying changes
+    Adaptive {
+        /// Interface to sample; defaults to the active route interface
+        #[arg(long)]
+        iface: Option<String>,
+        /// Passive sampling interval in milliseconds
+        #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(250..=10000))]
+        sample_ms: u64,
     },
     /// Sample network counters without running policy/proxy diagnostics
     Sample {
@@ -94,6 +104,7 @@ fn main() {
             details,
             verify,
         } => print_status(iface, runtime_only, details, verify),
+        Command::Adaptive { iface, sample_ms } => print_adaptive(iface, sample_ms),
         Command::Sample { iface, details } => print_sample(iface, details),
         Command::Repair { iface } => repair_policy(iface),
         Command::Proxy => print_proxy_status(),
@@ -114,6 +125,16 @@ fn repair_policy(iface: Option<String>) -> std::io::Result<()> {
     println!(
         "{}",
         serde_json::to_string(&record).map_err(std::io::Error::other)?
+    );
+    Ok(())
+}
+
+fn print_adaptive(iface: Option<String>, sample_ms: u64) -> std::io::Result<()> {
+    let iface = iface.map(Ok).unwrap_or_else(network::fast_active_iface)?;
+    let observation = adaptive::observe(&iface, std::time::Duration::from_millis(sample_ms))?;
+    println!(
+        "{}",
+        serde_json::to_string(&observation).map_err(std::io::Error::other)?
     );
     Ok(())
 }
