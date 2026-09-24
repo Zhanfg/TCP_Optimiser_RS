@@ -20,6 +20,8 @@ struct ModuleEntry {
     arch: String,
     file: String,
     sha256: String,
+    #[serde(default)]
+    kernel_release: Option<String>,
 }
 
 /// Return the full Android GKI KMI version, e.g. `6.6-android15-8`, when it
@@ -235,7 +237,8 @@ fn build_module_index() -> Result<Option<ModuleIndex>, String> {
         ));
     }
 
-    let Some(kmi) = current_kmi() else {
+    let release = kernel_release().map_err(|error| error.to_string())?;
+    let Some(kmi) = derive_kmi(&release) else {
         return Ok(None);
     };
     let arch = current_arch();
@@ -245,7 +248,14 @@ fn build_module_index() -> Result<Option<ModuleIndex>, String> {
     for entry in manifest
         .modules
         .into_iter()
-        .filter(|entry| entry.kmi == kmi && entry.arch == arch)
+        .filter(|entry| {
+            entry.kmi == kmi
+                && entry.arch == arch
+                && entry
+                    .kernel_release
+                    .as_deref()
+                    .is_none_or(|expected| expected == release)
+        })
     {
         let relative = safe_relative_path(&entry.file).map_err(|error| error.to_string())?;
         if root.join(relative).is_file() {
@@ -422,6 +432,26 @@ mod tests {
             Some("5.15-android13-8".to_string())
         );
         assert_eq!(derive_kmi("6.6.30-custom"), None);
+    }
+
+    #[test]
+    fn exact_release_entry_only_matches_identical_uname_release() {
+        let entry = ModuleEntry {
+            name: "tcp_bbr3".to_string(),
+            kmi: "6.6-android15-8".to_string(),
+            arch: "aarch64".to_string(),
+            file: "android15-6.6/aarch64/tcp_bbr3.ko".to_string(),
+            sha256: "0".repeat(64),
+            kernel_release: Some(
+                "6.6.30-android15-8-g123456789abc-ab12345678".to_string(),
+            ),
+        };
+        let release = "6.6.30-android15-8-g123456789abc-ab12345678";
+        assert_eq!(entry.kernel_release.as_deref(), Some(release));
+        assert_ne!(
+            entry.kernel_release.as_deref(),
+            Some("6.6.30-android15-8-gdifferent-ab12345678")
+        );
     }
 
     #[test]
