@@ -60,6 +60,7 @@ pub(crate) struct AdaptiveCounters {
     pub(crate) sock: Option<SockStat>,
     pub(crate) established: u32,
     pub(crate) conn_info: Option<TcpConnInfo>,
+    pub(crate) qdisc: Option<crate::network::QdiscStats>,
 }
 
 pub(crate) fn adaptive_counters(active_iface: &str) -> AdaptiveCounters {
@@ -75,6 +76,7 @@ pub(crate) fn adaptive_counters(active_iface: &str) -> AdaptiveCounters {
             .ok(),
         established: established_conns(),
         conn_info: tcp_conn_info(),
+        qdisc: crate::network::qdisc_stats(active_iface).ok().flatten(),
     }
 }
 
