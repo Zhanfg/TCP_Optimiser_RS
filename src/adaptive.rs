@@ -197,9 +197,7 @@ pub fn classify(sample: TelemetrySample) -> Classification {
 
     if (loss.is_some_and(|value| value >= 0.015)
         || sample.qdisc_drop_delta.is_some_and(|value| value >= 4)
-        || sample
-            .qdisc_overlimit_delta
-            .is_some_and(|value| value >= 8))
+        || sample.qdisc_overlimit_delta.is_some_and(|value| value >= 8))
         && rtt.is_some_and(|value| value >= 120.0)
     {
         reasons.push(format!(
