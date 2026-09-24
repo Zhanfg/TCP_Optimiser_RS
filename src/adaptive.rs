@@ -24,6 +24,11 @@ pub struct TelemetrySample {
     pub retrans_ratio: Option<f64>,
     pub rx_mbps: Option<f64>,
     pub tx_mbps: Option<f64>,
+    pub qdisc_name: Option<String>,
+    pub qdisc_backlog_bytes: Option<u64>,
+    pub qdisc_backlog_packets: Option<u64>,
+    pub qdisc_drop_delta: Option<u64>,
+    pub qdisc_requeue_delta: Option<u64>,
     pub established: u32,
     pub tcp_in_use: Option<u32>,
     pub transparent_proxy: bool,
@@ -87,6 +92,22 @@ pub fn observe(active_iface: &str, interval: Duration) -> io::Result<Classificat
         })
         .map_or((None, None), |(rx, tx)| (Some(rx), Some(tx)));
 
+    let qdisc_name = after.qdisc.as_ref().map(|value| value.name.clone());
+    let qdisc_backlog_bytes = after.qdisc.as_ref().map(|value| value.backlog_bytes);
+    let qdisc_backlog_packets = after.qdisc.as_ref().map(|value| value.backlog_packets);
+    let qdisc_drop_delta = before
+        .qdisc
+        .as_ref()
+        .zip(after.qdisc.as_ref())
+        .filter(|(a, b)| a.name == b.name)
+        .map(|(a, b)| b.drops.saturating_sub(a.drops));
+    let qdisc_requeue_delta = before
+        .qdisc
+        .as_ref()
+        .zip(after.qdisc.as_ref())
+        .filter(|(a, b)| a.name == b.name)
+        .map(|(a, b)| b.requeues.saturating_sub(a.requeues));
+
     let conn = after.conn_info.as_ref();
     let sample = TelemetrySample {
         interval_ms,
@@ -98,6 +119,11 @@ pub fn observe(active_iface: &str, interval: Duration) -> io::Result<Classificat
         retrans_ratio,
         rx_mbps,
         tx_mbps,
+        qdisc_name,
+        qdisc_backlog_bytes,
+        qdisc_backlog_packets,
+        qdisc_drop_delta,
+        qdisc_requeue_delta,
         established: after.established,
         tcp_in_use: after.sock.as_ref().map(|value| value.tcp_in_use),
         transparent_proxy: proxy.transparent,
@@ -130,9 +156,18 @@ pub fn classify(sample: TelemetrySample) -> Classification {
                 "RTT inflation {:.2}x under {:.1} Mbps load",
                 inflation, throughput
             ));
+            let queue_evidence = sample.qdisc_backlog_bytes.unwrap_or(0) >= 16_000
+                || sample.qdisc_drop_delta.unwrap_or(0) > 0;
+            if queue_evidence {
+                reasons.push(format!(
+                    "qdisc backlog={} bytes, drop delta={}",
+                    sample.qdisc_backlog_bytes.unwrap_or(0),
+                    sample.qdisc_drop_delta.unwrap_or(0)
+                ));
+            }
             return Classification {
                 state: PathState::Bufferbloat,
-                confidence: 92,
+                confidence: if queue_evidence { 96 } else { 86 },
                 reasons,
                 sample,
             };
@@ -152,11 +187,15 @@ pub fn classify(sample: TelemetrySample) -> Classification {
         };
     }
 
-    if loss.is_some_and(|value| value >= 0.015) && rtt.is_some_and(|value| value >= 120.0) {
+    if (loss.is_some_and(|value| value >= 0.015)
+        || sample.qdisc_drop_delta.is_some_and(|value| value >= 4))
+        && rtt.is_some_and(|value| value >= 120.0)
+    {
         reasons.push(format!(
-            "elevated RTT {:.1} ms with {:.2}% retransmissions",
+            "elevated RTT {:.1} ms with {:.2}% retransmissions and {} qdisc drops",
             rtt.unwrap_or_default(),
-            loss.unwrap_or_default() * 100.0
+            loss.unwrap_or_default() * 100.0,
+            sample.qdisc_drop_delta.unwrap_or(0)
         ));
         return Classification {
             state: PathState::Congested,
@@ -198,7 +237,10 @@ pub fn classify(sample: TelemetrySample) -> Classification {
         };
     }
 
-    if rtt.is_some_and(|value| value < 100.0) && loss.is_some_and(|value| value < 0.005) {
+    if rtt.is_some_and(|value| value < 100.0)
+        && loss.is_some_and(|value| value < 0.005)
+        && sample.qdisc_drop_delta.unwrap_or(0) == 0
+    {
         reasons.push(format!(
             "low retransmission ratio {:.2}% with RTT {:.1} ms",
             loss.unwrap_or_default() * 100.0,
@@ -304,6 +346,11 @@ mod tests {
             retrans_ratio: Some(0.001),
             rx_mbps: Some(10.0),
             tx_mbps: Some(2.0),
+            qdisc_name: Some("fq_codel".to_string()),
+            qdisc_backlog_bytes: Some(0),
+            qdisc_backlog_packets: Some(0),
+            qdisc_drop_delta: Some(0),
+            qdisc_requeue_delta: Some(0),
             established: 4,
             tcp_in_use: Some(8),
             transparent_proxy: false,
@@ -326,6 +373,19 @@ mod tests {
         input.rx_mbps = Some(80.0);
         let result = classify(input);
         assert_eq!(result.state, PathState::Bufferbloat);
+    }
+
+    #[test]
+    fn qdisc_evidence_strengthens_bufferbloat_confidence() {
+        let mut input = sample();
+        input.baseline_rtt_ms = Some(30.0);
+        input.avg_rtt_ms = Some(95.0);
+        input.rx_mbps = Some(80.0);
+        input.qdisc_backlog_bytes = Some(64_000);
+        input.qdisc_drop_delta = Some(3);
+        let result = classify(input);
+        assert_eq!(result.state, PathState::Bufferbloat);
+        assert_eq!(result.confidence, 96);
     }
 
     #[test]
