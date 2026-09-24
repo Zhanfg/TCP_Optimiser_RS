@@ -259,8 +259,17 @@ build_in_tree_targets() {
       M=net/ipv4 "${IPV4_TARGETS[@]}"
   fi
   if (( ${#QDISC_TARGETS[@]} )); then
-    make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
-      M=net/sched "${QDISC_TARGETS[@]}"
+    if [[ "$KMI" == "android13-5.15" ]]; then
+      # Android 13 / 5.15 ThinLTO cannot reliably build individual net/sched
+      # .ko targets: single_modpost may request a missing *.lto.o. Build the
+      # scheduler module directory as a unit, then stage only our allowlisted
+      # qdiscs. This preserves the exact KMI audit without ABI bypasses.
+      make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
+        M=net/sched modules
+    else
+      make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
+        M=net/sched "${QDISC_TARGETS[@]}"
+    fi
   fi
 }
 
