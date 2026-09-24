@@ -17,7 +17,13 @@ PREFLIGHT_REPORT=${TCP_OPTIMISER_PREFLIGHT_REPORT:-}
 PREFLIGHT_CACHE=${TCP_OPTIMISER_PREFLIGHT_CACHE:-}
 GKI_RELEASE_PINS=${GKI_RELEASE_PINS:-"$REPO_ROOT/scripts/gki-release-pins.json"}
 USE_OFFICIAL_GKI=${TCP_OPTIMISER_OFFICIAL_GKI:-1}
+EXACT_RELEASE_BUNDLE=${TCP_OPTIMISER_EXACT_RELEASE_BUNDLE:-0}
 OFFICIAL_RELEASE=
+
+if [[ "$EXACT_RELEASE_BUNDLE" == "1" ]]; then
+  KMI_PREFLIGHT=0
+  PREFLIGHT_ONLY=0
+fi
 
 case "$KMI" in
   android12-5.10|android13-5.15|android14-6.1|android15-6.6) ;;
@@ -184,7 +190,27 @@ register_in_tree_target NET_SCH_FQ_PIE sch_fq_pie.ko sched
 make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" modules_prepare
 
 SYMVERS_HIT=0
-if [[ "$USE_OFFICIAL_GKI" == "1" ]]; then
+if [[ "$EXACT_RELEASE_BUNDLE" == "1" ]]; then
+  GKI_PREBUILT_DIR="$WORK/gki-prebuilt"
+  bash "$REPO_ROOT/scripts/fetch-gki-prebuilt.sh" "$KMI" "$GKI_PREBUILT_DIR"
+  OFFICIAL_RELEASE=$(python3 - "$GKI_PREBUILT_DIR/metadata.json" <<'PY'
+import json
+import sys
+print(json.load(open(sys.argv[1]))["kernel_release"])
+PY
+)
+  test -n "$OFFICIAL_RELEASE"
+  printf '%s\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/config/kernel.release"
+  printf '#define UTS_RELEASE "%s"\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/generated/utsrelease.h"
+  KBUILD_ARGS+=(KERNELRELEASE="$OFFICIAL_RELEASE")
+  printf 'building exact-release KO bundle for %s (%s)\n' "$GKI_TAG" "$OFFICIAL_RELEASE"
+
+  if [[ -n "$SYMVERS_CACHE" && -s "$SYMVERS_CACHE" ]]; then
+    install -m 0644 "$SYMVERS_CACHE" "$KERNEL_DIR/Module.symvers"
+    SYMVERS_HIT=1
+    printf 'using cached full exact-release Module.symvers: %s\n' "$SYMVERS_CACHE"
+  fi
+elif [[ "$USE_OFFICIAL_GKI" == "1" ]]; then
   GKI_PREBUILT_DIR="$WORK/gki-prebuilt"
   bash "$REPO_ROOT/scripts/fetch-gki-prebuilt.sh" "$KMI" "$GKI_PREBUILT_DIR"
   install -m 0644 "$GKI_PREBUILT_DIR/vmlinux.symvers" "$KERNEL_DIR/Module.symvers"
@@ -422,9 +448,15 @@ rm -rf "$DEST"
 mkdir -p "$DEST/$KMI/aarch64"
 stage_modules "$DEST/$KMI/aarch64"
 
-python3 "$REPO_ROOT/scripts/audit-gki-symbols.py" \
-  "$KERNEL_DIR" "$DEST/$KMI/aarch64" \
-  --json "$DEST/kmi-symbol-audit-$KMI.json" --strict
+if [[ "$EXACT_RELEASE_BUNDLE" == "1" ]]; then
+  python3 "$REPO_ROOT/scripts/audit-gki-symbols.py" \
+    "$KERNEL_DIR" "$DEST/$KMI/aarch64" \
+    --json "$DEST/kmi-symbol-audit-$KMI.json"
+else
+  python3 "$REPO_ROOT/scripts/audit-gki-symbols.py" \
+    "$KERNEL_DIR" "$DEST/$KMI/aarch64" \
+    --json "$DEST/kmi-symbol-audit-$KMI.json" --strict
+fi
 
 builtin_csv=$(IFS=,; printf '%s' "${BUILTIN_CAPABILITIES[*]-}")
 unavailable_csv=$(IFS=,; printf '%s' "${UNAVAILABLE_CAPABILITIES[*]-}")
@@ -438,6 +470,7 @@ import sys
 
 root = Path(sys.argv[1])
 kernel_branch, release, kernel_rev, bbr_rev, builtin_csv, unavailable_csv = sys.argv[2:]
+exact_release = ${EXACT_RELEASE_BUNDLE:-0} == "1"
 module_dir = root / kernel_branch / "aarch64"
 builtin_capabilities = [x for x in builtin_csv.split(",") if x]
 unavailable_capabilities = [x for x in unavailable_csv.split(",") if x]
@@ -455,10 +488,12 @@ for path in sorted(module_dir.glob("*.ko")):
         "arch": "aarch64",
         "file": path.relative_to(root).as_posix(),
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "kernel_release": release if exact_release else None,
     })
 
 manifest = {
     "schema": 1,
+    "scope": "exact-release" if exact_release else "generic-kmi",
     "kmi": kmi,
     "kernel_branch": kernel_branch,
     "kernel_release": release,
