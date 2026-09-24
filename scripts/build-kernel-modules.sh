@@ -18,9 +18,17 @@ PREFLIGHT_CACHE=${TCP_OPTIMISER_PREFLIGHT_CACHE:-}
 GKI_RELEASE_PINS=${GKI_RELEASE_PINS:-"$REPO_ROOT/scripts/gki-release-pins.json"}
 USE_OFFICIAL_GKI=${TCP_OPTIMISER_OFFICIAL_GKI:-1}
 EXACT_RELEASE_BUNDLE=${TCP_OPTIMISER_EXACT_RELEASE_BUNDLE:-0}
+PAIRED_KERNEL_BUNDLE=${TCP_OPTIMISER_PAIRED_KERNEL_BUNDLE:-0}
+PAIRED_KERNEL_CACHE=${PAIRED_KERNEL_CACHE:-}
 OFFICIAL_RELEASE=
 
-if [[ "$EXACT_RELEASE_BUNDLE" == "1" ]]; then
+if [[ "$PAIRED_KERNEL_BUNDLE" == "1" ]]; then
+  EXACT_RELEASE_BUNDLE=1
+  KMI_PREFLIGHT=0
+  PREFLIGHT_ONLY=0
+  MINIMAL_KERNEL_BUILD=1
+  USE_OFFICIAL_GKI=0
+elif [[ "$EXACT_RELEASE_BUNDLE" == "1" ]]; then
   KMI_PREFLIGHT=0
   PREFLIGHT_ONLY=0
 fi
@@ -190,7 +198,22 @@ register_in_tree_target NET_SCH_FQ_PIE sch_fq_pie.ko sched
 make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" modules_prepare
 
 SYMVERS_HIT=0
-if [[ "$EXACT_RELEASE_BUNDLE" == "1" ]]; then
+PAIRED_IMAGE=
+if [[ "$PAIRED_KERNEL_BUNDLE" == "1" ]]; then
+  if [[ -n "$PAIRED_KERNEL_CACHE" && -s "$PAIRED_KERNEL_CACHE/Module.symvers" && -s "$PAIRED_KERNEL_CACHE/Image" && -s "$PAIRED_KERNEL_CACHE/kernel.release" ]]; then
+    install -m 0644 "$PAIRED_KERNEL_CACHE/Module.symvers" "$KERNEL_DIR/Module.symvers"
+    OFFICIAL_RELEASE=$(cat "$PAIRED_KERNEL_CACHE/kernel.release")
+    test -n "$OFFICIAL_RELEASE"
+    printf '%s\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/config/kernel.release"
+    printf '#define UTS_RELEASE "%s"\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/generated/utsrelease.h"
+    KBUILD_ARGS+=(KERNELRELEASE="$OFFICIAL_RELEASE")
+    PAIRED_IMAGE="$PAIRED_KERNEL_CACHE/Image"
+    SYMVERS_HIT=1
+    printf 'using cached paired kernel: %s (%s)\n' "$KMI" "$OFFICIAL_RELEASE"
+  else
+    printf 'paired kernel cache miss: full vmlinux build required for %s\n' "$KMI"
+  fi
+elif [[ "$EXACT_RELEASE_BUNDLE" == "1" ]]; then
   GKI_PREBUILT_DIR="$WORK/gki-prebuilt"
   bash "$REPO_ROOT/scripts/fetch-gki-prebuilt.sh" "$KMI" "$GKI_PREBUILT_DIR"
   OFFICIAL_RELEASE=$(python3 - "$GKI_PREBUILT_DIR/metadata.json" <<'PY'
@@ -410,7 +433,42 @@ PY
   build_bbr3 0
 fi
 
-if [[ "$SYMVERS_HIT" != "1" ]]; then
+if [[ "$PAIRED_KERNEL_BUNDLE" == "1" ]]; then
+  if [[ "$SYMVERS_HIT" != "1" ]]; then
+    clean_target_outputs
+    printf 'building paired vmlinux for complete exact symbol CRCs\n'
+    make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" vmlinux
+
+    if [[ ! -s "$KERNEL_DIR/Module.symvers" ]]; then
+      printf 'vmlinux did not produce Module.symvers; falling back to Image+modules\n'
+      make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" Image modules
+    else
+      printf 'building paired Image and allowlisted modules only\n'
+      make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" Image
+      build_in_tree_targets 0
+    fi
+
+    test -s "$KERNEL_DIR/Module.symvers"
+    test -s "$KERNEL_DIR/arch/arm64/boot/Image"
+    OFFICIAL_RELEASE=$(make -s -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" kernelrelease)
+    test -n "$OFFICIAL_RELEASE"
+    PAIRED_IMAGE="$KERNEL_DIR/arch/arm64/boot/Image"
+
+    if [[ -n "$PAIRED_KERNEL_CACHE" ]]; then
+      mkdir -p "$PAIRED_KERNEL_CACHE"
+      install -m 0644 "$KERNEL_DIR/Module.symvers" "$PAIRED_KERNEL_CACHE/Module.symvers"
+      install -m 0644 "$PAIRED_IMAGE" "$PAIRED_KERNEL_CACHE/Image"
+      printf '%s\n' "$OFFICIAL_RELEASE" > "$PAIRED_KERNEL_CACHE/kernel.release"
+    fi
+  else
+    build_in_tree_targets 0
+  fi
+
+  make -C "$BBR_DIR" \
+    KDIR="$KERNEL_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- clean || true
+  prepare_bbr_probe
+  build_bbr3 0
+elif [[ "$SYMVERS_HIT" != "1" ]]; then
   clean_target_outputs
 
   if [[ "$MINIMAL_KERNEL_BUILD" == "1" ]]; then
@@ -422,7 +480,6 @@ if [[ "$SYMVERS_HIT" != "1" ]]; then
     printf 'Module.symvers unavailable; falling back to full GKI Image+modules build\n'
     make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" Image modules
   else
-    # A vmlinux-only build has not built our selected modular targets.
     build_in_tree_targets 0
   fi
 
@@ -433,8 +490,6 @@ if [[ "$SYMVERS_HIT" != "1" ]]; then
     printf 'stored exact Module.symvers cache candidate: %s\n' "$SYMVERS_CACHE"
   fi
 
-  # The preflight BBR3 module was built without exact CRCs. Rebuild it against
-  # the exact target Module.symvers.
   make -C "$BBR_DIR" \
     KDIR="$KERNEL_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- clean || true
   build_bbr3 0
@@ -479,6 +534,14 @@ rm -rf "$DEST"
 mkdir -p "$DEST/$KMI/aarch64"
 stage_modules "$DEST/$KMI/aarch64"
 
+if [[ "$PAIRED_KERNEL_BUNDLE" == "1" ]]; then
+  test -s "$PAIRED_IMAGE"
+  mkdir -p "$DEST/paired_kernel/$KMI"
+  install -m 0644 "$PAIRED_IMAGE" "$DEST/paired_kernel/$KMI/Image"
+  install -m 0644 "$KERNEL_DIR/Module.symvers" "$DEST/paired_kernel/$KMI/Module.symvers"
+  printf '%s\n' "$OFFICIAL_RELEASE" > "$DEST/paired_kernel/$KMI/kernel.release"
+fi
+
 if [[ "$EXACT_RELEASE_BUNDLE" == "1" ]]; then
   python3 "$REPO_ROOT/scripts/audit-gki-symbols.py" \
     "$KERNEL_DIR" "$DEST/$KMI/aarch64" \
@@ -492,7 +555,7 @@ fi
 builtin_csv=$(IFS=,; printf '%s' "${BUILTIN_CAPABILITIES[*]-}")
 unavailable_csv=$(IFS=,; printf '%s' "${UNAVAILABLE_CAPABILITIES[*]-}")
 python3 - "$DEST" "$KMI" "$KERNEL_RELEASE" "$KERNEL_REV" "$BBR_SOURCE_REV" \
-  "$builtin_csv" "$unavailable_csv" "$EXACT_RELEASE_BUNDLE" <<'PY'
+  "$builtin_csv" "$unavailable_csv" "$EXACT_RELEASE_BUNDLE" "$PAIRED_KERNEL_BUNDLE" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -500,8 +563,9 @@ import re
 import sys
 
 root = Path(sys.argv[1])
-kernel_branch, release, kernel_rev, bbr_rev, builtin_csv, unavailable_csv, exact_release_raw = sys.argv[2:]
+kernel_branch, release, kernel_rev, bbr_rev, builtin_csv, unavailable_csv, exact_release_raw, paired_kernel_raw = sys.argv[2:]
 exact_release = exact_release_raw == "1"
+paired_kernel = paired_kernel_raw == "1"
 module_dir = root / kernel_branch / "aarch64"
 builtin_capabilities = [x for x in builtin_csv.split(",") if x]
 unavailable_capabilities = [x for x in unavailable_csv.split(",") if x]
@@ -524,7 +588,8 @@ for path in sorted(module_dir.glob("*.ko")):
 
 manifest = {
     "schema": 1,
-    "scope": "exact-release" if exact_release else "generic-kmi",
+    "scope": "paired-kernel" if paired_kernel else ("exact-release" if exact_release else "generic-kmi"),
+    "requires_paired_kernel": paired_kernel,
     "kmi": kmi,
     "kernel_branch": kernel_branch,
     "kernel_release": release,
