@@ -28,6 +28,7 @@ pub struct TelemetrySample {
     pub qdisc_backlog_bytes: Option<u64>,
     pub qdisc_backlog_packets: Option<u64>,
     pub qdisc_drop_delta: Option<u64>,
+    pub qdisc_overlimit_delta: Option<u64>,
     pub qdisc_requeue_delta: Option<u64>,
     pub established: u32,
     pub tcp_in_use: Option<u32>,
@@ -101,6 +102,12 @@ pub fn observe(active_iface: &str, interval: Duration) -> io::Result<Classificat
         .zip(after.qdisc.as_ref())
         .filter(|(a, b)| a.name == b.name)
         .map(|(a, b)| b.drops.saturating_sub(a.drops));
+    let qdisc_overlimit_delta = before
+        .qdisc
+        .as_ref()
+        .zip(after.qdisc.as_ref())
+        .filter(|(a, b)| a.name == b.name)
+        .map(|(a, b)| b.overlimits.saturating_sub(a.overlimits));
     let qdisc_requeue_delta = before
         .qdisc
         .as_ref()
@@ -123,6 +130,7 @@ pub fn observe(active_iface: &str, interval: Duration) -> io::Result<Classificat
         qdisc_backlog_bytes,
         qdisc_backlog_packets,
         qdisc_drop_delta,
+        qdisc_overlimit_delta,
         qdisc_requeue_delta,
         established: after.established,
         tcp_in_use: after.sock.as_ref().map(|value| value.tcp_in_use),
@@ -188,14 +196,18 @@ pub fn classify(sample: TelemetrySample) -> Classification {
     }
 
     if (loss.is_some_and(|value| value >= 0.015)
-        || sample.qdisc_drop_delta.is_some_and(|value| value >= 4))
+        || sample.qdisc_drop_delta.is_some_and(|value| value >= 4)
+        || sample
+            .qdisc_overlimit_delta
+            .is_some_and(|value| value >= 8))
         && rtt.is_some_and(|value| value >= 120.0)
     {
         reasons.push(format!(
-            "elevated RTT {:.1} ms with {:.2}% retransmissions and {} qdisc drops",
+            "elevated RTT {:.1} ms with {:.2}% retransmissions, {} qdisc drops and {} overlimits",
             rtt.unwrap_or_default(),
             loss.unwrap_or_default() * 100.0,
-            sample.qdisc_drop_delta.unwrap_or(0)
+            sample.qdisc_drop_delta.unwrap_or(0),
+            sample.qdisc_overlimit_delta.unwrap_or(0)
         ));
         return Classification {
             state: PathState::Congested,
@@ -350,6 +362,7 @@ mod tests {
             qdisc_backlog_bytes: Some(0),
             qdisc_backlog_packets: Some(0),
             qdisc_drop_delta: Some(0),
+            qdisc_overlimit_delta: Some(0),
             qdisc_requeue_delta: Some(0),
             established: 4,
             tcp_in_use: Some(8),
