@@ -121,6 +121,50 @@
             </div>
           </div>
 
+          <details class="capability-panel collapsible-panel" id="adaptive-observer-panel">
+            <summary class="panel-heading capability-heading collapsible-summary">
+              <div>
+                <p class="panel-kicker" data-i18n="adaptive_eyebrow">Adaptive observer</p>
+                <h3 data-i18n="adaptive_title">Path health</h3>
+              </div>
+              <span class="collapsible-summary__actions">
+                <span id="adaptive-state-badge" class="capability-count" data-i18n="adaptive_waiting">Learning</span>
+                <span class="collapsible-chevron ui-icon icon-chevron-down" aria-hidden="true"></span>
+              </span>
+            </summary>
+            <div class="collapsible-panel__body">
+              <p class="capability-help" data-i18n="adaptive_desc">Observe-only classification from passive RTT, retransmission and qdisc signals. No network settings are changed.</p>
+              <div class="route-services">
+                <div class="service-row">
+                  <span class="ui-icon icon-activity" aria-hidden="true"></span>
+                  <span class="service-row__label" data-i18n="adaptive_latest_state">Latest sample</span>
+                  <strong id="adaptive-latest-state" data-i18n="label_dash">—</strong>
+                </div>
+                <div class="service-row">
+                  <span class="ui-icon icon-gauge" aria-hidden="true"></span>
+                  <span class="service-row__label" data-i18n="adaptive_confidence">Confidence</span>
+                  <strong id="adaptive-confidence" data-i18n="label_dash">—</strong>
+                </div>
+                <div class="service-row">
+                  <span class="ui-icon icon-route" aria-hidden="true"></span>
+                  <span class="service-row__label" data-i18n="adaptive_rtt">RTT current / baseline</span>
+                  <strong id="adaptive-rtt" data-i18n="label_dash">—</strong>
+                </div>
+                <div class="service-row">
+                  <span class="ui-icon icon-server" aria-hidden="true"></span>
+                  <span class="service-row__label" data-i18n="adaptive_retransmission">Retransmission</span>
+                  <strong id="adaptive-retransmission" data-i18n="label_dash">—</strong>
+                </div>
+                <div class="service-row">
+                  <span class="ui-icon icon-sliders" aria-hidden="true"></span>
+                  <span class="service-row__label" data-i18n="adaptive_queue">Qdisc pressure</span>
+                  <strong id="adaptive-queue" data-i18n="label_dash">—</strong>
+                </div>
+              </div>
+              <p id="adaptive-observer-reason" class="capability-help" data-i18n="adaptive_waiting_desc">Collecting enough passive samples to establish a stable path state.</p>
+            </div>
+          </details>
+
           <details class="capability-panel collapsible-panel verification-panel" id="verification-panel">
             <summary class="panel-heading capability-heading collapsible-summary">
               <div>

@@ -400,6 +400,103 @@ pub fn root_qdisc(iface: &str) -> io::Result<Option<String>> {
     Ok(parse_root_qdisc(&String::from_utf8_lossy(&output.stdout)).map(str::to_owned))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QdiscStats {
+    pub(crate) name: String,
+    pub(crate) backlog_bytes: u64,
+    pub(crate) backlog_packets: u64,
+    pub(crate) drops: u64,
+    pub(crate) overlimits: u64,
+    pub(crate) requeues: u64,
+}
+
+/// Read root qdisc counters without modifying the queue.
+pub(crate) fn qdisc_stats(iface: &str) -> io::Result<Option<QdiscStats>> {
+    let output = Command::new("tc")
+        .args(["-s", "qdisc", "show", "dev", iface])
+        .output()?;
+    if !output.status.success() {
+        return Err(command_error("tc -s qdisc show", &output.stderr));
+    }
+    Ok(parse_qdisc_stats(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_qdisc_stats(output: &str) -> Option<QdiscStats> {
+    let mut stats = None;
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("qdisc ") {
+            if stats.is_some() {
+                break;
+            }
+            let words = trimmed.split_whitespace().collect::<Vec<_>>();
+            if !words.contains(&"root") {
+                continue;
+            }
+            let name = words.get(1)?.to_string();
+            stats = Some(QdiscStats {
+                name,
+                backlog_bytes: 0,
+                backlog_packets: 0,
+                drops: 0,
+                overlimits: 0,
+                requeues: 0,
+            });
+            continue;
+        }
+
+        let Some(current) = stats.as_mut() else {
+            continue;
+        };
+
+        if trimmed.starts_with("Sent ") {
+            let normalized = trimmed.replace(['(', ')', ','], " ");
+            let words = normalized.split_whitespace().collect::<Vec<_>>();
+            current.drops = metric_after(&words, "dropped").unwrap_or(0);
+            current.overlimits = metric_after(&words, "overlimits").unwrap_or(0);
+            current.requeues = metric_after(&words, "requeues").unwrap_or(0);
+        } else if let Some(rest) = trimmed.strip_prefix("backlog ") {
+            let mut words = rest.split_whitespace();
+            current.backlog_bytes = words.next().and_then(parse_tc_size).unwrap_or(0);
+            current.backlog_packets = words
+                .next()
+                .and_then(|value| value.strip_suffix('p'))
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            let trailing = rest.split_whitespace().collect::<Vec<_>>();
+            if let Some(requeues) = metric_after(&trailing, "requeues") {
+                current.requeues = requeues;
+            }
+        }
+    }
+
+    stats
+}
+
+fn metric_after(words: &[&str], key: &str) -> Option<u64> {
+    let index = words.iter().position(|word| *word == key)?;
+    words.get(index + 1)?.parse().ok()
+}
+
+fn parse_tc_size(value: &str) -> Option<u64> {
+    let split = value
+        .char_indices()
+        .find(|(_, character)| !character.is_ascii_digit() && *character != '.')
+        .map(|(index, _)| index)
+        .unwrap_or(value.len());
+    let amount = value.get(..split)?.parse::<f64>().ok()?;
+    let unit = value.get(split..)?.to_ascii_lowercase();
+    let multiplier = match unit.as_str() {
+        "" | "b" => 1.0,
+        "kb" => 1_000.0,
+        "mb" => 1_000_000.0,
+        "gb" => 1_000_000_000.0,
+        _ => return None,
+    };
+    Some((amount * multiplier) as u64)
+}
+
 /// Restore the requested root qdisc only when the kernel has reset it.
 pub fn reconcile_qdisc(iface: &str, qdisc: &str) -> io::Result<bool> {
     if root_qdisc(iface)?.as_deref() == Some(qdisc) {
@@ -606,6 +703,25 @@ mod tests {
     fn route_matching_uses_exact_interface_token() {
         assert!(route_change_args("default dev wlan01", "wlan0", 10).is_none());
         assert!(route_change_args("default dev wlan0", "wlan0", 10).is_some());
+    }
+
+    #[test]
+    fn parses_root_qdisc_statistics() {
+        let output = r#"
+qdisc ingress ffff: parent ffff:fff1 ----------------
+ Sent 100 bytes 1 pkt (dropped 0, overlimits 0 requeues 0)
+ backlog 0b 0p requeues 0
+qdisc fq_codel 8001: root refcnt 2 limit 1024p target 5ms interval 100ms
+ Sent 123456 bytes 789 pkt (dropped 7, overlimits 3 requeues 2)
+ backlog 12Kb 4p requeues 2
+"#;
+        let stats = parse_qdisc_stats(output).unwrap();
+        assert_eq!(stats.name, "fq_codel");
+        assert_eq!(stats.backlog_bytes, 12_000);
+        assert_eq!(stats.backlog_packets, 4);
+        assert_eq!(stats.drops, 7);
+        assert_eq!(stats.overlimits, 3);
+        assert_eq!(stats.requeues, 2);
     }
 
     #[test]

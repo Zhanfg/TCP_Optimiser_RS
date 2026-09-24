@@ -286,7 +286,7 @@ jobs:
 
   package:
     name: Assemble module
-    if: ${{ always() && github.event_name != 'pull_request' && needs.validate.result == 'success' && needs.build-android.result == 'success' && (needs.build-kernel-modules.result == 'success' || needs.build-kernel-modules.result == 'skipped') }}
+    if: ${{ always() && needs.validate.result == 'success' && needs.build-android.result == 'success' && (needs.build-kernel-modules.result == 'success' || needs.build-kernel-modules.result == 'skipped') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     needs: [validate, build-android, build-kernel-modules]
     runs-on: ubuntu-latest
     permissions:
@@ -367,7 +367,7 @@ jobs:
           sha256sum "${{ steps.metadata.outputs.zip_name }}" > "${{ steps.metadata.outputs.zip_name }}.sha256"
 
       - name: Attest official public build
-        if: github.event.repository.visibility == 'public'
+        if: github.event.repository.visibility == 'public' && github.event_name != 'pull_request'
         uses: actions/attest@v4
         with:
           subject-path: dist/${{ steps.metadata.outputs.zip_name }}

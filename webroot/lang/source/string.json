@@ -1,18 +1,15 @@
 {
   "app_title": "TCP Optimiser",
   "app_subtitle": "Network control console",
-
   "nav_home": "Home",
   "nav_stats": "Stats",
   "nav_settings": "Settings",
   "nav_logs": "Logs",
-
   "status_loading": "Loading",
   "status_active": "Active",
   "status_disabled": "Stopped",
   "status_inactive": "Inactive",
   "status_not_installed": "Not Installed",
-
   "home_module_status": "Module Status",
   "home_overview_eyebrow": "Live network state",
   "home_console_title": "Connection overview",
@@ -96,12 +93,10 @@
   "home_telegram": "Telegram",
   "home_author": "by fatalcoder524 & axymorrsen",
   "home_about_desc": "Dynamic TCP congestion control based on the active network interface. Includes independent Wi-Fi and cellular policies, per-band pacing adjustment, qdisc tuning, initcwnd/initrwnd optimization, and proxy/VPN and hosts status detection.",
-
   "label_none": "None",
-  "label_dash": "\u2014",
+  "label_dash": "—",
   "label_loading": "Loading...",
   "label_close": "Close",
-
   "settings_tcp_cc": "TCP Congestion Control",
   "settings_tcp_cc_summary": "Wi-Fi and cellular network policies",
   "settings_policy_eyebrow": "Policy configuration",
@@ -139,7 +134,6 @@
   "settings_mode": "Mode",
   "settings_color": "Color",
   "settings_lang": "Language",
-
   "theme_dark": "Dark",
   "theme_light": "Light",
   "theme_auto": "Auto",
@@ -147,7 +141,6 @@
   "dynamic_color_system": "Using the Android system palette",
   "dynamic_color_fallback": "System palette unavailable; using built-in colors",
   "dynamic_color_off": "Disabled; using built-in colors",
-
   "logs_heading": "Logs",
   "logs_clear": "Clear",
   "logs_empty": "No log entries",
@@ -156,11 +149,9 @@
   "logs_save_btn": "Save",
   "logs_saved_to": "Log saved to:",
   "logs_path_placeholder": "/sdcard/Download/tcp_optimiser.log",
-
   "algo_not_supported": "\"{algo}\" not supported by this kernel",
   "algo_active": "{algo} is supported and currently active",
   "algo_available": "{algo} is available",
-
   "toast_settings_applied": "Settings Applied!",
   "toast_toggle_connection": "Toggle connection to apply changes.",
   "toast_wait_5s": "Wait ~5s for changes to take effect.",
@@ -178,7 +169,6 @@
   "toast_fetch_congestion_fail": "Error fetching congestion control algorithms.",
   "toast_fetch_module_fail": "Error fetching module info.",
   "toast_no_congestion_algo": "No congestion control algorithms found.",
-
   "stats_throughput": "Throughput",
   "stats_download": "Download",
   "stats_upload": "Upload",
@@ -196,7 +186,6 @@
   "stats_rtt": "Round-Trip Time",
   "stats_dns": "DNS Servers",
   "stats_dns_summary": "{count} servers",
-
   "settings_presets": "Presets",
   "settings_presets_summary": "Apply a complete policy in one tap",
   "settings_export_preset": "Export",
@@ -204,14 +193,12 @@
   "toast_preset_exported": "Preset copied — paste JSON to import",
   "toast_preset_imported": "Preset \"{name}\" imported",
   "toast_preset_applied": "Preset \"{name}\" applied",
-
   "settings_advanced": "Advanced Kernel",
   "settings_advanced_summary": "Expert controls with additional risk",
   "settings_advanced_toggle": "Enable Advanced Kernel Tuning",
   "settings_advanced_warn": "Direct kernel parameter modification. Risk of instability.",
   "settings_appearance_summary": "Language, theme and dynamic color",
   "nav_advanced": "Advanced",
-
   "adv_warning_title": "Advanced Kernel Tuning",
   "adv_warning_body": "You are about to enable direct kernel parameter modification. Incorrect values can cause network instability, connection failures, or system crashes. Proceed only if you understand each parameter.",
   "adv_warning_banner": "Direct kernel parameter modification. Incorrect values may cause instability or data loss.",
@@ -221,7 +208,6 @@
   "adv_confirm_done": "I Understand",
   "adv_cancel": "Cancel",
   "toast_adv_enabled": "Advanced kernel tuning enabled",
-
   "bb_title": "Baseband Backup",
   "bb_none_found": "No modem partitions detected on this device.",
   "bb_save_path": "Save Path",
@@ -304,11 +290,35 @@
   "advanced_nf_conntrack_max": "Maximum tracked connections",
   "advanced_nf_conntrack_tcp_timeout_established": "Established tracking timeout (s)",
   "advanced_nf_conntrack_tcp_timeout_time_wait": "TIME-WAIT tracking timeout (s)",
-
   "debug_title": "Debug Console",
   "debug_toggle": "Enable Debug Mode",
   "debug_desc": "Show WebUI commands and console events in the debug overlay; daemon events are also written to debug.log. A quick-access button appears while enabled.",
   "debug_on": "Debug mode enabled",
-  "debug_off": "Debug mode disabled"
-
+  "debug_off": "Debug mode disabled",
+  "adaptive_eyebrow": "Adaptive observer",
+  "adaptive_title": "Path health",
+  "adaptive_desc": "Observe-only classification from passive RTT, retransmission and qdisc signals. No network settings are changed.",
+  "adaptive_waiting": "Learning",
+  "adaptive_waiting_desc": "Collecting enough passive samples to establish a stable path state.",
+  "adaptive_latest_state": "Latest sample",
+  "adaptive_confidence": "Confidence",
+  "adaptive_rtt": "RTT current / baseline",
+  "adaptive_retransmission": "Retransmission",
+  "adaptive_queue": "Qdisc pressure",
+  "adaptive_rtt_value": "{current} / {baseline} ms",
+  "adaptive_queue_value": "{qdisc} · {backlog} · drops {drops} · overlimits {overlimits}",
+  "adaptive_state_stable": "Stable",
+  "adaptive_state_bufferbloat": "Bufferbloat",
+  "adaptive_state_lossy_wireless": "Wireless loss",
+  "adaptive_state_high_bdp": "High BDP",
+  "adaptive_state_congested": "Congested",
+  "adaptive_state_proxy_constrained": "Proxy constrained",
+  "adaptive_state_unknown": "Learning",
+  "adaptive_state_desc_stable": "RTT and retransmission remain within the learned low-load baseline.",
+  "adaptive_state_desc_bufferbloat": "RTT has inflated under load; queue backlog or drops strengthen the bufferbloat signal.",
+  "adaptive_state_desc_lossy_wireless": "Wireless traffic shows an elevated retransmission ratio.",
+  "adaptive_state_desc_high_bdp": "The path is sustaining high throughput with comparatively high RTT.",
+  "adaptive_state_desc_congested": "High RTT coincides with retransmission or qdisc pressure.",
+  "adaptive_state_desc_proxy_constrained": "A transparent proxy path is active and current RTT/loss suggest a constrained proxied path.",
+  "adaptive_state_desc_unknown": "Collecting enough passive samples to establish a stable path state."
 }

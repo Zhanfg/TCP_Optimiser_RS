@@ -53,6 +53,33 @@ pub struct StatsSnapshot {
     pub conn_info: Option<TcpConnInfo>,
 }
 
+#[derive(Debug)]
+pub(crate) struct AdaptiveCounters {
+    pub(crate) tcp: Option<TcpCounters>,
+    pub(crate) iface: Option<IfaceBytes>,
+    pub(crate) sock: Option<SockStat>,
+    pub(crate) established: u32,
+    pub(crate) conn_info: Option<TcpConnInfo>,
+    pub(crate) qdisc: Option<crate::network::QdiscStats>,
+}
+
+pub(crate) fn adaptive_counters(active_iface: &str) -> AdaptiveCounters {
+    AdaptiveCounters {
+        tcp: fs::read_to_string("/proc/net/snmp")
+            .and_then(|content| parse_tcp_snmp(&content))
+            .ok(),
+        iface: fs::read_to_string("/proc/net/dev")
+            .and_then(|content| parse_iface_bytes(&content, active_iface))
+            .ok(),
+        sock: fs::read_to_string("/proc/net/sockstat")
+            .and_then(|content| parse_sockstat(&content))
+            .ok(),
+        established: established_conns(),
+        conn_info: tcp_conn_info(),
+        qdisc: crate::network::qdisc_stats(active_iface).ok().flatten(),
+    }
+}
+
 pub fn stats_snapshot(active_iface: &str, include_details: bool) -> io::Result<StatsSnapshot> {
     Ok(StatsSnapshot {
         active_iface: active_iface.to_string(),
@@ -94,6 +121,8 @@ pub struct NetworkSnapshot {
     pub conn_info: Option<TcpConnInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification: Option<crate::policy::VerificationSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive: Option<crate::adaptive::AdaptiveRuntimeState>,
 }
 
 /// Take a full network snapshot with minimal syscalls
@@ -158,6 +187,7 @@ pub fn network_snapshot(
             .then(tcp_conn_info)
             .flatten(),
         verification: include_verification.then(|| crate::policy::verify_policy(active_iface)),
+        adaptive: crate::adaptive::load_runtime_state(active_iface),
     })
 }
 

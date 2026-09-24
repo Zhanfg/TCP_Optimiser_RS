@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::adaptive;
 use crate::config;
 use crate::logging;
 use crate::network::{self, IfaceMode};
@@ -20,6 +21,7 @@ const SLEEP_FAST: u64 = 2;
 const SLEEP_NORMAL: u64 = 30;
 const QDISC_CHECK_WIFI: u64 = 60;
 const QDISC_CHECK_CELLULAR: u64 = 120;
+const ADAPTIVE_STATE_PERSIST: u64 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedPolicy {
@@ -52,6 +54,9 @@ pub fn run() -> io::Result<()> {
     let mut last_vowifi_active = false;
     let mut adaptive_count: u32 = 0;
     let mut last_qdisc_check: Option<Instant> = None;
+    let mut adaptive_observer = adaptive::RuntimeObserver::default();
+    let mut last_adaptive_persist: Option<Instant> = None;
+    let mut last_adaptive_state = adaptive::PathState::Unknown;
     let mut route_unavailable = false;
     let mut route_monitor = match network::RouteMonitor::new() {
         Ok(monitor) => Some(monitor),
@@ -83,6 +88,10 @@ pub fn run() -> io::Result<()> {
                     last_vowifi_probe = None;
                     last_vowifi_active = false;
                     last_qdisc_check = None;
+                    adaptive_observer.clear();
+                    adaptive::clear_runtime_state();
+                    last_adaptive_persist = None;
+                    last_adaptive_state = adaptive::PathState::Unknown;
                 }
 
                 // Keep the low-frequency timeout as a safety net, but let a
@@ -208,6 +217,33 @@ pub fn run() -> io::Result<()> {
                 logging::log_print(&format!("[WARN] qdisc reconciliation failed: {error}"));
             }
             last_qdisc_check = Some(Instant::now());
+        }
+
+        // Observe path health without changing network policy. The observer
+        // reuses daemon-loop intervals, so it never sleeps inside this loop.
+        if new_mode != IfaceMode::Unknown {
+            if let Some(state) = adaptive_observer.tick(&iface) {
+                if state.stable_state != last_adaptive_state {
+                    logging::log_print(&format!(
+                        "[INFO] Adaptive observer: {:?} -> {:?} (confidence={})",
+                        last_adaptive_state, state.stable_state, state.latest.confidence
+                    ));
+                    last_adaptive_state = state.stable_state;
+                }
+
+                let should_persist = last_adaptive_persist
+                    .map(|saved| saved.elapsed() >= Duration::from_secs(ADAPTIVE_STATE_PERSIST))
+                    .unwrap_or(true);
+                if should_persist {
+                    if let Err(error) = adaptive::persist_runtime_state(&state) {
+                        logging::log_print(&format!(
+                            "[WARN] adaptive observer state persist failed: {error}"
+                        ));
+                    } else {
+                        last_adaptive_persist = Some(Instant::now());
+                    }
+                }
+            }
         }
 
         // Adaptive polling
