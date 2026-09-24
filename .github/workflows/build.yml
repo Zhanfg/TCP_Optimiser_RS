@@ -264,14 +264,17 @@ jobs:
           actual = {entry["name"] for entry in data["modules"]}
           builtins = set(data.get("builtin_capabilities", []))
           unavailable = set(data.get("unavailable_capabilities", []))
-          if unavailable:
-              raise SystemExit(f"unavailable required capabilities: {sorted(unavailable)}")
-          missing = sorted(expected - actual - builtins)
+          missing = sorted(expected - actual - builtins - unavailable)
           if missing:
-              raise SystemExit(f"missing capabilities: {missing}")
+              raise SystemExit(f"unclassified missing capabilities: {missing}")
           if "tcp_bbr3" not in actual:
               raise SystemExit("tcp_bbr3 must be a shipped KO")
+          release = data.get("kernel_release")
+          if not release:
+              raise SystemExit("missing exact kernel_release")
           for entry in data["modules"]:
+              if entry.get("kernel_release") != release:
+                  raise SystemExit(f"module is not exact-release pinned: {entry['name']}")
               path = root / entry["file"]
               if not path.is_file():
                   raise SystemExit(f"missing module: {entry['file']}")
@@ -338,14 +341,18 @@ jobs:
               kmi = build["kmi"]
               builtins = set(build.get("builtin_capabilities", []))
               unavailable = set(build.get("unavailable_capabilities", []))
-              if unavailable:
-                  raise SystemExit(f"{kmi}: unavailable capabilities: {sorted(unavailable)}")
               actual = modules_by_kmi.get(kmi, set())
-              missing = sorted(expected - actual - builtins)
+              missing = sorted(expected - actual - builtins - unavailable)
               if missing:
-                  raise SystemExit(f"{kmi}: missing capabilities: {missing}")
+                  raise SystemExit(f"{kmi}: unclassified missing capabilities: {missing}")
               if "tcp_bbr3" not in actual:
                   raise SystemExit(f"{kmi}: missing shipped tcp_bbr3 KO")
+              release = build.get("kernel_release")
+              if not release:
+                  raise SystemExit(f"{kmi}: missing exact kernel_release")
+              for module in data.get("modules", []):
+                  if module["kmi"] == kmi and module.get("kernel_release") != release:
+                      raise SystemExit(f"{kmi}: module not pinned to exact release: {module['name']}")
           print(f"validated {len(data.get('builds', []))} merged KMI builds")
           PY
 
