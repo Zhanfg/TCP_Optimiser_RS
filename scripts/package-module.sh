@@ -33,6 +33,9 @@ for ABI in arm64-v8a armeabi-v7a x86_64; do
 done
 
 cp -a "$REPO_ROOT/webroot" "$STAGE/webroot"
+if [ -d "$REPO_ROOT/kernel_modules" ] && [ -f "$REPO_ROOT/kernel_modules/manifest.json" ]; then
+  cp -a "$REPO_ROOT/kernel_modules" "$STAGE/kernel_modules"
+fi
 for FILE in module.prop customize.sh service.sh post-fs-data.sh uninstall.sh LICENSE; do
   install -Dm644 "$REPO_ROOT/$FILE" "$STAGE/$FILE"
 done

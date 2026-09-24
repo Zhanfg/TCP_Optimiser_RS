@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "targets": {
+    "android12-5.10": {
+      "tag": "android12-5.10-2026-07_r1",
+      "sha1": "b14525331e0d5d335b037d6ed17d40424ed47b0a",
+      "kernel_bid": "15876360",
+      "artifact_target": "kernel_aarch64"
+    },
+    "android13-5.15": {
+      "tag": "android13-5.15-2026-06_r4",
+      "sha1": "91eb7ccd387528ff53ff01490790097d93c7186f",
+      "kernel_bid": "15936213",
+      "artifact_target": "kernel_aarch64"
+    },
+    "android14-6.1": {
+      "tag": "android14-6.1-2026-06_r11",
+      "sha1": "178dde21c3a9229e25b53f0aee2da17ac436025b",
+      "kernel_bid": "16371392",
+      "artifact_target": "kernel_aarch64"
+    },
+    "android15-6.6": {
+      "tag": "android15-6.6-2026-07_r9",
+      "sha1": "ce3170e88ddc0c1f321d444eaf0203d2706b7131",
+      "kernel_bid": "16371391",
+      "artifact_target": "kernel_aarch64"
+    }
+  }
+}

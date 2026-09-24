@@ -42,6 +42,35 @@ pub struct TcpConnInfo {
     pub samples: usize,
 }
 
+#[derive(Debug, Serialize)]
+pub struct StatsSnapshot {
+    pub active_iface: String,
+    pub tcp: Option<TcpCounters>,
+    pub iface: Option<IfaceBytes>,
+    pub sock: Option<SockStat>,
+    pub established: u32,
+    pub dns: Option<Vec<DnsServer>>,
+    pub conn_info: Option<TcpConnInfo>,
+}
+
+pub fn stats_snapshot(active_iface: &str, include_details: bool) -> io::Result<StatsSnapshot> {
+    Ok(StatsSnapshot {
+        active_iface: active_iface.to_string(),
+        tcp: fs::read_to_string("/proc/net/snmp")
+            .and_then(|content| parse_tcp_snmp(&content))
+            .ok(),
+        iface: fs::read_to_string("/proc/net/dev")
+            .and_then(|content| parse_iface_bytes(&content, active_iface))
+            .ok(),
+        sock: fs::read_to_string("/proc/net/sockstat")
+            .and_then(|content| parse_sockstat(&content))
+            .ok(),
+        established: established_conns(),
+        dns: include_details.then(dns_servers),
+        conn_info: include_details.then(tcp_conn_info).flatten(),
+    })
+}
+
 /// Single-call stats: read /proc/net/{snmp,dev,sockstat} in one batch
 #[derive(Debug, Serialize)]
 pub struct NetworkSnapshot {
@@ -51,7 +80,10 @@ pub struct NetworkSnapshot {
     pub algorithm: String,
     pub default_qdisc: String,
     pub available_algorithms: Vec<String>,
+    pub bundled_qdiscs: Vec<String>,
     pub proxy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_state: Option<crate::proxy::ProxySnapshot>,
     pub hosts: String,
     pub init_windows: Vec<u32>,
     pub tcp: Option<TcpCounters>,
@@ -60,21 +92,45 @@ pub struct NetworkSnapshot {
     pub established: Option<u32>,
     pub dns: Option<Vec<DnsServer>>,
     pub conn_info: Option<TcpConnInfo>,
-    pub verification: crate::policy::VerificationSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification: Option<crate::policy::VerificationSnapshot>,
 }
 
 /// Take a full network snapshot with minimal syscalls
-pub fn network_snapshot(active_iface: &str, include_stats: bool) -> io::Result<NetworkSnapshot> {
+pub fn network_snapshot(
+    active_iface: &str,
+    include_stats: bool,
+    include_details: bool,
+    include_verification: bool,
+) -> io::Result<NetworkSnapshot> {
+    let proxy_state = include_details.then(crate::proxy::detect_proxy_snapshot);
+    let proxy_label = proxy_state
+        .as_ref()
+        .map(|state| state.label.clone())
+        .unwrap_or_else(|| "deferred".to_string());
+
     Ok(NetworkSnapshot {
         build: crate::build_info::current(),
         active_iface: active_iface.to_string(),
         module_active: crate::daemon::is_running(),
         algorithm: crate::sysctl::current_algorithm().unwrap_or_else(|_| "unknown".to_string()),
         default_qdisc: crate::sysctl::default_qdisc().unwrap_or_else(|_| "unknown".to_string()),
-        available_algorithms: crate::sysctl::available_algorithms().unwrap_or_default(),
-        proxy: crate::proxy::detect_proxy().label().to_string(),
-        hosts: crate::proxy::detect_hosts().key(),
-        init_windows: crate::network::get_initcwnd_initrwnd().unwrap_or_default(),
+        available_algorithms: crate::kernel_module::augment_algorithms(
+            crate::sysctl::available_algorithms().unwrap_or_default(),
+        ),
+        bundled_qdiscs: crate::kernel_module::bundled_qdiscs(),
+        proxy: proxy_label,
+        proxy_state,
+        hosts: if include_details {
+            crate::proxy::detect_hosts().key()
+        } else {
+            "deferred".to_string()
+        },
+        init_windows: if include_verification {
+            crate::network::get_initcwnd_initrwnd().unwrap_or_default()
+        } else {
+            Vec::new()
+        },
         tcp: include_stats
             .then(|| {
                 fs::read_to_string("/proc/net/snmp")
@@ -97,9 +153,11 @@ pub fn network_snapshot(active_iface: &str, include_stats: bool) -> io::Result<N
             })
             .flatten(),
         established: include_stats.then(established_conns),
-        dns: include_stats.then(dns_servers),
-        conn_info: include_stats.then(tcp_conn_info).flatten(),
-        verification: crate::policy::verify_policy(active_iface),
+        dns: (include_stats && include_details).then(dns_servers),
+        conn_info: (include_stats && include_details)
+            .then(tcp_conn_info)
+            .flatten(),
+        verification: include_verification.then(|| crate::policy::verify_policy(active_iface)),
     })
 }
 
@@ -220,18 +278,19 @@ fn parse_u64(value: &str, name: &str) -> io::Result<u64> {
     })
 }
 
-/// Get established connections count via ss
+/// Get established TCP connection count without spawning `ss`.
 fn established_conns() -> u32 {
-    Command::new("ss")
-        .args(["-Htn", "state", "established"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|o| {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            stdout.lines().count() as u32
+    ["/proc/net/tcp", "/proc/net/tcp6"]
+        .iter()
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .map(|content| {
+            content
+                .lines()
+                .skip(1)
+                .filter(|line| line.split_whitespace().nth(3) == Some("01"))
+                .count() as u32
         })
-        .unwrap_or(0)
+        .sum()
 }
 
 /// Get DNS servers from system properties

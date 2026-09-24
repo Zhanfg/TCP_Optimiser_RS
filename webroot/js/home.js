@@ -1,6 +1,6 @@
 import { exec, toast } from './kernelsu.js';
 import I18N from './i18n.js';
-import { get_active_iface, get_active_algorithm, getInitcwndInitrwndValue, getModuleActiveState, getDefaultQdisc, getProxyStatus, getHostsStatus, getQdiscCapabilities, getRuntimeSnapshot, repairRuntimePolicy, formatLocalDateTime } from './common.js';
+import { get_active_iface, get_active_algorithm, getInitcwndInitrwndValue, getModuleActiveState, getDefaultQdisc, getProxyStatus, getHostsStatus, getRuntimeSnapshot, repairRuntimePolicy, formatLocalDateTime } from './common.js';
 import router_state from './router.js';
 import { ALL_ALGOS, getAlgorithmDescription, getQdiscDescription } from './capabilities.js';
 import { haptic, setAnimatedText } from './motion.js';
@@ -8,6 +8,27 @@ import { haptic, setAnimatedText } from './motion.js';
 let _lastAlgoSet = '';
 let _lastActiveAlgo = '';
 let _lastEnabled = false;
+let _detailRefreshPromise = null;
+
+async function refreshHomeDetails(force = false) {
+	if (_detailRefreshPromise) return _detailRefreshPromise;
+	_detailRefreshPromise = Promise.all([
+		getProxyStatus(force),
+		getHostsStatus(force),
+	]).then(([proxy, hosts]) => {
+		router_state.homePageParams.proxy_status = proxy?.status || 'unknown';
+		router_state.homePageParams.proxy_info = proxy || null;
+		router_state.homePageParams.hosts_status = hosts || 'unknown';
+		if (!router_state.isInitializing && router_state.current_active_page === 'home') {
+			updateHomeUI();
+		}
+	}).catch(error => {
+		console.warn('Deferred home details unavailable:', error);
+	}).finally(() => {
+		_detailRefreshPromise = null;
+	});
+	return _detailRefreshPromise;
+}
 
 export async function updateModuleStatus(force = false) {
 	try {
@@ -19,32 +40,30 @@ export async function updateModuleStatus(force = false) {
 
 		let snapshot = null;
 		try {
-			snapshot = await getRuntimeSnapshot(force);
+			const includeVerification = force || !router_state.verification;
+			snapshot = await getRuntimeSnapshot(force, false, false, includeVerification);
 		} catch (error) {
 			console.warn('Unified runtime snapshot unavailable, using compatibility probes:', error);
 		}
 
-		let running, iface, algo, initcwndInitrwnd, defaultQdisc, hosts;
-		const [proxy, qdiscCapabilities] = await Promise.all([
-			getProxyStatus(force), getQdiscCapabilities(force),
-		]);
+		let running, iface, algo, initcwndInitrwnd, defaultQdisc;
 		if (snapshot) {
 			running = snapshot.module_active;
 			iface = snapshot.active_iface;
 			algo = snapshot.algorithm;
-			initcwndInitrwnd = snapshot.init_windows || [];
+			initcwndInitrwnd = snapshot.init_windows?.length
+				? snapshot.init_windows
+				: router_state.homePageParams.active_InitcwndInitrwndValue;
 			defaultQdisc = snapshot.default_qdisc;
-			hosts = snapshot.hosts || 'unknown';
 			router_state.available_algorithms = snapshot.available_algorithms || [];
 			router_state.runtimeSnapshot = snapshot;
-			router_state.verification = snapshot.verification;
+			if (snapshot.verification) router_state.verification = snapshot.verification;
 		} else {
-			[running, iface, algo, initcwndInitrwnd, defaultQdisc, hosts] = await Promise.all([
+			[running, iface, algo, initcwndInitrwnd, defaultQdisc] = await Promise.all([
 				getModuleActiveState(), get_active_iface(), get_active_algorithm(),
-				getInitcwndInitrwndValue(), getDefaultQdisc(), getHostsStatus(),
+				getInitcwndInitrwndValue(), getDefaultQdisc(),
 			]);
 			router_state.runtimeSnapshot = null;
-			router_state.verification = null;
 		}
 
 		router_state.homePageParams.module_status = running ? "Enabled" : "Disabled";
@@ -54,10 +73,15 @@ export async function updateModuleStatus(force = false) {
 		router_state.homePageParams.active_algorithm = algo || "Unknown";
 		router_state.homePageParams.active_InitcwndInitrwndValue = initcwndInitrwnd;
 		router_state.homePageParams.default_qdisc = defaultQdisc;
-		router_state.homePageParams.proxy_status = proxy?.status || 'unknown';
-		router_state.homePageParams.proxy_info = proxy || null;
-		router_state.homePageParams.hosts_status = hosts;
-		router_state.qdiscCapabilities = qdiscCapabilities;
+
+		// Proxy/Hosts discovery is intentionally decoupled from the critical
+		// status path. It can scan many processes and firewall rules, so never
+		// block first paint or normal 10-second status refreshes on it.
+		if (force) {
+			await refreshHomeDetails(true);
+		} else if (router_state.current_active_page === 'home') {
+			void refreshHomeDetails(false);
+		}
 	} catch (error) {
 		console.error('Error updating status:', error);
 	}
@@ -262,7 +286,7 @@ function proxyDetail(status, info = {}) {
 		I18N.t('detail_proxy_vpn'),
 	], I18N.t('detail_live_device'));
 
-	const transparent = status === 'tproxy' || status.endsWith('_tproxy');
+	const transparent = Boolean(info?.transparent) || status === 'tproxy' || status.endsWith('_tproxy');
 	const family = status.replace(/_tproxy$/, '');
 	const names = {
 		mihomo: 'Mihomo', clash: 'Clash', 'sing-box': 'sing-box',
@@ -280,10 +304,18 @@ function proxyDetail(status, info = {}) {
 		lines.push(I18N.t('detail_proxy_package_module'));
 	}
 	if (coreName) lines.push(I18N.t('detail_proxy_core', { name: coreName }));
+	if (info?.mode && !['none', 'NONE', 'process', 'PROCESS', 'unknown', 'UNKNOWN'].includes(info.mode)) {
+		lines.push(I18N.t('detail_proxy_mode', { mode: info.mode }));
+	}
+	if (info?.virtualIface) lines.push(I18N.t('detail_proxy_iface', { name: info.virtualIface }));
 	lines.push(info?.coreVersion
 		? I18N.t('detail_proxy_version', { version: info.coreVersion })
 		: I18N.t('detail_proxy_version_unknown'));
-	if (transparent) lines.push(I18N.t('detail_proxy_tproxy'));
+	if (info?.tproxy || status === 'tproxy' || status.endsWith('_tproxy')) {
+		lines.push(I18N.t('detail_proxy_tproxy'));
+	} else if (transparent) {
+		lines.push(I18N.t('detail_proxy_transparent'));
+	}
 	return detailBlock(primary, lines, I18N.t('detail_proxy_note'));
 }
 
@@ -330,7 +362,11 @@ export function updateHomeUI() {
 	};
 	const proxyEl = document.getElementById('proxy-value');
 	const proxyCard = document.getElementById('proxy-card');
-	const coreLabel = proxyLabel[p.proxy_status] || p.proxy_info?.coreName || p.proxy_status;
+	const baseCoreLabel = p.proxy_info?.coreName || proxyLabel[p.proxy_status] || p.proxy_status;
+	const proxyMode = p.proxy_info?.mode;
+	const coreLabel = ['TPROXY', 'TUN', 'MIXED'].includes(proxyMode)
+		? `${baseCoreLabel} · ${proxyMode}`
+		: baseCoreLabel;
 	const managerLabel = p.proxy_info?.appName;
 	const hasDistinctManager = managerLabel && p.proxy_info?.coreName
 		&& managerLabel.toLowerCase() !== p.proxy_info.coreName.toLowerCase();
@@ -413,6 +449,16 @@ export async function initHome() {
 				} catch (e) {
 					showDetail(I18N.t('home_hosts'), cardLongDesc(id));
 				}
+			} else if (id === 'proxy') {
+				try {
+					const proxy = await getProxyStatus(true, true);
+					router_state.homePageParams.proxy_status = proxy?.status || 'unknown';
+					router_state.homePageParams.proxy_info = proxy || null;
+					updateHomeUI();
+				} catch (error) {
+					console.warn('Detailed proxy probe failed:', error);
+				}
+				showDetail(I18N.t('home_proxy'), cardLongDesc(id));
 			} else {
 				showDetail(I18N.t('home_' + id.replace('-', '_')), cardLongDesc(id));
 			}

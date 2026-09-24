@@ -3,7 +3,7 @@ import { haptic } from './motion.js';
 import I18N from './i18n.js';
 import router_state from './router.js';
 import { addLog } from './logs.js';
-import { fetchIsConfigFile, getDefaultQdisc, getQdiscCapabilities, setDefaultQdisc } from './common.js';
+import { fetchIsConfigFile, getDefaultQdisc, getNetworkProfile, getQdiscCapabilities, setDefaultQdisc } from './common.js';
 import { ALL_ALGOS, ALL_QDISCS, getAlgorithmDescription, getQdiscDescription } from './capabilities.js';
 import { setDynamicColorEnabled, setThemeMode } from './theme.js';
 
@@ -168,6 +168,72 @@ function algorithmMarkerCommand(dir, prefix, algorithm) {
 	return `touch ${selected} && for f in ${shellQuote(dir)}/${prefix}_*; do [ "$f" = ${selected} ] || rm -f "$f"; done`;
 }
 
+async function initAutoProfile() {
+	const toggle = document.getElementById('auto-profile-toggle');
+	const summary = document.getElementById('auto-profile-summary');
+	const refreshBtn = document.getElementById('auto-profile-refresh-btn');
+	if (!toggle || !summary) return;
+
+	const render = (profile) => {
+		toggle.checked = profile.auto_tuning_enabled !== false;
+		const iface = profile.active_iface || I18N.t('home_status_unknown');
+		const mtu = Number.isFinite(profile.iface_mtu) ? profile.iface_mtu : '—';
+		const proxyFamily = profile.proxy?.family || 'none';
+		const proxyMode = profile.proxy?.mode || 'none';
+		const buffers = Math.round((profile.recommendations?.socket_buffer_floor || 0) / 1048576);
+		const qdiscMode = profile.qdisc_policy === 'per_algorithm'
+			? I18N.t('settings_qdisc_auto')
+			: I18N.t('settings_qdisc_manual');
+		summary.textContent = I18N.t('settings_auto_profile_state', {
+			iface,
+			mtu,
+			proxy: proxyFamily === 'none' ? I18N.t('home_proxy_none') : `${proxyFamily} / ${proxyMode}`,
+			buffers: buffers || '—',
+			qdisc: qdiscMode,
+		});
+	};
+
+	const load = async (refresh = false, auto = null) => {
+		try {
+			const profile = await getNetworkProfile(refresh, auto);
+			render(profile);
+			return profile;
+		} catch (error) {
+			console.error('Failed to load auto network profile:', error);
+			summary.textContent = I18N.t('settings_auto_profile_unavailable');
+			return null;
+		}
+	};
+
+	await load(false);
+	toggle.addEventListener('change', async () => {
+		toggle.disabled = true;
+		const enabled = toggle.checked;
+		const profile = await load(true, enabled);
+		if (!profile) toggle.checked = !enabled;
+		else {
+			const dir = router_state.moduleInformation.moduleDir;
+			await exec(`touch ${shellQuote(`${dir}/force_apply`)}`).catch(() => {});
+			toast(I18N.t(enabled ? 'toast_auto_profile_on' : 'toast_auto_profile_off'));
+			haptic('selection');
+		}
+		toggle.disabled = false;
+	});
+
+	refreshBtn?.addEventListener('click', async () => {
+		refreshBtn.disabled = true;
+		try {
+			await load(true);
+			const dir = router_state.moduleInformation.moduleDir;
+			await exec(`touch ${shellQuote(`${dir}/force_apply`)}`).catch(() => {});
+			toast(I18N.t('toast_auto_profile_refreshed'));
+			haptic('success');
+		} finally {
+			refreshBtn.disabled = false;
+		}
+	});
+}
+
 function initThemeSettings() {
 	const savedMode = localStorage.getItem('tcp_themeMode') || 'auto';
 
@@ -198,6 +264,7 @@ export async function initSettings() {
 	const forceApplyBtn = document.getElementById('force-apply-btn');
 
 	initThemeSettings();
+	await initAutoProfile();
 
 	// Language selector
 	const savedLang = localStorage.getItem('tcp_lang') || 'en';
@@ -313,6 +380,36 @@ export async function initSettings() {
 			total: ALL_QDISCS.length,
 		});
 		qdiscContainer.innerHTML = '';
+		const dir = router_state.moduleInformation.moduleDir;
+		let hasManualQdisc = false;
+		try {
+			const { stdout } = await exec(`[ -s ${shellQuote(`${dir}/qdisc`)} ] && echo manual || echo auto`);
+			hasManualQdisc = stdout.trim() === 'manual';
+		} catch (error) {}
+		const autoChip = document.createElement('button');
+		autoChip.className = 'algo-chip';
+		autoChip.dataset.qdisc = 'auto';
+		autoChip.dataset.capability = 'supported';
+		autoChip.textContent = I18N.t('settings_qdisc_auto');
+		autoChip.title = I18N.t('settings_qdisc_auto_desc');
+		if (!hasManualQdisc) autoChip.classList.add('selected');
+		autoChip.addEventListener('click', async () => {
+			if (autoChip.classList.contains('selected')) return;
+			try {
+				await exec(`rm -f ${shellQuote(`${dir}/qdisc`)} && touch ${shellQuote(`${dir}/force_apply`)}`);
+				qdiscContainer.querySelectorAll('.algo-chip.selected').forEach(chip => chip.classList.remove('selected'));
+				autoChip.classList.add('selected');
+				const description = document.getElementById('qdisc-description');
+				if (description) description.textContent = I18N.t('settings_qdisc_auto_desc');
+				addLog('Global qdisc mode changed: auto/per-algorithm');
+				toast(I18N.t('toast_qdisc_auto'));
+				haptic('success');
+			} catch (error) {
+				console.error('Failed to enable automatic qdisc:', error);
+				toast(I18N.t('toast_error'));
+			}
+		});
+		qdiscContainer.appendChild(autoChip);
 		ALL_QDISCS.forEach(q => {
 			const state = qdiscCapabilities.find(item => item.name === q)?.state || 'unknown';
 			const chip = document.createElement('button');
@@ -334,7 +431,7 @@ export async function initSettings() {
 				mark.setAttribute('aria-hidden', 'true');
 				chip.appendChild(mark);
 			}
-			if (q === currentQdisc) chip.classList.add('selected');
+			if (hasManualQdisc && q === currentQdisc) chip.classList.add('selected');
 			chip.addEventListener('click', async () => {
 				if (state !== 'supported') {
 					toast(`${q}: ${getQdiscDescription(q, I18N.currentLang)}`);
@@ -358,7 +455,11 @@ export async function initSettings() {
 			qdiscContainer.appendChild(chip);
 		});
 		const description = document.getElementById('qdisc-description');
-		if (description && currentQdisc) description.textContent = getQdiscDescription(currentQdisc, I18N.currentLang);
+		if (description) {
+			description.textContent = hasManualQdisc && currentQdisc
+				? getQdiscDescription(currentQdisc, I18N.currentLang)
+				: I18N.t('settings_qdisc_auto_desc');
+		}
 	}
 
 	// Preset management

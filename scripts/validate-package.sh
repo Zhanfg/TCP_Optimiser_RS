@@ -39,6 +39,50 @@ unzip -q "$ARCHIVE" -d "$EXTRACTED"
 openssl pkeyutl -verify -pubin -rawin -inkey keys/module-signing-public.pem \
   -in "$EXTRACTED/checksums.sha256" -sigfile "$EXTRACTED/checksums.sig"
 (cd "$EXTRACTED" && sha256sum -c checksums.sha256)
+
+if [ -f "$EXTRACTED/kernel_modules/manifest.json" ]; then
+  python3 - "$EXTRACTED/kernel_modules" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+data = json.loads((root / "manifest.json").read_text())
+if data.get("schema") != 1:
+    raise SystemExit("unsupported kernel module manifest schema")
+
+referenced = set()
+identities = set()
+for entry in data.get("modules", []):
+    relative = Path(entry["file"])
+    if relative.is_absolute() or ".." in relative.parts:
+        raise SystemExit(f"unsafe kernel module path: {entry['file']}")
+    identity = (entry["name"], entry["kmi"], entry["arch"])
+    if identity in identities:
+        raise SystemExit(f"duplicate kernel module identity: {identity}")
+    identities.add(identity)
+    path = root / relative
+    if not path.is_file():
+        raise SystemExit(f"missing kernel module: {entry['file']}")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest.lower() != entry["sha256"].lower():
+        raise SystemExit(f"kernel module hash mismatch: {entry['file']}")
+    referenced.add(relative.as_posix())
+
+actual = {
+    path.relative_to(root).as_posix()
+    for path in root.glob("**/*.ko")
+}
+if actual != referenced:
+    missing = sorted(referenced - actual)
+    extra = sorted(actual - referenced)
+    raise SystemExit(f"kernel module manifest mismatch: missing={missing} extra={extra}")
+if not referenced:
+    raise SystemExit("kernel module manifest contains no modules")
+print(f"validated {len(referenced)} packaged kernel modules")
+PY
+fi
 cmp "$EXTRACTED/webroot/index.html" webroot/index.html
 cmp "$EXTRACTED/webroot/js/common.js" webroot/js/common.js
 cmp "$EXTRACTED/webroot/js/settings.js" webroot/js/settings.js

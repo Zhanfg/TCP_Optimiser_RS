@@ -152,34 +152,63 @@ function rustBinaryCommand(marker, subcommand) {
 	const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
 	return `# ${marker}
 moddir=${shellQuote(dir)}
-case "$(getprop ro.product.cpu.abi 2>/dev/null)" in
-	arm64-v8a) rust_abi=arm64-v8a ;;
-	armeabi-v7a|armeabi) rust_abi=armeabi-v7a ;;
-	x86_64) rust_abi=x86_64 ;;
-	*) exit 126 ;;
-esac
-rust_bin="$moddir/bin/$rust_abi/tcp_optimiser"
+rust_bin="$moddir/bin/tcp_optimiser"
+if [ ! -x "$rust_bin" ]; then
+	case "$(getprop ro.product.cpu.abi 2>/dev/null)" in
+		arm64-v8a) rust_abi=arm64-v8a ;;
+		armeabi-v7a|armeabi) rust_abi=armeabi-v7a ;;
+		x86_64) rust_abi=x86_64 ;;
+		*) exit 126 ;;
+	esac
+	rust_bin="$moddir/bin/$rust_abi/tcp_optimiser"
+fi
 [ -x "$rust_bin" ] || exit 127
 export TCP_OPTIMISER_MODULE_DIR="$moddir"
 export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:$PATH"
 exec "$rust_bin" ${subcommand}`;
 }
 
-export async function getRuntimeSnapshot(force = false, includeStats = false) {
+export async function getRuntimeSnapshot(
+	force = false,
+	includeStats = false,
+	includeDetails = false,
+	includeVerification = false,
+) {
 	const now = Date.now();
-	const cacheKey = includeStats ? 'full' : 'runtime';
-	if (!force && runtimeSnapshotCache.has(cacheKey) && now - (runtimeSnapshotCheckedAt.get(cacheKey) || 0) < 1500) {
+	const cacheKey = [
+		includeStats ? 'stats' : 'runtime',
+		includeDetails ? 'details' : 'fast',
+		includeVerification ? 'verify' : 'plain',
+	].join(':');
+	const ttl = includeVerification ? 10000 : (includeDetails ? 5000 : (includeStats ? 1000 : 5000));
+	if (!force && runtimeSnapshotCache.has(cacheKey) && now - (runtimeSnapshotCheckedAt.get(cacheKey) || 0) < ttl) {
 		return runtimeSnapshotCache.get(cacheKey);
 	}
-	const subcommand = includeStats ? 'status' : 'status --runtime-only';
-	const { stdout } = await exec(rustBinaryCommand('runtime-status-snapshot', subcommand));
+	const args = includeStats ? ['sample'] : ['status', '--runtime-only'];
+	if (includeDetails) args.push('--details');
+	if (!includeStats && includeVerification) args.push('--verify');
+	const marker = includeStats ? 'runtime-stats-sample' : 'runtime-status-snapshot';
+	const { stdout } = await exec(rustBinaryCommand(marker, args.join(' ')));
 	const snapshot = JSON.parse(stdout.trim());
-	if (!snapshot || typeof snapshot !== 'object' || !snapshot.active_iface || !snapshot.verification) {
+	if (!snapshot || typeof snapshot !== 'object' || !snapshot.active_iface) {
 		throw new Error('Invalid runtime status payload');
 	}
 	runtimeSnapshotCache.set(cacheKey, snapshot);
 	runtimeSnapshotCheckedAt.set(cacheKey, now);
 	return snapshot;
+}
+
+export async function getNetworkProfile(refresh = false, auto = null) {
+	const args = ['profile'];
+	if (refresh) args.push('--refresh');
+	if (auto === true) args.push('--auto', 'on');
+	else if (auto === false) args.push('--auto', 'off');
+	const { stdout } = await exec(rustBinaryCommand('network-auto-profile', args.join(' ')));
+	const profile = JSON.parse(stdout.trim());
+	if (!profile || typeof profile !== 'object' || profile.schema !== 1) {
+		throw new Error('Invalid network profile payload');
+	}
+	return profile;
 }
 
 export async function repairRuntimePolicy() {
@@ -193,12 +222,50 @@ export async function repairRuntimePolicy() {
 	return record;
 }
 
+let proxyFastStatusCache = null;
+let proxyFastStatusCheckedAt = 0;
 let proxyStatusCache = null;
 let proxyStatusCheckedAt = 0;
 
-export async function getProxyStatus(force = false) {
+function normalizeFastProxySnapshot(snapshot) {
+	const family = snapshot?.family || 'unknown';
+	const mode = snapshot?.mode || 'unknown';
+	let status = family;
+	if (mode === 'tproxy' || mode === 'mixed') {
+		status = family === 'none' || family === 'unknown' ? 'tproxy' : `${family}_tproxy`;
+	} else if (mode === 'tun' && (family === 'none' || family === 'unknown')) {
+		status = 'vpn';
+	}
+	return {
+		status,
+		coreName: snapshot?.label || '',
+		coreVersion: '',
+		packageName: '',
+		appName: '',
+		managerType: '',
+		managerId: '',
+		mode: mode === 'tun' ? 'TUN' : mode.toUpperCase(),
+		transparent: Boolean(snapshot?.transparent),
+		virtualIface: snapshot?.virtual_iface || '',
+		tproxy: Boolean(snapshot?.tproxy),
+	};
+}
+
+export async function getProxyStatus(force = false, detailed = false) {
 	const now = Date.now();
-	if (!force && proxyStatusCache && now - proxyStatusCheckedAt < 30000) return proxyStatusCache;
+	if (!detailed) {
+		if (!force && proxyFastStatusCache && now - proxyFastStatusCheckedAt < 30000) return proxyFastStatusCache;
+		try {
+			const { stdout } = await exec(rustBinaryCommand('proxy-status-fast', 'proxy'));
+			const snapshot = JSON.parse(stdout.trim());
+			proxyFastStatusCache = normalizeFastProxySnapshot(snapshot);
+			proxyFastStatusCheckedAt = now;
+			return proxyFastStatusCache;
+		} catch (error) {
+			console.warn('Rust proxy status unavailable, using detailed compatibility probe:', error);
+		}
+	}
+	if (!force && proxyStatusCache && now - proxyStatusCheckedAt < 60000) return proxyStatusCache;
 	try {
 		const { stdout } = await exec(`# proxy-status-probe
 proc_rows=$(
@@ -352,25 +419,35 @@ printf 'mode=%s\\n' "$mode"`);
 			managerType: fields.manager_type || '',
 			managerId: fields.manager_id || '',
 			mode: fields.mode || '',
+			transparent: fields.mode === 'TPROXY' || fields.mode === 'VPN',
+			virtualIface: '',
+			tproxy: fields.mode === 'TPROXY',
 		};
 		proxyStatusCheckedAt = now;
 		return proxyStatusCache;
 	} catch (error) {
 		console.error('Error detecting proxy:', error);
-		proxyStatusCache = { status: 'unknown', coreName: '', coreVersion: '', packageName: '', appName: '', managerType: '', managerId: '', mode: '' };
+		proxyStatusCache = { status: 'unknown', coreName: '', coreVersion: '', packageName: '', appName: '', managerType: '', managerId: '', mode: '', transparent: false, virtualIface: '', tproxy: false };
 		proxyStatusCheckedAt = now - 25000;
 		return proxyStatusCache;
 	}
 }
 
-export async function getHostsStatus() {
+let hostsStatusCache = null;
+let hostsStatusCheckedAt = 0;
+
+export async function getHostsStatus(force = false) {
+	const now = Date.now();
+	if (!force && hostsStatusCache && now - hostsStatusCheckedAt < 60000) return hostsStatusCache;
 	try {
 		const cmd = `hs=/etc/hosts; sz=0; blk=0; [ -f "$hs" ] && sz=$(wc -c < "$hs" 2>/dev/null) && blk=$(grep -cE '^[[:space:]]*(0\\.0\\.0\\.0|127\\.0\\.0\\.1)[[:space:]]+' "$hs" 2>/dev/null); [ -z "$blk" ] && blk=0; [ -d /data/adb/modules/hosts ] && echo "systemless" || [ -n "$(ps -A -o comm= 2>/dev/null | grep -iE 'birdhost')" ] && echo "birdhost" || [ -n "$(ps -A -o comm= 2>/dev/null | grep -iE 'adaway')" ] && echo "adaway" || [ -n "$(ps -A -o comm= 2>/dev/null | grep -iE 'blokada|dns66|netguard')" ] && echo "blocker" || [ "$sz" -gt 200 ] && [ "$blk" -gt 5 ] && echo "blocked:$blk" || [ "$sz" -gt 200 ] && echo "modified" || echo "none"`;
 		const { stdout: result } = await exec(cmd);
-		return result.trim();
+		hostsStatusCache = result.trim() || 'none';
+		hostsStatusCheckedAt = now;
+		return hostsStatusCache;
 	} catch (error) {
 		console.error('Error checking hosts:', error);
-		return 'unknown';
+		return hostsStatusCache || 'unknown';
 	}
 }
 
@@ -391,9 +468,12 @@ current=$(cat /proc/sys/net/core/default_qdisc 2>/dev/null); for q in ${names}; 
 		const byName = new Map(stdout.split('\n')
 			.map(line => line.trim().split(':', 2))
 			.filter(([name, state]) => ALL_QDISCS.includes(name) && ['supported', 'unsupported'].includes(state)));
+		const bundled = new Set(router_state.runtimeSnapshot?.bundled_qdiscs || []);
 		qdiscCapabilityCache = ALL_QDISCS.map(name => ({
 			name,
-			state: ['supported', 'unsupported'].includes(byName.get(name)) ? byName.get(name) : 'unknown',
+			state: bundled.has(name)
+				? 'supported'
+				: (['supported', 'unsupported'].includes(byName.get(name)) ? byName.get(name) : 'unknown'),
 		}));
 	} catch (error) {
 		qdiscCapabilityCache = ALL_QDISCS.map(name => ({ name, state: 'unknown' }));
@@ -407,7 +487,9 @@ export async function setDefaultQdisc(qdisc) {
 	if (capabilities.find(item => item.name === qdisc)?.state !== 'supported') return false;
 	try {
 		const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
-		await exec(`printf '%s\n' ${shellQuote(qdisc)} > /proc/sys/net/core/default_qdisc && printf '%s\n' ${shellQuote(qdisc)} > ${shellQuote(`${dir}/qdisc`)} && touch ${shellQuote(`${dir}/force_apply`)}`);
+		// Persist first. The Rust daemon will load a compatible sch_*.ko when
+		// required, then update both the kernel default and the live interface.
+		await exec(`printf '%s\n' ${shellQuote(qdisc)} > ${shellQuote(`${dir}/qdisc`)} && touch ${shellQuote(`${dir}/force_apply`)}`);
 		return true;
 	} catch (error) {
 		console.error('Error setting default_qdisc:', error);

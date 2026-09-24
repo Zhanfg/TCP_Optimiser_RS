@@ -8,16 +8,18 @@ use std::time::{Duration, Instant};
 use crate::config;
 use crate::logging;
 use crate::network::{self, IfaceMode};
+use crate::profile;
 use crate::proxy;
 use crate::sysctl;
 
 const DEBOUNCE_TIME: u64 = 10;
 const VOWIFI_CONNECT_TIME: u64 = 10;
+const VOWIFI_PROBE_INTERVAL: u64 = 5;
 const ADAPTIVE_FAST_CYCLES: u32 = 3;
 const SLEEP_FAST: u64 = 2;
-const SLEEP_NORMAL: u64 = 5;
-const QDISC_CHECK_WIFI: u64 = 30;
-const QDISC_CHECK_CELLULAR: u64 = 60;
+const SLEEP_NORMAL: u64 = 30;
+const QDISC_CHECK_WIFI: u64 = 60;
+const QDISC_CHECK_CELLULAR: u64 = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedPolicy {
@@ -32,6 +34,11 @@ pub fn run() -> io::Result<()> {
     let _daemon_guard = DaemonGuard::acquire()?;
     logging::ensure_flag();
     reset_description();
+    if let Err(error) = profile::refresh_managed_profile() {
+        logging::log_print(&format!(
+            "[WARN] Auto profile refresh failed at startup: {error}"
+        ));
+    }
     for error in sysctl::apply_base_sysctls() {
         logging::log_print(&format!("[WARN] startup sysctl apply failed: {error}"));
     }
@@ -41,9 +48,20 @@ pub fn run() -> io::Result<()> {
     let mut last_change: Option<Instant> = None;
     let mut wifi_pending_since: Option<Instant> = None;
     let mut wifi_applied = false;
+    let mut last_vowifi_probe: Option<Instant> = None;
+    let mut last_vowifi_active = false;
     let mut adaptive_count: u32 = 0;
     let mut last_qdisc_check: Option<Instant> = None;
     let mut route_unavailable = false;
+    let mut route_monitor = match network::RouteMonitor::new() {
+        Ok(monitor) => Some(monitor),
+        Err(error) => {
+            logging::log_print(&format!(
+                "[WARN] rtnetlink monitor unavailable; using timeout polling: {error}"
+            ));
+            None
+        }
+    };
 
     loop {
         let iface = match network::active_iface() {
@@ -54,6 +72,7 @@ pub fn run() -> io::Result<()> {
                         "[WARN] Network route lost ({e}); policy will be reapplied when it returns"
                     ));
                     route_unavailable = true;
+                    network::clear_cached_active_iface();
                 }
                 if last_mode != IfaceMode::Unknown || !last_iface.is_empty() {
                     last_mode = IfaceMode::Unknown;
@@ -61,12 +80,32 @@ pub fn run() -> io::Result<()> {
                     last_change = None;
                     wifi_pending_since = None;
                     wifi_applied = false;
+                    last_vowifi_probe = None;
+                    last_vowifi_active = false;
                     last_qdisc_check = None;
                 }
-                thread::sleep(Duration::from_secs(SLEEP_NORMAL));
+
+                // Keep the low-frequency timeout as a safety net, but let a
+                // route/link event wake us immediately when connectivity returns.
+                let wait = Duration::from_secs(SLEEP_NORMAL);
+                if let Some(monitor) = route_monitor.as_mut() {
+                    if let Err(error) = monitor.wait(wait) {
+                        logging::log_print(&format!(
+                            "[WARN] rtnetlink monitor failed while offline; reverting to timeout polling: {error}"
+                        ));
+                        route_monitor = None;
+                        thread::sleep(wait);
+                    }
+                } else {
+                    thread::sleep(wait);
+                }
                 continue;
             }
         };
+
+        if iface != last_iface {
+            network::record_active_iface(&iface);
+        }
 
         if route_unavailable {
             logging::log_print(&format!("[INFO] Network route restored on {iface}"));
@@ -84,6 +123,11 @@ pub fn run() -> io::Result<()> {
                     .unwrap_or(true);
             if debounce_elapsed {
                 if force_apply {
+                    if let Err(error) = profile::refresh_managed_profile() {
+                        logging::log_print(&format!(
+                            "[WARN] Forced auto profile refresh failed: {error}"
+                        ));
+                    }
                     for error in sysctl::apply_base_sysctls() {
                         logging::log_print(&format!("[WARN] forced sysctl apply failed: {error}"));
                     }
@@ -93,6 +137,8 @@ pub fn run() -> io::Result<()> {
                     IfaceMode::Cellular => {
                         apply_interface_settings(&iface, IfaceMode::Cellular);
                         last_qdisc_check = Some(Instant::now());
+                        last_vowifi_probe = None;
+                        last_vowifi_active = false;
                     }
                     IfaceMode::WiFi => {
                         if force_apply {
@@ -105,8 +151,14 @@ pub fn run() -> io::Result<()> {
                             wifi_pending_since = Some(Instant::now());
                             last_qdisc_check = None;
                         }
+                        last_vowifi_probe = None;
+                        last_vowifi_active = false;
                     }
-                    IfaceMode::Unknown => last_qdisc_check = None,
+                    IfaceMode::Unknown => {
+                        last_qdisc_check = None;
+                        last_vowifi_probe = None;
+                        last_vowifi_active = false;
+                    }
                 }
                 last_mode = new_mode;
                 last_iface.clone_from(&iface);
@@ -115,18 +167,21 @@ pub fn run() -> io::Result<()> {
             }
         }
 
-        // Unified Wi-Fi apply with VoWiFi detection
-        // Only complete the VoWiFi wait for the interface transition that was
-        // accepted above. Otherwise a rapid wlan0 -> wlan1 handover can reuse
-        // wlan0's timer and apply settings to wlan1 before the debounce ends.
+        // Unified Wi-Fi apply with VoWiFi detection. dumpsys is relatively
+        // expensive on Android, so probe it at a bounded cadence while keeping
+        // the original 10-second wait semantics.
         let current_wifi_transition =
             new_mode == IfaceMode::WiFi && last_mode == IfaceMode::WiFi && iface == last_iface;
         if current_wifi_transition && !wifi_applied {
             let pending_since = wifi_pending_since.get_or_insert_with(Instant::now);
-            let vowifi_active = proxy::wifi_calling_active().unwrap_or(false);
-            if should_apply_wifi(wifi_applied, vowifi_active, pending_since.elapsed()) {
+            if should_probe_vowifi(last_vowifi_probe.map(|probe| probe.elapsed())) {
+                last_vowifi_active = proxy::wifi_calling_active().unwrap_or(false);
+                last_vowifi_probe = Some(Instant::now());
+            }
+
+            if should_apply_wifi(wifi_applied, last_vowifi_active, pending_since.elapsed()) {
                 logging::log_print(&format!(
-                    "[INFO] Applying Wi-Fi settings (VoWiFi={vowifi_active})"
+                    "[INFO] Applying Wi-Fi settings (VoWiFi={last_vowifi_active})"
                 ));
                 apply_interface_settings(&iface, IfaceMode::WiFi);
                 wifi_applied = true;
@@ -135,6 +190,8 @@ pub fn run() -> io::Result<()> {
         } else if new_mode != IfaceMode::WiFi {
             wifi_applied = false;
             wifi_pending_since = None;
+            last_vowifi_probe = None;
+            last_vowifi_active = false;
         }
 
         let policy_active = match new_mode {
@@ -154,7 +211,10 @@ pub fn run() -> io::Result<()> {
         }
 
         // Adaptive polling
-        let sleep_secs = if mode_changed {
+        let wifi_waiting = current_wifi_transition && !wifi_applied;
+        let sleep_secs = if wifi_waiting {
+            SLEEP_FAST
+        } else if mode_changed {
             adaptive_count = ADAPTIVE_FAST_CYCLES;
             SLEEP_FAST
         } else if adaptive_count > 0 {
@@ -164,7 +224,18 @@ pub fn run() -> io::Result<()> {
             SLEEP_NORMAL
         };
 
-        thread::sleep(Duration::from_secs(sleep_secs));
+        let wait = Duration::from_secs(sleep_secs);
+        if let Some(monitor) = route_monitor.as_mut() {
+            if let Err(error) = monitor.wait(wait) {
+                logging::log_print(&format!(
+                    "[WARN] rtnetlink monitor failed; reverting to timeout polling: {error}"
+                ));
+                route_monitor = None;
+                thread::sleep(wait);
+            }
+        } else {
+            thread::sleep(wait);
+        }
     }
 }
 
@@ -256,7 +327,7 @@ fn apply_interface_settings(iface: &str, mode: IfaceMode) {
 }
 
 pub(crate) fn resolve_policy(iface: &str, mode: IfaceMode) -> io::Result<ResolvedPolicy> {
-    let available = sysctl::available_algorithms()?;
+    let available = crate::kernel_module::augment_algorithms(sysctl::available_algorithms()?);
     let algorithm = select_algorithm(mode.prefix(), &available).to_string();
     let cfg = config::get_algo_config(&algorithm);
     let (base_ca, base_ss) = pacing_override().unwrap_or((cfg.pacing_ca, cfg.pacing_ss));
@@ -282,9 +353,53 @@ fn apply_interface_settings_inner(
     mode: IfaceMode,
     allow_connection_kill: bool,
 ) -> io::Result<Vec<String>> {
-    let policy = resolve_policy(iface, mode)?;
-    let cfg = config::get_algo_config(&policy.algorithm);
+    let mut policy = resolve_policy(iface, mode)?;
+    let requested_algorithm = policy.algorithm.clone();
     let mut failures = Vec::new();
+
+    if !sysctl::algo_available(&policy.algorithm).unwrap_or(false) {
+        match crate::kernel_module::ensure_algorithm(&policy.algorithm) {
+            Ok(true) => {
+                let _ = crate::kernel_module::clear_algorithm_unavailable(&policy.algorithm);
+                logging::log_print(&format!(
+                    "[INFO] Loaded kernel module for congestion control {}",
+                    policy.algorithm
+                ));
+            }
+            Ok(false) => {
+                let _ = crate::kernel_module::mark_algorithm_unavailable(&policy.algorithm);
+            }
+            Err(error) => {
+                let _ = crate::kernel_module::mark_algorithm_unavailable(&policy.algorithm);
+                logging::log_print(&format!(
+                    "[WARN] Kernel module load for {} failed: {error}",
+                    policy.algorithm
+                ));
+            }
+        }
+    } else {
+        let _ = crate::kernel_module::clear_algorithm_unavailable(&policy.algorithm);
+    }
+
+    if !sysctl::algo_available(&policy.algorithm).unwrap_or(false) {
+        let native = sysctl::available_algorithms().unwrap_or_default();
+        if let Some(fallback) = runtime_fallback_algorithm(&native) {
+            logging::log_print(&format!(
+                "[WARN] Requested congestion control {requested_algorithm} is unavailable; falling back to {fallback}"
+            ));
+            policy.algorithm = fallback;
+            let cfg = config::get_algo_config(&policy.algorithm);
+            if qdisc_override().is_none() {
+                policy.qdisc = cfg.qdisc.to_string();
+            }
+            if pacing_override().is_none() {
+                (policy.pacing_ca, policy.pacing_ss) =
+                    adjusted_pacing(cfg.pacing_ca, cfg.pacing_ss, policy.wifi_frequency_mhz);
+            }
+        }
+    }
+
+    let cfg = config::get_algo_config(&policy.algorithm);
     logging::log_print(&format!("Selected {}: {}", policy.algorithm, cfg.desc));
     if let Some(frequency) = policy.wifi_frequency_mhz {
         logging::log_print(&format!("Wi-Fi band detected: {frequency} MHz"));
@@ -343,9 +458,18 @@ fn apply_interface_settings_inner(
         && allow_connection_kill
         && config::module_dir().join("kill_connections").exists()
     {
-        logging::log_print(&format!("Killing TCP connections on {iface}"));
-        if let Err(error) = network::kill_connections(iface) {
-            failures.push(format!("Failed to kill TCP connections: {error}"));
+        let proxy_state = proxy::detect_proxy_snapshot();
+        let force_proxy_kill = config::module_dir().join("kill_connections_proxy").exists();
+        if proxy_state.transparent && !force_proxy_kill {
+            logging::log_print(&format!(
+                "[INFO] Preserving existing TCP sessions because transparent proxy mode is active: {} / {}",
+                proxy_state.family, proxy_state.mode
+            ));
+        } else {
+            logging::log_print(&format!("Killing TCP connections on {iface}"));
+            if let Err(error) = network::kill_connections(iface) {
+                failures.push(format!("Failed to kill TCP connections: {error}"));
+            }
         }
     }
 
@@ -356,6 +480,18 @@ fn apply_interface_settings_inner(
     }
 
     Ok(failures)
+}
+
+fn runtime_fallback_algorithm(available: &[String]) -> Option<String> {
+    available
+        .iter()
+        .find(|algorithm| algorithm.as_str() == "cubic")
+        .or_else(|| {
+            available
+                .iter()
+                .find(|algorithm| config::is_known_algorithm(algorithm))
+        })
+        .cloned()
 }
 
 fn adjusted_pacing(base_ca: u32, base_ss: u32, wifi_frequency_mhz: Option<u32>) -> (u32, u32) {
@@ -480,13 +616,19 @@ fn pacing_override() -> Option<(u32, u32)> {
     Some((read("pacing_ca")?, read("pacing_ss")?))
 }
 
+fn should_probe_vowifi(last_probe_elapsed: Option<Duration>) -> bool {
+    last_probe_elapsed
+        .map(|elapsed| elapsed >= Duration::from_secs(VOWIFI_PROBE_INTERVAL))
+        .unwrap_or(true)
+}
+
 fn should_apply_wifi(already_applied: bool, vowifi_active: bool, elapsed: Duration) -> bool {
     !already_applied && (vowifi_active || elapsed >= Duration::from_secs(VOWIFI_CONNECT_TIME))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{adjusted_pacing, qdisc_check_interval, should_apply_wifi};
+    use super::{adjusted_pacing, qdisc_check_interval, should_apply_wifi, should_probe_vowifi};
     use crate::network::IfaceMode;
     use std::time::Duration;
 
@@ -499,14 +641,21 @@ mod tests {
     }
 
     #[test]
+    fn vowifi_probe_is_rate_limited() {
+        assert!(should_probe_vowifi(None));
+        assert!(!should_probe_vowifi(Some(Duration::from_secs(4))));
+        assert!(should_probe_vowifi(Some(Duration::from_secs(5))));
+    }
+
+    #[test]
     fn qdisc_watchdog_uses_interface_specific_intervals() {
         assert_eq!(
             qdisc_check_interval(IfaceMode::WiFi),
-            Duration::from_secs(30)
+            Duration::from_secs(60)
         );
         assert_eq!(
             qdisc_check_interval(IfaceMode::Cellular),
-            Duration::from_secs(60)
+            Duration::from_secs(120)
         );
     }
 

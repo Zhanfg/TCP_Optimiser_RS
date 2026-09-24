@@ -1,0 +1,73 @@
+name: Official GKI prebuilt smoke
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/gki-release-pins.json'
+      - 'scripts/fetch-gki-prebuilt.sh'
+      - 'scripts/smoke-gki-prebuilt.sh'
+      - 'scripts/audit-module-exports.py'
+      - '.github/workflows/gki-prebuilt-smoke.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: gki-prebuilt-smoke-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  official-gki-symvers:
+    name: Official GKI symvers + vermagic (${{ matrix.kmi }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        kmi:
+          - android12-5.10
+          - android13-5.15
+          - android14-6.1
+          - android15-6.6
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install targeted module build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            bison build-essential clang curl flex git kmod libelf-dev libssl-dev \
+            lld llvm pahole python3 rsync
+
+      - name: Validate pinned official GKI symvers and vermagic
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="out/gki-prebuilt-smoke/${{ matrix.kmi }}"
+          start=$(date +%s)
+          bash scripts/smoke-gki-prebuilt.sh "${{ matrix.kmi }}" "$out"
+          elapsed=$(( $(date +%s) - start ))
+          echo "### Official GKI mixed-build: ${{ matrix.kmi }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- seconds: $elapsed" >> "$GITHUB_STEP_SUMMARY"
+          python3 - "$out/validation.json" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          with open(sys.argv[2], "a") as out:
+              out.write(f"- release: {data['kernel_release']}\n")
+              out.write(f"- vermagic match: {data['vermagic_match']}\n")
+              out.write(f"- pinned tag: {data['tag']}\n")
+          PY
+          cat "$out/validation.json"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: official-gki-symvers-${{ matrix.kmi }}
+          path: |
+            out/gki-prebuilt-smoke/${{ matrix.kmi }}/validation.json
+            out/gki-prebuilt-smoke/${{ matrix.kmi }}/export-audit.json
+            out/gki-prebuilt-smoke/${{ matrix.kmi }}/prebuilt/metadata.json
+            out/gki-prebuilt-smoke/${{ matrix.kmi }}/tcpopt_gki_probe.ko
+          if-no-files-found: error
+          retention-days: 14

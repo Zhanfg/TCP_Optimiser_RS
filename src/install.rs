@@ -15,28 +15,45 @@ pub fn run() -> io::Result<()> {
     logging::log_print("Starting module customization (Rust)...");
     let live_dir = config::live_module_dir();
 
-    let available = sysctl::available_algorithms().unwrap_or_else(|error| {
+    let native = sysctl::available_algorithms().unwrap_or_else(|error| {
         logging::log_print(&format!(
             "[WARN] Cannot read congestion algorithms: {error}"
         ));
         vec!["cubic".to_string()]
     });
-    fs::write(staging_dir.join("available_algos"), available.join(" "))?;
+    for algorithm in crate::kernel_module::bundled_algorithms() {
+        let _ = validate_algorithm_loadability(&algorithm);
+    }
+    preflight_bundled_qdiscs();
 
-    let safe_fallback = safe_fallback_algorithm(&available);
-    let default_algo = if available.iter().any(|algo| algo == "bbr") {
-        "bbr"
-    } else {
-        safe_fallback
-    };
+    let available = crate::kernel_module::augment_algorithms(
+        sysctl::available_algorithms().unwrap_or_else(|_| native.clone()),
+    );
+
+    let safe_fallback = safe_fallback_algorithm(&native);
+    let default_algo =
+        if available.iter().any(|algo| algo == "bbr") && validate_algorithm_loadability("bbr") {
+            "bbr"
+        } else {
+            safe_fallback
+        };
     ensure_prefixed_config(&staging_dir, &live_dir, "wlan", default_algo, &available)?;
     ensure_prefixed_config(
         &staging_dir,
         &live_dir,
         "rmnet_data",
-        safe_fallback,
+        default_algo,
         &available,
     )?;
+    validate_prefixed_config(&staging_dir, "wlan", safe_fallback)?;
+    validate_prefixed_config(&staging_dir, "rmnet_data", safe_fallback)?;
+
+    // Rebuild the cache after real module-load preflight so WebUI fallback
+    // data never advertises a bundled algorithm that this device rejected.
+    let available = crate::kernel_module::augment_algorithms(
+        sysctl::available_algorithms().unwrap_or_else(|_| native.clone()),
+    );
+    fs::write(staging_dir.join("available_algos"), available.join(" "))?;
 
     for name in [
         "kill_connections",
@@ -48,9 +65,26 @@ pub fn run() -> io::Result<()> {
         "tcp_fastopen",
         "advanced.conf",
         "debug_mode",
+        "disable_auto_tuning",
+        "kill_connections_proxy",
     ] {
         preserve_exact_config(&staging_dir, &live_dir, name)?;
     }
+    match crate::profile::refresh_managed_profile() {
+        Ok((profile, _)) => logging::log_print(&format!(
+            "Auto profile: iface={} mtu={} proxy={}/{} buffers>={}MiB",
+            profile.active_iface.as_deref().unwrap_or("unavailable"),
+            profile
+                .iface_mtu
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            profile.proxy.family,
+            profile.proxy.mode,
+            profile.recommendations.socket_buffer_floor / 1_048_576,
+        )),
+        Err(error) => logging::log_print(&format!("[WARN] Auto profile failed: {error}")),
+    }
+
     logging::log_print(&format!(
         "Module customization complete (default={default_algo}, algorithms={}).",
         available.join(" ")
@@ -69,6 +103,82 @@ fn safe_fallback_algorithm(available: &[String]) -> &str {
         })
         .map(String::as_str)
         .unwrap_or("cubic")
+}
+
+fn validate_algorithm_loadability(algorithm: &str) -> bool {
+    if sysctl::algo_available(algorithm).unwrap_or(false) {
+        let _ = crate::kernel_module::clear_algorithm_unavailable(algorithm);
+        return true;
+    }
+
+    match crate::kernel_module::ensure_algorithm(algorithm) {
+        Ok(_) if sysctl::algo_available(algorithm).unwrap_or(false) => {
+            let _ = crate::kernel_module::clear_algorithm_unavailable(algorithm);
+            true
+        }
+        Ok(_) => {
+            logging::log_print(&format!(
+                "[WARN] {algorithm} is bundled but did not become available; excluding it"
+            ));
+            let _ = crate::kernel_module::mark_algorithm_unavailable(algorithm);
+            false
+        }
+        Err(error) => {
+            logging::log_print(&format!(
+                "[WARN] {algorithm} preflight load failed: {error}; using a safe fallback"
+            ));
+            let _ = crate::kernel_module::mark_algorithm_unavailable(algorithm);
+            false
+        }
+    }
+}
+
+fn preflight_bundled_qdiscs() {
+    for qdisc in crate::kernel_module::bundled_qdiscs() {
+        match crate::kernel_module::ensure_qdisc(&qdisc) {
+            Ok(true) => {
+                let _ = crate::kernel_module::clear_qdisc_unavailable(&qdisc);
+                logging::log_print(&format!("[INFO] Qdisc preflight passed: {qdisc}"));
+            }
+            Ok(false) => {
+                let _ = crate::kernel_module::mark_qdisc_unavailable(&qdisc);
+                logging::log_print(&format!(
+                    "[WARN] Qdisc {qdisc} is bundled but did not become loadable"
+                ));
+            }
+            Err(error) => {
+                let _ = crate::kernel_module::mark_qdisc_unavailable(&qdisc);
+                logging::log_print(&format!(
+                    "[WARN] Qdisc {qdisc} preflight load failed: {error}"
+                ));
+            }
+        }
+    }
+}
+
+fn validate_prefixed_config(dir: &Path, prefix: &str, fallback: &str) -> io::Result<()> {
+    let Some(selected) = prefixed_files(dir, prefix).into_iter().next() else {
+        return Ok(());
+    };
+    let Some(algorithm) = selected
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix(&format!("{prefix}_")))
+    else {
+        return Ok(());
+    };
+    if validate_algorithm_loadability(algorithm) {
+        return Ok(());
+    }
+
+    for stale in prefixed_files(dir, prefix) {
+        fs::remove_file(stale)?;
+    }
+    fs::write(dir.join(format!("{prefix}_{fallback}")), "")?;
+    logging::log_print(&format!(
+        "[WARN] Replaced unavailable {prefix} algorithm {algorithm} with {fallback}"
+    ));
+    Ok(())
 }
 
 fn prefixed_files(dir: &Path, prefix: &str) -> Vec<PathBuf> {

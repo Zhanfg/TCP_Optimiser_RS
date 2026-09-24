@@ -1,5 +1,9 @@
+use std::fs;
 use std::io;
+use std::os::fd::RawFd;
+use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 /// Network interface mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +37,163 @@ impl IfaceMode {
             IfaceMode::Unknown => "unknown",
         }
     }
+}
+
+/// Lightweight rtnetlink listener used to wake the daemon immediately when
+/// links, addresses, or routes change. The daemon still keeps a long timeout
+/// as a safety net, but no longer needs to spawn `ip` every few seconds.
+pub struct RouteMonitor {
+    fd: RawFd,
+}
+
+impl RouteMonitor {
+    pub fn new() -> io::Result<Self> {
+        const RTMGRP_LINK: u32 = 0x0001;
+        const RTMGRP_IPV4_IFADDR: u32 = 0x0010;
+        const RTMGRP_IPV4_ROUTE: u32 = 0x0040;
+        const RTMGRP_IPV6_IFADDR: u32 = 0x0100;
+        const RTMGRP_IPV6_ROUTE: u32 = 0x0400;
+        const GROUPS: u32 = RTMGRP_LINK
+            | RTMGRP_IPV4_IFADDR
+            | RTMGRP_IPV4_ROUTE
+            | RTMGRP_IPV6_IFADDR
+            | RTMGRP_IPV6_ROUTE;
+
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_NETLINK,
+                libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+                libc::NETLINK_ROUTE,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut address: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+        address.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+        address.nl_pid = 0;
+        address.nl_groups = GROUPS;
+
+        let rc = unsafe {
+            libc::bind(
+                fd,
+                (&address as *const libc::sockaddr_nl).cast::<libc::sockaddr>(),
+                std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+            )
+        };
+        if rc != 0 {
+            let error = io::Error::last_os_error();
+            unsafe {
+                libc::close(fd);
+            }
+            return Err(error);
+        }
+
+        Ok(Self { fd })
+    }
+
+    /// Wait until a relevant network event arrives or the timeout expires.
+    /// Returns true when an event was received, false for a normal timeout.
+    ///
+    /// A single route change often arrives as several netlink datagrams. Drain
+    /// the entire ready queue here so the daemon coalesces the burst into one
+    /// policy pass instead of spinning once per datagram.
+    pub fn wait(&mut self, timeout: Duration) -> io::Result<bool> {
+        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as libc::c_int;
+        let mut poll_fd = libc::pollfd {
+            fd: self.fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+
+        let rc = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
+        if rc < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                return Ok(false);
+            }
+            return Err(error);
+        }
+        if rc == 0 {
+            return Ok(false);
+        }
+
+        if poll_fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            return Err(io::Error::other(format!(
+                "rtnetlink poll failed with revents=0x{:x}",
+                poll_fd.revents
+            )));
+        }
+        if poll_fd.revents & libc::POLLIN == 0 {
+            return Ok(false);
+        }
+
+        let mut buffer = [0u8; 8192];
+        loop {
+            let received = unsafe {
+                libc::recv(
+                    self.fd,
+                    buffer.as_mut_ptr().cast::<libc::c_void>(),
+                    buffer.len(),
+                    libc::MSG_DONTWAIT,
+                )
+            };
+            if received > 0 {
+                continue;
+            }
+            if received == 0 {
+                break;
+            }
+
+            let error = io::Error::last_os_error();
+            match error.kind() {
+                io::ErrorKind::WouldBlock => break,
+                io::ErrorKind::Interrupted => continue,
+                _ => return Err(error),
+            }
+        }
+        Ok(true)
+    }
+}
+
+impl Drop for RouteMonitor {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.fd);
+        }
+    }
+}
+
+pub fn cached_active_iface() -> Option<String> {
+    let value = fs::read_to_string(crate::config::module_dir().join("active_iface")).ok()?;
+    let iface = value.trim();
+    if iface.is_empty()
+        || !iface
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
+        || is_virtual_iface(iface)
+        || !Path::new("/sys/class/net").join(iface).exists()
+    {
+        return None;
+    }
+    Some(iface.to_string())
+}
+
+pub fn fast_active_iface() -> io::Result<String> {
+    cached_active_iface().map(Ok).unwrap_or_else(active_iface)
+}
+
+/// Persist the daemon's latest physical route interface for cheap WebUI
+/// snapshots. The daemon only calls this on an actual interface transition,
+/// avoiding a read-before-write on every steady-state loop.
+pub fn record_active_iface(iface: &str) {
+    let path = crate::config::module_dir().join("active_iface");
+    let _ = fs::write(path, format!("{iface}\n"));
+}
+
+pub fn clear_cached_active_iface() {
+    let _ = fs::remove_file(crate::config::module_dir().join("active_iface"));
 }
 
 /// Get the active network interface name
@@ -177,11 +338,26 @@ pub fn set_qdisc(iface: &str, qdisc: &str) -> io::Result<()> {
     let options = qdisc_options(qdisc);
     let mut args = vec!["qdisc", "replace", "dev", iface, "root", qdisc];
     args.extend_from_slice(options);
-    let first = Command::new("tc").args(&args).output()?;
+    let mut first = Command::new("tc").args(&args).output()?;
+    let mut module_error = None;
+
+    if !first.status.success() {
+        match crate::kernel_module::ensure_qdisc(qdisc) {
+            Ok(true) => {
+                first = Command::new("tc").args(&args).output()?;
+            }
+            Ok(false) => {}
+            Err(error) => module_error = Some(error.to_string()),
+        }
+    }
 
     if !first.status.success() {
         if options.is_empty() {
-            return Err(command_error("tc qdisc replace", &first.stderr));
+            let base = command_error("tc qdisc replace", &first.stderr);
+            return match module_error {
+                Some(error) => Err(io::Error::other(format!("{base}; module load: {error}"))),
+                None => Err(base),
+            };
         }
 
         // Some Android tc builds expose a qdisc but not every optional
@@ -191,9 +367,13 @@ pub fn set_qdisc(iface: &str, qdisc: &str) -> io::Result<()> {
             .output()?;
         if !fallback.status.success() {
             return Err(io::Error::other(format!(
-                "tc qdisc replace failed (tuned: {}; fallback: {})",
+                "tc qdisc replace failed (tuned: {}; fallback: {}{})",
                 String::from_utf8_lossy(&first.stderr).trim(),
-                String::from_utf8_lossy(&fallback.stderr).trim()
+                String::from_utf8_lossy(&fallback.stderr).trim(),
+                module_error
+                    .as_deref()
+                    .map(|error| format!("; module load: {error}"))
+                    .unwrap_or_default()
             )));
         }
     }
