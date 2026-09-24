@@ -203,13 +203,20 @@ PY
   printf '%s\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/config/kernel.release"
   printf '#define UTS_RELEASE "%s"\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/generated/utsrelease.h"
   KBUILD_ARGS+=(KERNELRELEASE="$OFFICIAL_RELEASE")
-  printf 'building exact-release KO bundle for %s (%s)\n' "$GKI_TAG" "$OFFICIAL_RELEASE"
 
   if [[ -n "$SYMVERS_CACHE" && -s "$SYMVERS_CACHE" ]]; then
     install -m 0644 "$SYMVERS_CACHE" "$KERNEL_DIR/Module.symvers"
-    SYMVERS_HIT=1
-    printf 'using cached full exact-release Module.symvers: %s\n' "$SYMVERS_CACHE"
+    printf 'using cached pinned vmlinux.symvers: %s\n' "$SYMVERS_CACHE"
+  else
+    install -m 0644 "$GKI_PREBUILT_DIR/vmlinux.symvers" "$KERNEL_DIR/Module.symvers"
+    if [[ -n "$SYMVERS_CACHE" ]]; then
+      mkdir -p "$(dirname "$SYMVERS_CACHE")"
+      install -m 0644 "$KERNEL_DIR/Module.symvers" "$SYMVERS_CACHE"
+    fi
+    printf 'using pinned official vmlinux.symvers: %s\n' "$GKI_TAG"
   fi
+  SYMVERS_HIT=1
+  printf 'building exact-release KO bundle for %s (%s) without full-kernel LTO\n' "$GKI_TAG" "$OFFICIAL_RELEASE"
 elif [[ "$USE_OFFICIAL_GKI" == "1" ]]; then
   GKI_PREBUILT_DIR="$WORK/gki-prebuilt"
   bash "$REPO_ROOT/scripts/fetch-gki-prebuilt.sh" "$KMI" "$GKI_PREBUILT_DIR"
@@ -461,7 +468,7 @@ fi
 builtin_csv=$(IFS=,; printf '%s' "${BUILTIN_CAPABILITIES[*]-}")
 unavailable_csv=$(IFS=,; printf '%s' "${UNAVAILABLE_CAPABILITIES[*]-}")
 python3 - "$DEST" "$KMI" "$KERNEL_RELEASE" "$KERNEL_REV" "$BBR_SOURCE_REV" \
-  "$builtin_csv" "$unavailable_csv" <<'PY'
+  "$builtin_csv" "$unavailable_csv" "$EXACT_RELEASE_BUNDLE" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -469,8 +476,8 @@ import re
 import sys
 
 root = Path(sys.argv[1])
-kernel_branch, release, kernel_rev, bbr_rev, builtin_csv, unavailable_csv = sys.argv[2:]
-exact_release = "${EXACT_RELEASE_BUNDLE:-0}" == "1"
+kernel_branch, release, kernel_rev, bbr_rev, builtin_csv, unavailable_csv, exact_release_raw = sys.argv[2:]
+exact_release = exact_release_raw == "1"
 module_dir = root / kernel_branch / "aarch64"
 builtin_capabilities = [x for x in builtin_csv.split(",") if x]
 unavailable_capabilities = [x for x in unavailable_csv.split(",") if x]
