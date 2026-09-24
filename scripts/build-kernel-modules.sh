@@ -439,9 +439,33 @@ if [[ "$SYMVERS_HIT" != "1" ]]; then
     KDIR="$KERNEL_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- clean || true
   build_bbr3 0
 elif [[ "$KMI_PREFLIGHT" != "1" ]]; then
-  # Cached accepted classification: compile modular capabilities plus BBRv3.
-  build_in_tree_targets 0
-  build_bbr3 0
+  if [[ "$EXACT_RELEASE_BUNDLE" == "1" ]]; then
+    # First build only the requested modules in warn-only mode. This produces
+    # real object import sets without requiring a full vmlinux/LTO rebuild.
+    build_in_tree_targets 1
+    build_bbr3 1
+    stage_modules "$PREFLIGHT_DIR"
+
+    # Android's published vmlinux.symvers is intentionally KMI-focused. Recover
+    # CRCs for the additional symbols that these exact-release KOs actually
+    # import from the official vmlinux belonging to the same pinned build.
+    expanded_symvers="$WORK/Module.symvers.exact"
+    python3 "$REPO_ROOT/scripts/expand-vmlinux-symvers.py" \
+      "$GKI_PREBUILT_DIR/vmlinux" "$KERNEL_DIR/Module.symvers" \
+      "$PREFLIGHT_DIR" "$expanded_symvers"
+    install -m 0644 "$expanded_symvers" "$KERNEL_DIR/Module.symvers"
+
+    # Warn-only objects can never escape into the final bundle. Rebuild the
+    # allowlisted targets strictly against the recovered exact-release CRC set.
+    clean_target_outputs
+    prepare_bbr_probe
+    build_in_tree_targets 0
+    build_bbr3 0
+  else
+    # Cached accepted classification: compile modular capabilities plus BBRv3.
+    build_in_tree_targets 0
+    build_bbr3 0
+  fi
 fi
 
 python3 "$REPO_ROOT/scripts/audit-module-exports.py" \
