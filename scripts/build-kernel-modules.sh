@@ -470,7 +470,7 @@ import sys
 
 root = Path(sys.argv[1])
 kernel_branch, release, kernel_rev, bbr_rev, builtin_csv, unavailable_csv = sys.argv[2:]
-exact_release = ${EXACT_RELEASE_BUNDLE:-0} == "1"
+exact_release = "${EXACT_RELEASE_BUNDLE:-0}" == "1"
 module_dir = root / kernel_branch / "aarch64"
 builtin_capabilities = [x for x in builtin_csv.split(",") if x]
 unavailable_capabilities = [x for x in unavailable_csv.split(",") if x]
