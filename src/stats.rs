@@ -53,6 +53,31 @@ pub struct StatsSnapshot {
     pub conn_info: Option<TcpConnInfo>,
 }
 
+#[derive(Debug)]
+pub(crate) struct AdaptiveCounters {
+    pub(crate) tcp: Option<TcpCounters>,
+    pub(crate) iface: Option<IfaceBytes>,
+    pub(crate) sock: Option<SockStat>,
+    pub(crate) established: u32,
+    pub(crate) conn_info: Option<TcpConnInfo>,
+}
+
+pub(crate) fn adaptive_counters(active_iface: &str) -> AdaptiveCounters {
+    AdaptiveCounters {
+        tcp: fs::read_to_string("/proc/net/snmp")
+            .and_then(|content| parse_tcp_snmp(&content))
+            .ok(),
+        iface: fs::read_to_string("/proc/net/dev")
+            .and_then(|content| parse_iface_bytes(&content, active_iface))
+            .ok(),
+        sock: fs::read_to_string("/proc/net/sockstat")
+            .and_then(|content| parse_sockstat(&content))
+            .ok(),
+        established: established_conns(),
+        conn_info: tcp_conn_info(),
+    }
+}
+
 pub fn stats_snapshot(active_iface: &str, include_details: bool) -> io::Result<StatsSnapshot> {
     Ok(StatsSnapshot {
         active_iface: active_iface.to_string(),
