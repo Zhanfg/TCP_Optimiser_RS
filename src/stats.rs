@@ -121,6 +121,8 @@ pub struct NetworkSnapshot {
     pub conn_info: Option<TcpConnInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification: Option<crate::policy::VerificationSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive: Option<crate::adaptive::AdaptiveRuntimeState>,
 }
 
 /// Take a full network snapshot with minimal syscalls
@@ -185,6 +187,7 @@ pub fn network_snapshot(
             .then(tcp_conn_info)
             .flatten(),
         verification: include_verification.then(|| crate::policy::verify_policy(active_iface)),
+        adaptive: crate::adaptive::load_runtime_state(active_iface),
     })
 }
 
