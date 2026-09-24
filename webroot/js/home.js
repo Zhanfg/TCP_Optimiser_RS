@@ -87,6 +87,70 @@ export async function updateModuleStatus(force = false) {
 	}
 }
 
+function adaptiveStateLabel(state) {
+	const key = state || 'unknown';
+	return I18N.t(`adaptive_state_${key}`);
+}
+
+function renderAdaptiveObserver() {
+	const adaptive = router_state.runtimeSnapshot?.adaptive;
+	const panel = document.getElementById('adaptive-observer-panel');
+	const badge = document.getElementById('adaptive-state-badge');
+	const latestState = document.getElementById('adaptive-latest-state');
+	const confidence = document.getElementById('adaptive-confidence');
+	const rtt = document.getElementById('adaptive-rtt');
+	const retransmission = document.getElementById('adaptive-retransmission');
+	const queue = document.getElementById('adaptive-queue');
+	const reason = document.getElementById('adaptive-observer-reason');
+	if (!panel || !badge || !latestState || !confidence || !rtt || !retransmission || !queue || !reason) return;
+
+	const latest = adaptive?.latest;
+	const sample = latest?.sample;
+	if (!adaptive || !latest || !sample) {
+		panel.dataset.state = 'unknown';
+		badge.textContent = I18N.t('adaptive_waiting');
+		latestState.textContent = '—';
+		confidence.textContent = '—';
+		rtt.textContent = '—';
+		retransmission.textContent = '—';
+		queue.textContent = '—';
+		reason.textContent = I18N.t('adaptive_waiting_desc');
+		return;
+	}
+
+	const stableKey = adaptive.stable_state || 'unknown';
+	const latestKey = latest.state || 'unknown';
+	panel.dataset.state = stableKey;
+	badge.textContent = stableKey === 'unknown'
+		? I18N.t('adaptive_waiting')
+		: adaptiveStateLabel(stableKey);
+	latestState.textContent = adaptiveStateLabel(latestKey);
+	confidence.textContent = `${latest.confidence ?? 0}%`;
+
+	const currentRtt = Number.isFinite(sample.avg_rtt_ms) ? sample.avg_rtt_ms.toFixed(1) : '—';
+	const baselineRtt = Number.isFinite(adaptive.baseline_rtt_ms) ? adaptive.baseline_rtt_ms.toFixed(1) : '—';
+	rtt.textContent = I18N.t('adaptive_rtt_value', { current: currentRtt, baseline: baselineRtt });
+
+	retransmission.textContent = Number.isFinite(sample.retrans_ratio)
+		? `${(sample.retrans_ratio * 100).toFixed(2)}%`
+		: '—';
+
+	const backlogBytes = sample.qdisc_backlog_bytes;
+	const backlog = Number.isFinite(backlogBytes)
+		? (backlogBytes >= 1000 ? `${(backlogBytes / 1000).toFixed(1)} KB` : `${backlogBytes} B`)
+		: '—';
+	queue.textContent = I18N.t('adaptive_queue_value', {
+		qdisc: sample.qdisc_name || '—',
+		backlog,
+		drops: sample.qdisc_drop_delta ?? 0,
+		overlimits: sample.qdisc_overlimit_delta ?? 0,
+	});
+
+	reason.textContent = stableKey === 'unknown'
+		? I18N.t('adaptive_waiting_desc')
+		: I18N.t(`adaptive_state_desc_${stableKey}`);
+}
+
 function verificationCheckLabel(key) {
 	const known = {
 		interface_mode: 'verification_check_interface',
@@ -398,6 +462,7 @@ export function updateHomeUI() {
 	}
 
 	updateAlgoChips();
+	renderAdaptiveObserver();
 	renderVerification();
 }
 
