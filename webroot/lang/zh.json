@@ -1,18 +1,15 @@
 {
   "app_title": "TCP 优化器",
   "app_subtitle": "网络控制台",
-
   "nav_home": "首页",
   "nav_stats": "统计",
   "nav_settings": "设置",
   "nav_logs": "日志",
-
   "status_loading": "加载中",
   "status_active": "运行中",
   "status_disabled": "已停止",
   "status_inactive": "未激活",
   "status_not_installed": "未安装",
-
   "home_module_status": "模块状态",
   "home_overview_eyebrow": "实时网络状态",
   "home_console_title": "连接总览",
@@ -96,12 +93,10 @@
   "home_telegram": "Telegram",
   "home_author": "作者 fatalcoder524 & axymorrsen",
   "home_about_desc": "基于当前活动网络接口动态切换 TCP 拥塞控制算法，包含 Wi-Fi 与蜂窝网络独立策略、分频段 pacing 调整、qdisc 调优、initcwnd/initrwnd 优化，以及代理/VPN 与 Hosts 状态检测。",
-
   "label_none": "无",
-  "label_dash": "\u2014",
+  "label_dash": "—",
   "label_loading": "加载中...",
   "label_close": "关闭",
-
   "settings_tcp_cc": "TCP 拥塞控制",
   "settings_tcp_cc_summary": "Wi-Fi 与蜂窝网络策略",
   "settings_policy_eyebrow": "策略配置",
@@ -139,7 +134,6 @@
   "settings_mode": "模式",
   "settings_color": "颜色",
   "settings_lang": "语言",
-
   "theme_dark": "深色",
   "theme_light": "浅色",
   "theme_auto": "自动",
@@ -147,7 +141,6 @@
   "dynamic_color_system": "正在使用 Android 系统动态色板",
   "dynamic_color_fallback": "系统色板不可用，正在使用内置颜色",
   "dynamic_color_off": "已关闭，正在使用内置颜色",
-
   "logs_heading": "日志",
   "logs_clear": "清除",
   "logs_empty": "暂无日志",
@@ -156,11 +149,9 @@
   "logs_save_btn": "保存",
   "logs_saved_to": "日志已保存到:",
   "logs_path_placeholder": "/sdcard/Download/tcp_optimiser.log",
-
   "algo_not_supported": "\"{algo}\" 不被此内核支持",
   "algo_active": "{algo} 已支持且当前在用",
   "algo_available": "{algo} 可用",
-
   "toast_settings_applied": "设置已应用！",
   "toast_toggle_connection": "开关连接以生效。",
   "toast_wait_5s": "等待约 5s 生效。",
@@ -178,7 +169,6 @@
   "toast_fetch_congestion_fail": "获取拥塞控制算法出错",
   "toast_fetch_module_fail": "获取模块信息出错",
   "toast_no_congestion_algo": "未找到拥塞控制算法",
-
   "stats_throughput": "吞吐量",
   "stats_download": "下载",
   "stats_upload": "上传",
@@ -196,7 +186,6 @@
   "stats_rtt": "往返时延",
   "stats_dns": "DNS 服务器",
   "stats_dns_summary": "{count} 个服务器",
-
   "settings_presets": "预设配置",
   "settings_presets_summary": "一键应用完整网络策略",
   "settings_export_preset": "导出",
@@ -204,14 +193,12 @@
   "toast_preset_exported": "预设已复制 — 粘贴 JSON 即可导入",
   "toast_preset_imported": "预设 \"{name}\" 已导入",
   "toast_preset_applied": "预设 \"{name}\" 已应用",
-
   "settings_advanced": "高级内核参数",
   "settings_advanced_summary": "具有额外风险的专家控制项",
   "settings_advanced_toggle": "启用高级内核微调",
   "settings_advanced_warn": "直接修改内核参数。存在系统不稳定风险。",
   "settings_appearance_summary": "语言、主题与动态取色",
   "nav_advanced": "高级",
-
   "adv_warning_title": "高级内核微调",
   "adv_warning_body": "你即将启用直接的内核参数修改功能。错误的参数值可能导致网络不稳定、连接失败或系统崩溃。请仅在理解每个参数含义的情况下继续。",
   "adv_warning_banner": "直接修改内核参数。错误的参数值可能导致系统不稳定或数据丢失。",
@@ -221,7 +208,6 @@
   "adv_confirm_done": "我已了解",
   "adv_cancel": "取消",
   "toast_adv_enabled": "高级内核微调已启用",
-
   "bb_title": "基带备份",
   "bb_none_found": "此设备未检测到基带分区。",
   "bb_save_path": "保存路径",
@@ -304,11 +290,35 @@
   "advanced_nf_conntrack_max": "最大连接跟踪数量",
   "advanced_nf_conntrack_tcp_timeout_established": "已建立连接跟踪超时（秒）",
   "advanced_nf_conntrack_tcp_timeout_time_wait": "TIME-WAIT 跟踪超时（秒）",
-
   "debug_title": "调试控制台",
   "debug_toggle": "启用调试模式",
   "debug_desc": "在调试面板显示 WebUI 命令和控制台事件，守护进程事件也会写入 debug.log；启用时显示快捷按钮。",
   "debug_on": "调试模式已启用",
-  "debug_off": "调试模式已关闭"
-
+  "debug_off": "调试模式已关闭",
+  "adaptive_eyebrow": "自适应观测",
+  "adaptive_title": "链路健康",
+  "adaptive_desc": "仅依据 RTT、重传与 qdisc 等被动信号判断链路状态，不会修改任何网络设置。",
+  "adaptive_waiting": "学习中",
+  "adaptive_waiting_desc": "正在积累足够的被动样本，以建立稳定的链路状态判断。",
+  "adaptive_latest_state": "最新样本",
+  "adaptive_confidence": "置信度",
+  "adaptive_rtt": "当前 / 基线 RTT",
+  "adaptive_retransmission": "重传率",
+  "adaptive_queue": "Qdisc 压力",
+  "adaptive_rtt_value": "{current} / {baseline} ms",
+  "adaptive_queue_value": "{qdisc} · {backlog} · 丢包 {drops} · 超限 {overlimits}",
+  "adaptive_state_stable": "稳定",
+  "adaptive_state_bufferbloat": "缓冲膨胀",
+  "adaptive_state_lossy_wireless": "无线丢包",
+  "adaptive_state_high_bdp": "高 BDP",
+  "adaptive_state_congested": "拥塞",
+  "adaptive_state_proxy_constrained": "代理路径受限",
+  "adaptive_state_unknown": "学习中",
+  "adaptive_state_desc_stable": "RTT 与重传保持在已学习的低负载基线范围内。",
+  "adaptive_state_desc_bufferbloat": "负载下 RTT 相对基线明显膨胀，队列积压或丢包会进一步增强该判断。",
+  "adaptive_state_desc_lossy_wireless": "无线链路当前出现较高的 TCP 重传比例。",
+  "adaptive_state_desc_high_bdp": "当前链路同时具有较高吞吐与较高 RTT，符合高带宽时延积路径特征。",
+  "adaptive_state_desc_congested": "较高 RTT 同时伴随重传或 qdisc 队列压力。",
+  "adaptive_state_desc_proxy_constrained": "当前存在透明代理路径，RTT 与丢包信号显示代理链路可能受到限制。",
+  "adaptive_state_desc_unknown": "正在积累足够的被动样本，以建立稳定的链路状态判断。"
 }
