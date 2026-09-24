@@ -63,13 +63,17 @@ pub fn observe(active_iface: &str, interval: Duration) -> io::Result<Classificat
     let seconds = interval.as_secs_f64();
     let interval_ms = interval.as_millis().min(u64::MAX as u128) as u64;
 
-    let retrans_ratio = before.tcp.as_ref().zip(after.tcp.as_ref()).and_then(|(a, b)| {
-        let out = b.out_segs.saturating_sub(a.out_segs);
-        (out > 0).then(|| {
-            let retrans = b.retrans.saturating_sub(a.retrans);
-            retrans as f64 / out as f64
-        })
-    });
+    let retrans_ratio = before
+        .tcp
+        .as_ref()
+        .zip(after.tcp.as_ref())
+        .and_then(|(a, b)| {
+            let out = b.out_segs.saturating_sub(a.out_segs);
+            (out > 0).then(|| {
+                let retrans = b.retrans.saturating_sub(a.retrans);
+                retrans as f64 / out as f64
+            })
+        });
 
     let (rx_mbps, tx_mbps) = before
         .iface
@@ -122,7 +126,10 @@ pub fn classify(sample: TelemetrySample) -> Classification {
 
     if let Some(inflation) = sample.rtt_inflation() {
         if inflation >= 2.0 && throughput >= 5.0 {
-            reasons.push(format!("RTT inflation {:.2}x under {:.1} Mbps load", inflation, throughput));
+            reasons.push(format!(
+                "RTT inflation {:.2}x under {:.1} Mbps load",
+                inflation, throughput
+            ));
             return Classification {
                 state: PathState::Bufferbloat,
                 confidence: 92,
@@ -191,9 +198,7 @@ pub fn classify(sample: TelemetrySample) -> Classification {
         };
     }
 
-    if rtt.is_some_and(|value| value < 100.0)
-        && loss.is_some_and(|value| value < 0.005)
-    {
+    if rtt.is_some_and(|value| value < 100.0) && loss.is_some_and(|value| value < 0.005) {
         reasons.push(format!(
             "low retransmission ratio {:.2}% with RTT {:.1} ms",
             loss.unwrap_or_default() * 100.0,
