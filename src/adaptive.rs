@@ -1,10 +1,10 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PathState {
     Stable,
@@ -16,7 +16,7 @@ pub enum PathState {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TelemetrySample {
     pub interval_ms: u64,
     pub avg_rtt_ms: Option<f64>,
@@ -48,7 +48,7 @@ impl TelemetrySample {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Classification {
     pub state: PathState,
     pub confidence: u8,
@@ -64,7 +64,7 @@ pub struct AdaptiveReport {
     pub observations: Vec<Classification>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AdaptiveRuntimeState {
     pub schema: u32,
     pub updated_epoch: u64,
@@ -145,6 +145,26 @@ pub fn persist_runtime_state(state: &AdaptiveRuntimeState) -> io::Result<()> {
 
 pub fn clear_runtime_state() {
     let _ = fs::remove_file(crate::config::module_dir().join("adaptive_state.json"));
+}
+
+const RUNTIME_STATE_MAX_AGE_SECONDS: u64 = 120;
+
+pub fn load_runtime_state(active_iface: &str) -> Option<AdaptiveRuntimeState> {
+    let payload = fs::read(crate::config::module_dir().join("adaptive_state.json")).ok()?;
+    let state = serde_json::from_slice::<AdaptiveRuntimeState>(&payload).ok()?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    runtime_state_is_current(&state, active_iface, now).then_some(state)
+}
+
+fn runtime_state_is_current(
+    state: &AdaptiveRuntimeState,
+    active_iface: &str,
+    now_epoch: u64,
+) -> bool {
+    state.schema == 1
+        && state.iface == active_iface
+        && now_epoch >= state.updated_epoch
+        && now_epoch - state.updated_epoch <= RUNTIME_STATE_MAX_AGE_SECONDS
 }
 
 #[derive(Debug, Default)]
@@ -513,6 +533,23 @@ mod tests {
             transparent_proxy: false,
             wifi_frequency_mhz: Some(5180),
         }
+    }
+
+    #[test]
+    fn runtime_state_rejects_stale_or_wrong_interface() {
+        let state = AdaptiveRuntimeState {
+            schema: 1,
+            updated_epoch: 1_000,
+            iface: "wlan0".to_string(),
+            stable_state: PathState::Stable,
+            baseline_rtt_ms: Some(20.0),
+            baseline_samples: 3,
+            latest: classify(sample()),
+        };
+        assert!(runtime_state_is_current(&state, "wlan0", 1_120));
+        assert!(!runtime_state_is_current(&state, "wlan0", 1_121));
+        assert!(!runtime_state_is_current(&state, "rmnet_data0", 1_100));
+        assert!(!runtime_state_is_current(&state, "wlan0", 999));
     }
 
     #[test]
