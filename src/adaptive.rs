@@ -90,7 +90,6 @@ impl BaselineEstimator {
     }
 }
 
-
 /// Observe a physical interface without changing any kernel/network setting.
 ///
 /// Consecutive snapshots reuse the previous sample as the next interval's
@@ -112,13 +111,8 @@ pub fn observe_series(
         thread::sleep(interval);
         let after = crate::stats::adaptive_counters(active_iface);
         let proxy = crate::proxy::detect_proxy_snapshot();
-        let mut sample = telemetry_between(
-            active_iface,
-            &before,
-            &after,
-            interval,
-            proxy.transparent,
-        );
+        let mut sample =
+            telemetry_between(active_iface, &before, &after, interval, proxy.transparent);
         baseline.apply(&mut sample);
         let classification = classify(sample);
         hysteresis.update(&classification);
