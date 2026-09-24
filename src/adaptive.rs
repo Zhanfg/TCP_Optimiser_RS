@@ -232,8 +232,9 @@ pub fn classify(sample: TelemetrySample) -> Classification {
 
 /// Small state machine used by the future daemon integration to prevent a
 /// transient sample from flipping the active path state.
+#[cfg(test)]
 #[derive(Debug, Clone)]
-pub struct HysteresisClassifier {
+struct HysteresisClassifier {
     current: PathState,
     pending: Option<PathState>,
     pending_count: u8,
@@ -241,6 +242,7 @@ pub struct HysteresisClassifier {
     min_confidence: u8,
 }
 
+#[cfg(test)]
 impl Default for HysteresisClassifier {
     fn default() -> Self {
         Self {
@@ -253,12 +255,13 @@ impl Default for HysteresisClassifier {
     }
 }
 
+#[cfg(test)]
 impl HysteresisClassifier {
-    pub fn current(&self) -> PathState {
+    fn current(&self) -> PathState {
         self.current
     }
 
-    pub fn update(&mut self, observation: &Classification) -> PathState {
+    fn update(&mut self, observation: &Classification) -> PathState {
         if observation.confidence < self.min_confidence {
             self.pending = None;
             self.pending_count = 0;
