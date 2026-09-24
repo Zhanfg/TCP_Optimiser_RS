@@ -7,7 +7,7 @@ on:
     paths:
       - 'src/kernel_module.rs'
       - 'scripts/build-kernel-modules.sh'
-      - 'scripts/gki-module-config.txt'
+      - 'scripts/kernel-module-config.txt'
       - 'scripts/audit-gki-symbols.py'
       - 'scripts/audit-module-exports.py'
       - 'kernel/**'
@@ -29,7 +29,6 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 1024M
       CCACHE_COMPRESS: "true"
-      GKI_SDK_CACHE_DIR: ${{ github.workspace }}/.gki-sdk/${{ matrix.kmi }}
     strategy:
       fail-fast: false
       matrix:
@@ -41,41 +40,87 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install kernel build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            bc binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
-            bison build-essential ccache clang flex git kmod libelf-dev libssl-dev \
-            lld llvm pahole python3 rsync
-
       - id: cache_key
         name: Resolve compiler cache key
         shell: bash
         run: |
           set -euo pipefail
-          kernel_rev=$(git ls-remote https://android.googlesource.com/kernel/common "refs/heads/${{ matrix.kmi }}" | awk 'NR==1{print $1}')
+          kernel_rev=$(python3 - scripts/gki-release-pins.json "${{ matrix.kmi }}" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1]))["targets"][sys.argv[2]]["sha1"])
+          PY
+          )
           test -n "$kernel_rev"
           clang_id=$(clang --version | head -1 | sha256sum | awk '{print $1}')
           echo "kernel_rev=$kernel_rev" >> "$GITHUB_OUTPUT"
           echo "clang_id=$clang_id" >> "$GITHUB_OUTPUT"
 
-      - id: ccache_restore
-        name: Restore kernel compiler cache
-        uses: actions/cache/restore@v6
+      - id: preflight_cache
+        name: Restore KMI compatibility result
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.kmi-preflight/${{ matrix.kmi }}
+          key: ${{ runner.os }}-kmi-preflight-v2-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt', 'scripts/build-kernel-modules.sh', 'scripts/audit-gki-symbols.py', 'scripts/gki-release-pins.json', 'scripts/fetch-gki-prebuilt.sh') }}
+          save-always: true
+
+      - name: Stop immediately on cached KMI rejection
+        if: steps.preflight_cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$GITHUB_WORKSPACE/.kmi-preflight/${{ matrix.kmi }}/report.json"
+          test -s "$report"
+          python3 - "$report" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          bad = [m for m in data["modules"] if not m["compatible"]]
+          print(f"cached checked={len(data['modules'])} incompatible={len(bad)}")
+          for item in bad:
+              print(item["file"], ", ".join(item["non_kmi_symbols"]))
+          if bad:
+              raise SystemExit("cached KMI compatibility result rejects this bundle")
+          PY
+
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            bison build-essential ccache clang curl flex git kmod libelf-dev libssl-dev \
+            lld llvm pahole python3 rsync
+
+      - name: Restore exact GKI Module.symvers
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.kernel-symvers/${{ matrix.kmi }}
+          key: ${{ runner.os }}-gki-symvers-v1-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt', 'scripts/gki-release-pins.json') }}
+          save-always: true
+
+      - name: Restore BBR3 API probe cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.bbr3-probe/${{ matrix.kmi }}
+          key: ${{ runner.os }}-bbr3-probe-v1-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-c5c5575-${{ hashFiles('scripts/kernel-module-config.txt') }}
+          save-always: true
+
+      - name: Restore ThinLTO cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.thinlto/${{ matrix.kmi }}
+          key: ${{ runner.os }}-gki-thinlto-v1-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-gki-thinlto-v1-${{ matrix.kmi }}-${{ steps.cache_key.outputs.clang_id }}-
+          save-always: true
+
+      - name: Restore kernel compiler cache
+        uses: actions/cache@v6
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ${{ runner.os }}-gki-ccache-v2-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/gki-module-config.txt') }}
+          key: ${{ runner.os }}-gki-ccache-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/build-kernel-modules.sh') }}
           restore-keys: |
-            ${{ runner.os }}-gki-ccache-v2-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-
-            ${{ runner.os }}-gki-ccache-v2-${{ matrix.kmi }}-
-
-      - id: sdk_restore
-        name: Restore compact GKI build SDK
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ env.GKI_SDK_CACHE_DIR }}
-          key: ${{ runner.os }}-gki-sdk-v1-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ hashFiles('scripts/gki-module-config.txt') }}
+            ${{ runner.os }}-gki-ccache-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-
+            ${{ runner.os }}-gki-ccache-${{ matrix.kmi }}-
+          save-always: true
 
       - name: Configure ccache
         run: |
@@ -84,37 +129,16 @@ jobs:
           ccache --zero-stats
 
       - name: Build loadable GKI modules
+        env:
+          KERNEL_SYMVERS_CACHE: ${{ github.workspace }}/.kernel-symvers/${{ matrix.kmi }}/Module.symvers
+          KERNEL_THINLTO_CACHE: ${{ github.workspace }}/.thinlto/${{ matrix.kmi }}
+          BBR_KCONFIG_CACHE: ${{ github.workspace }}/.bbr3-probe/${{ matrix.kmi }}/kernel_config.h
+          TCP_OPTIMISER_PREFLIGHT_CACHE: ${{ github.workspace }}/.kmi-preflight/${{ matrix.kmi }}/report.json
         run: bash scripts/build-kernel-modules.sh "${{ matrix.kmi }}" kernel_modules
 
       - name: Show compiler cache stats
         if: always()
         run: ccache --show-stats || true
-
-      - id: sdk_state
-        name: Check reusable GKI SDK
-        if: always()
-        shell: bash
-        run: |
-          if [ -s "$GKI_SDK_CACHE_DIR/Module.symvers" ] && [ -s "$GKI_SDK_CACHE_DIR/metadata.json" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-            du -sh "$GKI_SDK_CACHE_DIR" || true
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Save compact GKI build SDK
-        if: ${{ always() && steps.sdk_restore.outputs.cache-hit != 'true' && steps.sdk_state.outputs.ready == 'true' }}
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ env.GKI_SDK_CACHE_DIR }}
-          key: ${{ steps.sdk_restore.outputs.cache-primary-key }}
-
-      - name: Save kernel compiler cache
-        if: ${{ always() && steps.ccache_restore.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ${{ steps.ccache_restore.outputs.cache-primary-key }}
 
       - name: Validate module bundle
         shell: bash
@@ -134,9 +158,15 @@ jobs:
               'sch_cake', 'sch_pie', 'sch_fq_pie',
           }
           actual = {entry['name'] for entry in data['modules']}
-          missing = sorted(expected - actual)
+          builtins = set(data.get('builtin_capabilities', []))
+          unavailable = set(data.get('unavailable_capabilities', []))
+          if unavailable:
+              raise SystemExit(f'unavailable required capabilities: {sorted(unavailable)}')
+          missing = sorted(expected - actual - builtins)
           if missing:
-              raise SystemExit(f'missing modules: {missing}')
+              raise SystemExit(f'missing capabilities: {missing}')
+          if 'tcp_bbr3' not in actual:
+              raise SystemExit('tcp_bbr3 must be a shipped KO, not a native capability')
           for entry in data['modules']:
               path = root / entry['file']
               if not path.is_file():
@@ -144,7 +174,10 @@ jobs:
               digest = hashlib.sha256(path.read_bytes()).hexdigest()
               if digest != entry['sha256']:
                   raise SystemExit(f"hash mismatch: {entry['file']}")
-          print(f"validated {len(actual)} kernel modules")
+          print(
+              f"validated capabilities: modules={len(actual)} "
+              f"builtins={len(builtins)}"
+          )
           PY
           find kernel_modules -name '*.ko' -print -exec file {} \;
           sha256sum kernel_modules/"${{ matrix.kmi }}"/aarch64/*.ko
