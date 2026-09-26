@@ -2,7 +2,7 @@ import { exec, toast } from './kernelsu.js';
 import I18N from './i18n.js';
 import { get_active_iface, get_active_algorithm, getInitcwndInitrwndValue, getModuleActiveState, getDefaultQdisc, getProxyStatus, getHostsStatus, getRuntimeSnapshot, repairRuntimePolicy, formatLocalDateTime } from './common.js';
 import router_state from './router.js';
-import { ALL_ALGOS, getAlgorithmDescription, getQdiscDescription } from './capabilities.js';
+import { getAlgorithmDescription, getQdiscDescription } from './capabilities.js';
 import { haptic, setAnimatedText } from './motion.js';
 
 let _lastAlgoSet = '';
@@ -319,10 +319,7 @@ function updateAlgoChips() {
 	const active = router_state.homePageParams.active_algorithm;
 	const enabled = router_state.homePageParams.module_status === "Enabled";
 	const count = document.getElementById('algo-capability-count');
-	if (count) setAnimatedText(count, avail?.length ? I18N.t('capability_available_count', {
-		available: avail.length,
-		total: ALL_ALGOS.length,
-	}) : I18N.t('home_status_unknown'));
+	if (count) count.hidden = true;
 
 	const curSet = `${I18N.currentLang}|${[...(avail || [])].sort().join(',')}`;
 	if (curSet === _lastAlgoSet && active === _lastActiveAlgo && enabled === _lastEnabled) return;
@@ -335,10 +332,16 @@ function updateAlgoChips() {
 		container.innerHTML = '<span style="color:var(--md-sys-color-on-surface-variant);font-size:0.8rem;">' + I18N.t('home_status_unknown') + '</span>';
 		return;
 	}
-	const supported = new Set(avail || []);
 	const runtime = new Set(router_state.native_algorithms || []);
 	const bundled = new Set(router_state.bundled_algorithms || []);
-	ALL_ALGOS.forEach(algo => {
+	const preferredOrder = ['bbr', 'bbr3', 'cubic', 'reno'];
+	const visibleAlgorithms = [...new Set(avail || [])].sort((a, b) => {
+		const ai = preferredOrder.indexOf(a);
+		const bi = preferredOrder.indexOf(b);
+		if (ai !== -1 || bi !== -1) return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+		return a.localeCompare(b);
+	});
+	visibleAlgorithms.forEach(algo => {
 		const chip = document.createElement('button');
 		chip.className = 'algo-chip';
 		chip.dataset.source = runtime.has(algo) ? 'runtime' : bundled.has(algo) ? 'bundle' : 'unavailable';
@@ -350,16 +353,7 @@ function updateAlgoChips() {
 		label.textContent = algo;
 		chip.appendChild(label);
 		chip.setAttribute('aria-label', `${algo}: ${I18N.t(sourceKey)}`);
-		if (!supported.has(algo)) {
-			chip.classList.add('unsupported');
-			chip.disabled = true;
-			chip.title = I18N.t('capability_unsupported');
-			const mark = document.createElement('span');
-			mark.className = 'capability-mark';
-			mark.textContent = '×';
-			mark.setAttribute('aria-hidden', 'true');
-			chip.appendChild(mark);
-		} else if (bundled.has(algo) && !runtime.has(algo)) {
+		if (bundled.has(algo) && !runtime.has(algo)) {
 			chip.classList.add('capability-bundled');
 		}
 		if (enabled && algo === active) chip.classList.add('selected');
