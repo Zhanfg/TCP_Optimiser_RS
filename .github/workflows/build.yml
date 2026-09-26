@@ -198,7 +198,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.paired-kernel/${{ matrix.kmi }}
-          key: ${{ runner.os }}-paired-kernel-v1-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt', 'scripts/gki-release-pins.json', 'scripts/build-kernel-modules.sh') }}
+          key: ${{ runner.os }}-paired-kernel-v2-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt', 'scripts/gki-release-pins.json', 'scripts/build-kernel-modules.sh', 'scripts/fetch-gki-prebuilt.sh', 'scripts/expand-vmlinux-symvers.py') }}
           save-always: true
 
       - name: Restore BBR3 API probe cache
