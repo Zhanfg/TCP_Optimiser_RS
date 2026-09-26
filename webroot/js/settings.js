@@ -502,6 +502,7 @@ export async function initSettings() {
 
 export async function ensureAdvancedInitialized() {
 	if (!isAdvancedEnabled()) return;
+	await initProxyConnectionOverride();
 	await initAdvancedKnobs();
 }
 
@@ -798,6 +799,32 @@ ${writes}
 		btn.disabled = false;
 		btn.textContent = I18N.t('settings_apply_advanced');
 	}
+}
+
+async function initProxyConnectionOverride() {
+	const toggle = document.getElementById('proxy-kill-override-toggle');
+	if (!toggle || toggle.dataset.bound === 'true') return;
+	toggle.dataset.bound = 'true';
+	toggle.checked = await fetchIsConfigFile('kill_connections_proxy');
+
+	toggle.addEventListener('change', async () => {
+		const enabled = toggle.checked;
+		toggle.disabled = true;
+		try {
+			const dir = router_state.moduleInformation.moduleDir;
+			await exec(enabled
+				? `touch ${shellQuote(`${dir}/kill_connections_proxy`)}`
+				: `rm -f ${shellQuote(`${dir}/kill_connections_proxy`)}`);
+			toast(I18N.t(enabled ? 'toast_proxy_kill_override_on' : 'toast_proxy_kill_override_off'));
+			haptic('selection');
+		} catch (error) {
+			console.error('Failed to change transparent-proxy connection override:', error);
+			toggle.checked = !enabled;
+			toast(I18N.t('toast_error'));
+		} finally {
+			toggle.disabled = false;
+		}
+	});
 }
 
 async function initDebugToggle() {

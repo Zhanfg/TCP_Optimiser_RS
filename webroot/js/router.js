@@ -1,6 +1,6 @@
-import { exec } from './kernelsu.js';
+import { exec, toast } from './kernelsu.js';
 import I18N from './i18n.js';
-import { updateModuleInformation } from './common.js';
+import { getBuildInfo, updateModuleInformation, verifyInstalledModule } from './common.js';
 import { updateModuleStatus, initHome, updateHomeUI } from './home.js';
 import { initDynamicColorTheme } from './theme.js';
 import { initMotion } from './motion.js';
@@ -208,6 +208,44 @@ const startRealtimeUpdater = (delay = 5000) => {
 	updateTimer = setTimeout(runRealtimeUpdate, delay);
 };
 
+async function initAboutDiagnostics() {
+	const version = document.getElementById('about-build-version');
+	const channel = document.getElementById('about-build-channel');
+	const source = document.getElementById('about-build-source');
+	const revision = document.getElementById('about-build-revision');
+	try {
+		const info = await getBuildInfo();
+		if (version) version.textContent = info.version || '—';
+		if (channel) channel.textContent = info.channel || '—';
+		if (source) source.textContent = info.source || '—';
+		if (revision) revision.textContent = info.revision || '—';
+	} catch (error) {
+		console.warn('Build provenance unavailable:', error);
+		for (const element of [version, channel, source, revision]) {
+			if (element) element.textContent = I18N.t('home_status_unknown');
+		}
+	}
+
+	const integrityButton = document.getElementById('about-integrity-btn');
+	integrityButton?.addEventListener('click', async () => {
+		if (integrityButton.disabled) return;
+		const status = document.getElementById('about-integrity-status');
+		integrityButton.disabled = true;
+		if (status) status.textContent = I18N.t('integrity_check_running');
+		try {
+			await verifyInstalledModule();
+			if (status) status.textContent = I18N.t('integrity_check_ok');
+			toast(I18N.t('integrity_check_ok'));
+		} catch (error) {
+			console.error('Installed module integrity check failed:', error);
+			if (status) status.textContent = I18N.t('integrity_check_failed');
+			toast(I18N.t('integrity_check_failed'));
+		} finally {
+			integrityButton.disabled = false;
+		}
+	});
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
 	await I18N.init();
 	syncAdvancedNavVisibilityFast();
@@ -248,7 +286,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 	startRealtimeUpdater();
 
 	const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 1800));
-	idle(() => { void loadStatsModule(); void loadLogsModule(); });
+	idle(() => {
+		void loadStatsModule();
+		void loadLogsModule();
+		void initAboutDiagnostics();
+	});
 
 	document.addEventListener('i18n-changed', () => {
 		// I18N.applyToDOM restores static placeholders (including the global

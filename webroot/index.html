@@ -516,6 +516,24 @@
             <div class="info-card"><span class="info-card__icon ui-icon icon-route" aria-hidden="true"></span><span class="info-card__label" data-i18n="stats_proxy_path">Path mode</span><span class="info-card__value" id="stats-proxy-path">—</span></div>
           </div>
 
+          <details class="stats-disclosure" id="adaptive-probe-panel">
+            <summary class="stats-disclosure__summary">
+              <span class="section-pill" data-i18n="adaptive_probe_title">Active path sample</span>
+              <span id="adaptive-probe-status" class="stats-disclosure__meta" data-i18n="adaptive_probe_ready">Ready</span>
+              <span class="collapsible-chevron ui-icon icon-chevron-down" aria-hidden="true"></span>
+            </summary>
+            <div class="stats-disclosure__body">
+              <p class="field-hint" data-i18n="adaptive_probe_desc">Runs the Rust adaptive sampler for a short passive observation window. It does not change network settings.</p>
+              <button type="button" id="adaptive-probe-btn" class="btn-tonal" data-i18n="adaptive_probe_run">Sample now</button>
+              <div id="adaptive-probe-result" class="probe-result" hidden>
+                <div><span data-i18n="stats_path_state">Path state</span><strong id="adaptive-probe-state">—</strong></div>
+                <div><span data-i18n="adaptive_probe_baseline">Baseline RTT</span><strong id="adaptive-probe-baseline">—</strong></div>
+                <div><span data-i18n="adaptive_confidence">Confidence</span><strong id="adaptive-probe-confidence">—</strong></div>
+                <p id="adaptive-probe-reason"></p>
+              </div>
+            </div>
+          </details>
+
           <p class="section-pill" data-i18n="stats_throughput">Throughput</p>
           <div class="throughput-grid">
             <div class="chart-row">
@@ -608,6 +626,20 @@
           <div class="warning-banner">
             <span class="ui-icon icon-triangle-alert" aria-hidden="true"></span>
             <span data-i18n="adv_warning_banner">Direct kernel parameter modification. Incorrect values may cause instability or data loss.</span>
+          </div>
+
+          <p class="section-pill" data-i18n="proxy_safety_title">Proxy connection safety</p>
+          <div class="settings-card">
+            <div class="toggle-container">
+              <div>
+                <span class="expert-toggle-title" data-i18n="proxy_kill_override">Allow connection kill under transparent proxy</span>
+                <span class="expert-toggle-desc" data-i18n="proxy_kill_override_desc">Normally the engine preserves existing TCP sessions when TUN/TPROXY is active. Enable only when you explicitly want policy changes to terminate those sessions.</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="proxy-kill-override-toggle">
+                <span class="slider"></span>
+              </label>
+            </div>
           </div>
 
           <p class="section-pill" data-i18n="debug_title">Debug Mode</p>
@@ -711,6 +743,14 @@
         <p class="about-dialog-version" id="about-version-text"></p>
         <p class="about-live-desc" id="about-live-desc"></p>
         <p class="about-dialog-desc" data-i18n="home_about_desc"></p>
+        <div class="core-diagnostics">
+          <div class="core-diagnostic-row"><span data-i18n="build_info_version">Core version</span><strong id="about-build-version">—</strong></div>
+          <div class="core-diagnostic-row"><span data-i18n="build_info_channel">Build channel</span><strong id="about-build-channel">—</strong></div>
+          <div class="core-diagnostic-row"><span data-i18n="build_info_source">Source</span><strong id="about-build-source">—</strong></div>
+          <div class="core-diagnostic-row"><span data-i18n="build_info_revision">Revision</span><strong id="about-build-revision">—</strong></div>
+          <button type="button" id="about-integrity-btn" class="btn-outline" data-i18n="integrity_check">Verify installed module</button>
+          <p id="about-integrity-status" class="field-hint" data-i18n="integrity_check_idle">Signed payload can be checked again at any time.</p>
+        </div>
         <div class="about-dialog-links">
           <button class="link-chip" data-url="https://github.com/Zhanfg/TCP_Optimiser">
             <span class="ui-icon icon-link" aria-hidden="true"></span> <span data-i18n="home_github">GitHub</span>

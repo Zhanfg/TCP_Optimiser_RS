@@ -229,6 +229,39 @@ export async function repairRuntimePolicy() {
 	return record;
 }
 
+let buildInfoCache = null;
+
+export async function getBuildInfo(force = false) {
+	if (!force && buildInfoCache) return buildInfoCache;
+	const { stdout } = await exec(rustBinaryCommand('runtime-build-info', 'build-info'));
+	const info = JSON.parse(stdout.trim());
+	if (!info || typeof info !== 'object' || !info.version || !info.revision) {
+		throw new Error('Invalid build-info payload');
+	}
+	buildInfoCache = info;
+	return info;
+}
+
+export async function runAdaptiveProbe(sampleMs = 600, samples = 4) {
+	const interval = Math.max(250, Math.min(10000, Math.round(Number(sampleMs) || 600)));
+	const count = Math.max(1, Math.min(12, Math.round(Number(samples) || 4)));
+	const { stdout } = await exec(rustBinaryCommand(
+		'adaptive-active-probe',
+		`adaptive --sample-ms ${interval} --samples ${count}`,
+	));
+	const report = JSON.parse(stdout.trim());
+	if (!report || typeof report !== 'object' || !Array.isArray(report.observations)) {
+		throw new Error('Invalid adaptive probe payload');
+	}
+	return report;
+}
+
+export async function verifyInstalledModule() {
+	const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
+	await exec(rustBinaryCommand('module-integrity-check', `verify-module ${shellQuote(dir)}`));
+	return true;
+}
+
 let proxyFastStatusCache = null;
 let proxyFastStatusCheckedAt = 0;
 let proxyStatusCache = null;

@@ -2,7 +2,7 @@ import I18N from './i18n.js';
 import router_state from './router.js';
 import {
 	getTCPStatCounters, getIfaceBytes, getSockStat, getTCPConnsCount,
-	getDNSServers, getSSInfo, getRuntimeSnapshot,
+	getDNSServers, getSSInfo, getRuntimeSnapshot, runAdaptiveProbe,
 } from './common.js';
 
 // History buffers: 60 points × 5s = 5 minutes
@@ -282,10 +282,49 @@ export async function updateStats() {
 	}
 }
 
+function renderAdaptiveProbeResult(report) {
+	const panel = document.getElementById('adaptive-probe-result');
+	const state = document.getElementById('adaptive-probe-state');
+	const baseline = document.getElementById('adaptive-probe-baseline');
+	const confidence = document.getElementById('adaptive-probe-confidence');
+	const reason = document.getElementById('adaptive-probe-reason');
+	if (!panel || !state || !baseline || !confidence || !reason) return;
+
+	const latest = report?.observations?.at(-1);
+	const key = report?.stable_state || latest?.state || 'unknown';
+	state.textContent = I18N.t(`adaptive_state_${key}`);
+	baseline.textContent = Number.isFinite(report?.baseline_rtt_ms)
+		? `${report.baseline_rtt_ms.toFixed(1)} ms`
+		: '—';
+	confidence.textContent = Number.isFinite(latest?.confidence) ? `${latest.confidence}%` : '—';
+	reason.textContent = Array.isArray(latest?.reasons) && latest.reasons.length
+		? latest.reasons.join(' · ')
+		: I18N.t('adaptive_probe_no_reason');
+	panel.hidden = false;
+}
+
 export function initStatsUI() {
 	scheduleStatsUI();
 	document.getElementById('stats-charts-panel')?.addEventListener('toggle', event => {
 		if (event.currentTarget.open) renderDetailCharts();
+	});
+
+	const probeButton = document.getElementById('adaptive-probe-btn');
+	probeButton?.addEventListener('click', async () => {
+		if (probeButton.disabled) return;
+		const status = document.getElementById('adaptive-probe-status');
+		probeButton.disabled = true;
+		if (status) status.textContent = I18N.t('adaptive_probe_running');
+		try {
+			const report = await runAdaptiveProbe(600, 4);
+			renderAdaptiveProbeResult(report);
+			if (status) status.textContent = I18N.t('adaptive_probe_complete');
+		} catch (error) {
+			console.error('Active adaptive probe failed:', error);
+			if (status) status.textContent = I18N.t('adaptive_probe_failed');
+		} finally {
+			probeButton.disabled = false;
+		}
 	});
 }
 

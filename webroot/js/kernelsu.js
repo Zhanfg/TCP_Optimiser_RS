@@ -55,6 +55,27 @@ let mockLastRepair = null;
 
 function mockExec(cmd) {
 	// Simulate realistic return values for preview
+	if (cmd.includes('runtime-build-info')) {
+		return { errno: 0, stdout: JSON.stringify({
+			version: '3.0.0',
+			channel: 'preview',
+			source: 'https://github.com/Zhanfg/TCP_Optimiser_RS',
+			revision: '6ac8af83dee2e7b84a203ba9d80fe14f746d5422',
+		}), stderr: '' };
+	}
+	if (cmd.includes('adaptive-active-probe')) {
+		return { errno: 0, stdout: JSON.stringify({
+			stable_state: 'stable',
+			baseline_rtt_ms: 31.8,
+			baseline_samples: 4,
+			observations: [
+				{ state: 'stable', confidence: 88, reasons: ['RTT remains near the learned baseline', 'no qdisc drop pressure'], sample: { avg_rtt_ms: 34.2 } },
+			],
+		}), stderr: '' };
+	}
+	if (cmd.includes('module-integrity-check')) {
+		return { errno: 0, stdout: '', stderr: '' };
+	}
 	if (cmd.includes('runtime-policy-repair')) {
 		mockLastRepair = { timestamp_epoch: Math.floor(Date.now() / 1000), success: true, reason: 'manual', errors: [] };
 		return { errno: 0, stdout: JSON.stringify(mockLastRepair), stderr: '' };
