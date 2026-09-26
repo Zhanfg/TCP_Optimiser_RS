@@ -87,6 +87,11 @@ enum Command {
     },
     /// Print build provenance embedded in this binary
     BuildInfo,
+    /// Load and verify a bundled TCP congestion-control module without switching sockets
+    LoadAlgorithm {
+        /// Kernel congestion-control name, e.g. bbr3
+        algorithm: String,
+    },
     /// Verify the signed module payload before installation
     VerifyModule {
         /// Extracted module staging directory
@@ -117,6 +122,7 @@ fn main() {
         Command::Proxy => print_proxy_status(),
         Command::Profile { refresh, auto } => print_profile(refresh, auto),
         Command::BuildInfo => print_build_info(),
+        Command::LoadAlgorithm { algorithm } => load_algorithm(&algorithm),
         Command::VerifyModule { path } => integrity::verify_module(&path),
     };
 
@@ -194,6 +200,35 @@ fn print_build_info() -> std::io::Result<()> {
     println!(
         "{}",
         serde_json::to_string(&build_info::current()).map_err(std::io::Error::other)?
+    );
+    Ok(())
+}
+
+fn load_algorithm(algorithm: &str) -> std::io::Result<()> {
+    if !config::is_known_algorithm(algorithm) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("unknown congestion-control algorithm: {algorithm}"),
+        ));
+    }
+
+    if !sysctl::algo_available(algorithm).unwrap_or(false) {
+        let loaded = kernel_module::ensure_algorithm(algorithm)?;
+        if !loaded || !sysctl::algo_available(algorithm).unwrap_or(false) {
+            return Err(std::io::Error::other(format!(
+                "{algorithm} did not register after loading its bundled module"
+            )));
+        }
+    }
+
+    let _ = kernel_module::clear_algorithm_unavailable(algorithm);
+    println!(
+        "{}",
+        serde_json::json!({
+            "algorithm": algorithm,
+            "available": true,
+            "active": sysctl::current_algorithm().ok().as_deref() == Some(algorithm),
+        })
     );
     Ok(())
 }
