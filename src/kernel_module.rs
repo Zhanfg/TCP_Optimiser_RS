@@ -381,6 +381,17 @@ fn module_present(module_name: &str) -> bool {
 }
 
 fn kernel_release() -> io::Result<String> {
+    // Prefer the kernel's procfs identity. On some rooted Android builds the
+    // uname syscall can be virtualized independently from the module ABI,
+    // while /proc/sys/kernel/osrelease continues to reflect the kernel that
+    // resolves module symbols. Fall back to uname for ordinary systems.
+    if let Ok(release) = fs::read_to_string("/proc/sys/kernel/osrelease") {
+        let release = release.trim();
+        if !release.is_empty() {
+            return Ok(release.to_string());
+        }
+    }
+
     let output = Command::new("uname").arg("-r").output()?;
     if !output.status.success() {
         return Err(io::Error::other("uname -r failed"));
