@@ -580,9 +580,18 @@ builtin_capabilities = [x for x in builtin_csv.split(",") if x]
 unavailable_capabilities = [x for x in unavailable_csv.split(",") if x]
 
 match = re.match(r"^(\d+)\.(\d+)\.\d+-(android\d+)-(\d+)", release)
-if not match:
+if match:
+    kmi = f"{match.group(1)}.{match.group(2)}-{match.group(3)}-{match.group(4)}"
+elif paired_kernel:
+    # Paired kernels are exact-release scoped. Their uname -r may be a normal
+    # common-kernel release without Android's ABI-generation suffix, so the
+    # pinned matrix identity is only a grouping key. Runtime loading remains
+    # gated by exact uname -r and architecture.
+    if not re.fullmatch(r"android\d+-\d+\.\d+", kernel_branch):
+        raise SystemExit(f"invalid paired kernel identity: {kernel_branch}")
+    kmi = kernel_branch
+else:
     raise SystemExit(f"cannot derive Android KMI from kernel release: {release}")
-kmi = f"{match.group(1)}.{match.group(2)}-{match.group(3)}-{match.group(4)}"
 
 modules = []
 for path in sorted(module_dir.glob("*.ko")):
