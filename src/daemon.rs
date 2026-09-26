@@ -24,6 +24,7 @@ const QDISC_CHECK_CELLULAR: u64 = 120;
 const ADAPTIVE_STATE_PERSIST: u64 = 30;
 const WEBUI_FAST_SLEEP: u64 = 2;
 const WEBUI_ACTIVE_WINDOW: u64 = 12;
+const WEBUI_DETAILS_PERSIST: u64 = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedPolicy {
@@ -81,6 +82,7 @@ pub fn run() -> io::Result<()> {
     let mut adaptive_observer = adaptive::RuntimeObserver::default();
     let mut last_adaptive_persist: Option<Instant> = None;
     let mut last_adaptive_state = adaptive::PathState::Unknown;
+    let mut last_webui_details_persist: Option<Instant> = None;
     let mut route_unavailable = false;
     let mut route_monitor = match network::RouteMonitor::new() {
         Ok(monitor) => Some(monitor),
@@ -116,6 +118,7 @@ pub fn run() -> io::Result<()> {
                     adaptive::clear_runtime_state();
                     last_adaptive_persist = None;
                     last_adaptive_state = adaptive::PathState::Unknown;
+                    last_webui_details_persist = None;
                 }
 
                 // Keep the low-frequency timeout as a safety net, but let a
@@ -270,9 +273,25 @@ pub fn run() -> io::Result<()> {
             }
         }
 
-        // Adaptive polling
+        // Publish cheap counters/state every daemon pass. Expensive details
+        // (ss/DNS/proxy) are refreshed at a much lower cadence and only while
+        // the WebUI is active.
         let wifi_waiting = current_wifi_transition && !wifi_applied;
         let _ = persist_runtime_snapshot(&iface);
+        let webui_active = webui_is_active();
+        if webui_active
+            && last_webui_details_persist
+                .map(|saved| saved.elapsed() >= Duration::from_secs(WEBUI_DETAILS_PERSIST))
+                .unwrap_or(true)
+        {
+            if let Err(error) = persist_runtime_details(&iface) {
+                logging::log_print(&format!(
+                    "[WARN] WebUI detail snapshot failed: {error}"
+                ));
+            } else {
+                last_webui_details_persist = Some(Instant::now());
+            }
+        }
 
         let mut sleep_secs = if wifi_waiting {
             SLEEP_FAST
@@ -285,7 +304,7 @@ pub fn run() -> io::Result<()> {
         } else {
             SLEEP_NORMAL
         };
-        if webui_is_active() {
+        if webui_active {
             sleep_secs = sleep_secs.min(WEBUI_FAST_SLEEP);
         }
 
@@ -305,10 +324,18 @@ pub fn run() -> io::Result<()> {
 }
 
 fn persist_runtime_snapshot(iface: &str) -> io::Result<()> {
-    let snapshot = crate::stats::network_snapshot(iface, true, false, false)?;
+    persist_snapshot_file(iface, false, "runtime_snapshot.json")
+}
+
+fn persist_runtime_details(iface: &str) -> io::Result<()> {
+    persist_snapshot_file(iface, true, "runtime_details.json")
+}
+
+fn persist_snapshot_file(iface: &str, include_details: bool, name: &str) -> io::Result<()> {
+    let snapshot = crate::stats::network_snapshot(iface, true, include_details, false)?;
     let module_dir = config::module_dir();
-    let path = module_dir.join("runtime_snapshot.json");
-    let temporary = module_dir.join("runtime_snapshot.json.tmp");
+    let path = module_dir.join(name);
+    let temporary = module_dir.join(format!("{name}.tmp"));
     let payload = serde_json::to_vec(&snapshot).map_err(io::Error::other)?;
     fs::write(&temporary, payload)?;
     fs::rename(temporary, path)?;
