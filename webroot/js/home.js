@@ -41,11 +41,28 @@ export async function updateModuleStatus(force = false) {
 		}
 
 		let snapshot = null;
+		const needsVerification = force || !router_state.verification;
 		try {
-			const includeVerification = force || !router_state.verification;
-			snapshot = await getRuntimeSnapshot(force, false, false, includeVerification);
+			// Always populate the visible home state from the daemon snapshot
+			// first. Verification is intentionally a second-stage diagnostic so
+			// first paint never waits on tc/sysctl readback.
+			snapshot = await getRuntimeSnapshot(force, false, false, false);
 		} catch (error) {
 			console.warn('Unified runtime snapshot unavailable, using compatibility probes:', error);
+		}
+
+		if (needsVerification) {
+			const verificationTask = getRuntimeSnapshot(true, false, false, true)
+				.then(verified => {
+					if (verified?.verification) {
+						router_state.verification = verified.verification;
+						if (!router_state.isInitializing && router_state.current_active_page === 'home') {
+							updateHomeUI();
+						}
+					}
+				})
+				.catch(error => console.warn('Runtime verification unavailable:', error));
+			if (force) await verificationTask;
 		}
 
 		let running, iface, algo, initcwndInitrwnd, defaultQdisc;
