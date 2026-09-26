@@ -173,10 +173,12 @@ function renderDetailCharts() {
 async function sampleStats() {
 	let activeIface = router_state.homePageParams.active_iface;
 	let tcp, iface, sock, conns, dns, ssInfo;
+	let sampleTime = Date.now();
 	try {
 		const includeDetails = !_lastDetailAt || Date.now() - _lastDetailAt >= DETAIL_INTERVAL_MS;
 		const snapshot = await getRuntimeSnapshot(true, true, includeDetails, false);
 		activeIface = snapshot.active_iface || activeIface;
+		if (Number.isFinite(snapshot.generated_epoch)) sampleTime = snapshot.generated_epoch * 1000;
 		tcp = snapshot.tcp ? {
 			retrans: snapshot.tcp.retrans,
 			inSegs: snapshot.tcp.in_segs,
@@ -216,13 +218,13 @@ async function sampleStats() {
 		]);
 	}
 
-	const now = Date.now();
 	const countersAvailable = iface && tcp;
-	const sameCounterSeries = countersAvailable && _prevTime > 0 && _prevBytes && _prevBytes.iface === activeIface
+	const sameCounterSeries = countersAvailable && _prevTime > 0 && sampleTime > _prevTime
+		&& _prevBytes && _prevBytes.iface === activeIface
 		&& iface.rxBytes >= _prevBytes.rx && iface.txBytes >= _prevBytes.tx
 		&& tcp.retrans >= _prevBytes.retrans && tcp.outSegs >= _prevBytes.outSegs;
 	if (sameCounterSeries) {
-		const dt = (now - _prevTime) / 1000;
+		const dt = (sampleTime - _prevTime) / 1000;
 		if (dt > 0) {
 			pushHistory(_history.tputRx, (iface.rxBytes - _prevBytes.rx) / dt / 1024);
 			pushHistory(_history.tputTx, (iface.txBytes - _prevBytes.tx) / dt / 1024);
@@ -242,7 +244,7 @@ async function sampleStats() {
 
 	if (countersAvailable) {
 		_prevBytes = { rx: iface.rxBytes, tx: iface.txBytes, retrans: tcp.retrans, outSegs: tcp.outSegs, iface: activeIface };
-		_prevTime = now;
+		_prevTime = sampleTime;
 	} else {
 		_prevBytes = null;
 		_prevTime = 0;
