@@ -273,7 +273,14 @@ function renderKernelBundle() {
 	}
 	const modeKey = ['exact_release', 'kmi', 'mixed'].includes(bundle.matching_mode)
 		? bundle.matching_mode : bundle.matching_mode === 'invalid' ? 'invalid' : 'none';
-	badge.textContent = I18N.t(`kernel_bundle_${modeKey}`);
+	const matchLabelKey = {
+		exact_release: 'kernel_bundle_match_exact_release',
+		kmi: 'kernel_bundle_match_kmi',
+		mixed: 'kernel_bundle_match_mixed',
+		none: 'kernel_bundle_match_none',
+		invalid: 'kernel_bundle_match_invalid',
+	}[modeKey] || 'kernel_bundle_unknown';
+	badge.textContent = I18N.t(matchLabelKey);
 	panel.dataset.state = modeKey;
 	if (release) release.textContent = bundle.kernel_release || '—';
 	if (kmi) kmi.textContent = bundle.kmi || I18N.t('kernel_bundle_exact_only');
