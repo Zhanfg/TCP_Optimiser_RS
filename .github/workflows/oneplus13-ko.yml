@@ -1,4 +1,4 @@
-name: OnePlus 13 PJZ110 KO
+name: OnePlus 13 PJZ110 Flashable
 
 on:
   workflow_dispatch:
@@ -7,9 +7,14 @@ on:
       - 'device/oneplus13-pjz110-ko'
     paths:
       - 'src/kernel_module.rs'
+      - 'src/daemon.rs'
+      - 'customize.sh'
+      - 'scripts/package-module.sh'
+      - 'scripts/validate-package.sh'
       - 'scripts/build-oneplus13-kos.sh'
       - 'scripts/verify-device-symvers.py'
       - 'scripts/device-profiles/oneplus13-pjz110.json'
+      - 'scripts/device-profiles/oneplus13-pjz110.env'
       - '.github/workflows/oneplus13-ko.yml'
 
 concurrency:
@@ -19,9 +24,12 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  ANDROID_NDK_VERSION: 28.2.13676358
+
 jobs:
   build:
-    name: Build PJZ110 KO-only bundle
+    name: Build PJZ110 flashable bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -109,5 +117,72 @@ jobs:
         with:
           name: oneplus13-pjz110-kos
           path: oneplus13_kernel_modules
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Restore Android Rust cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/aarch64-linux-android
+          key: ${{ runner.os }}-pjz110-rust-arm64-${{ hashFiles('Cargo.lock') }}
+
+      - name: Select pinned Android NDK
+        shell: bash
+        run: |
+          NDK_HOME="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          if [ ! -d "$NDK_HOME" ]; then
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION"
+          fi
+          echo "ANDROID_NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
+          echo "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Build PJZ110 arm64 runtime
+        env:
+          TCP_OPTIMISER_OFFICIAL_BUILD: '1'
+          TCP_OPTIMISER_BUILD_REPOSITORY: ${{ github.repository }}
+          TCP_OPTIMISER_BUILD_REVISION: ${{ github.sha }}
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/_/TCP_Optimiser_RS -C debuginfo=0
+        run: |
+          cargo build --release --locked --target aarch64-linux-android
+          binary="target/aarch64-linux-android/release/tcp_optimiser"
+          test -s "$binary"
+          llvm-strip --strip-all "$binary"
+          install -Dm755 "$binary" binary-input/bin/arm64-v8a/tcp_optimiser
+          readelf -h "$binary" | grep -F 'Machine:' | grep -F 'AArch64'
+
+      - id: package_meta
+        name: Resolve PJZ110 package metadata
+        run: |
+          version=$(sed -n 's/^version=//p' module.prop | head -n1)
+          test -n "$version"
+          echo "zip=TCP_Optimiser_RS-v${version}-PJZ110-test.zip" >> "$GITHUB_OUTPUT"
+          echo "artifact=TCP_Optimiser_RS-v${version}-PJZ110-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Build signed PJZ110 flashable ZIP
+        env:
+          MODULE_SIGNING_KEY: ${{ secrets.MODULE_SIGNING_KEY }}
+          TCP_OPTIMISER_PACKAGE_ABIS: arm64-v8a
+          TCP_OPTIMISER_DEVICE_PROFILE_FILE: ${{ github.workspace }}/scripts/device-profiles/oneplus13-pjz110.env
+        run: |
+          rm -rf kernel_modules dist
+          cp -a oneplus13_kernel_modules kernel_modules
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          bash scripts/package-module.sh "dist/${{ steps.package_meta.outputs.zip }}" binary-input/bin
+          bash scripts/validate-package.sh "dist/${{ steps.package_meta.outputs.zip }}"
+          (cd dist && sha256sum "${{ steps.package_meta.outputs.zip }}" > "${{ steps.package_meta.outputs.zip }}.sha256")
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package_meta.outputs.artifact }}
+          path: |
+            dist/${{ steps.package_meta.outputs.zip }}
+            dist/${{ steps.package_meta.outputs.zip }}.sha256
           if-no-files-found: error
           retention-days: 30

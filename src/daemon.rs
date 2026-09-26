@@ -295,7 +295,10 @@ impl DaemonGuard {
                 create_pid_file(&path)?;
                 Ok(Self { path })
             }
-            Err(error) => Err(error),
+            Err(error) => {
+            let _ = crate::kernel_module::mark_qdisc_unavailable(qdisc);
+            Err(error)
+        },
         }
     }
 }
@@ -371,9 +374,10 @@ pub(crate) fn resolve_policy(iface: &str, mode: IfaceMode) -> io::Result<Resolve
         .then(|| network::wifi_freq(iface))
         .flatten();
     let (pacing_ca, pacing_ss) = adjusted_pacing(base_ca, base_ss, wifi_frequency_mhz);
+    let requested_qdisc = qdisc_override().unwrap_or(cfg.qdisc);
     Ok(ResolvedPolicy {
         algorithm,
-        qdisc: qdisc_override().unwrap_or(cfg.qdisc).to_string(),
+        qdisc: runtime_qdisc(requested_qdisc),
         pacing_ca,
         pacing_ss,
         wifi_frequency_mhz,
@@ -456,11 +460,45 @@ fn apply_interface_settings_inner(
             failures.push(format!("Default qdisc {} failed: {error}", policy.qdisc));
         }
         match network::set_qdisc(iface, &policy.qdisc) {
-            Ok(()) => logging::log_print(&format!("Applied qdisc: {} ({iface})", policy.qdisc)),
-            Err(error) => failures.push(format!(
-                "Interface qdisc {} ({iface}) failed: {error}",
-                policy.qdisc
-            )),
+            Ok(()) => {
+                let _ = crate::kernel_module::clear_qdisc_unavailable(&policy.qdisc);
+                logging::log_print(&format!("Applied qdisc: {} ({iface})", policy.qdisc));
+            }
+            Err(error) => {
+                let requested_qdisc = policy.qdisc.clone();
+                if crate::kernel_module::bundled_qdiscs()
+                    .iter()
+                    .any(|qdisc| qdisc == &requested_qdisc)
+                {
+                    let _ = crate::kernel_module::mark_qdisc_unavailable(&requested_qdisc);
+                }
+                failures.push(format!(
+                    "Interface qdisc {} ({iface}) failed: {error}",
+                    requested_qdisc
+                ));
+
+                if let Some(fallback) = runtime_fallback_qdisc(&requested_qdisc) {
+                    if let Err(load_error) = ensure_qdisc_for_policy(&fallback) {
+                        failures.push(format!("Fallback qdisc {fallback} load failed: {load_error}"));
+                    } else if let Err(default_error) = sysctl::set_default_qdisc(&fallback) {
+                        failures.push(format!(
+                            "Fallback default qdisc {fallback} failed: {default_error}"
+                        ));
+                    } else {
+                        match network::set_qdisc(iface, &fallback) {
+                            Ok(()) => {
+                                logging::log_print(&format!(
+                                    "[WARN] qdisc {requested_qdisc} unavailable; using {fallback} ({iface})"
+                                ));
+                                policy.qdisc = fallback;
+                            }
+                            Err(fallback_error) => failures.push(format!(
+                                "Fallback interface qdisc {fallback} ({iface}) failed: {fallback_error}"
+                            )),
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -534,6 +572,23 @@ fn runtime_fallback_algorithm(available: &[String]) -> Option<String> {
                 .find(|algorithm| config::is_known_algorithm(algorithm))
         })
         .cloned()
+}
+
+fn runtime_qdisc(requested: &str) -> String {
+    if !crate::kernel_module::qdisc_marked_unavailable(requested) {
+        return requested.to_string();
+    }
+    runtime_fallback_qdisc(requested).unwrap_or_else(|| "fq_codel".to_string())
+}
+
+fn runtime_fallback_qdisc(requested: &str) -> Option<String> {
+    ["fq_codel", "fq", "codel", "pfifo_fast"]
+        .into_iter()
+        .find(|candidate| {
+            *candidate != requested
+                && !crate::kernel_module::qdisc_marked_unavailable(candidate)
+        })
+        .map(str::to_string)
 }
 
 fn adjusted_pacing(base_ca: u32, base_ss: u32, wifi_frequency_mhz: Option<u32>) -> (u32, u32) {

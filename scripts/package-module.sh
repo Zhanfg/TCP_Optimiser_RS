@@ -23,7 +23,20 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$(dirname "$OUTPUT")"
 
-for ABI in arm64-v8a armeabi-v7a x86_64; do
+read -r -a PACKAGE_ABIS <<< "${TCP_OPTIMISER_PACKAGE_ABIS:-arm64-v8a armeabi-v7a x86_64}"
+[ "${#PACKAGE_ABIS[@]}" -gt 0 ] || {
+  printf 'TCP_OPTIMISER_PACKAGE_ABIS resolved to an empty ABI set\n' >&2
+  exit 1
+}
+
+for ABI in "${PACKAGE_ABIS[@]}"; do
+  case "$ABI" in
+    arm64-v8a|armeabi-v7a|x86_64) ;;
+    *)
+      printf 'unsupported package ABI: %s\n' "$ABI" >&2
+      exit 1
+      ;;
+  esac
   SOURCE="$BINARY_ROOT/$ABI/tcp_optimiser"
   if [ ! -s "$SOURCE" ]; then
     printf 'missing Android binary: %s\n' "$SOURCE" >&2
@@ -35,6 +48,13 @@ done
 cp -a "$REPO_ROOT/webroot" "$STAGE/webroot"
 if [ -d "$REPO_ROOT/kernel_modules" ] && [ -f "$REPO_ROOT/kernel_modules/manifest.json" ]; then
   cp -a "$REPO_ROOT/kernel_modules" "$STAGE/kernel_modules"
+fi
+if [ -n "${TCP_OPTIMISER_DEVICE_PROFILE_FILE:-}" ]; then
+  [ -s "$TCP_OPTIMISER_DEVICE_PROFILE_FILE" ] || {
+    printf 'missing device profile: %s\n' "$TCP_OPTIMISER_DEVICE_PROFILE_FILE" >&2
+    exit 1
+  }
+  install -Dm644 "$TCP_OPTIMISER_DEVICE_PROFILE_FILE" "$STAGE/device_profile/target.properties"
 fi
 for FILE in module.prop customize.sh service.sh post-fs-data.sh uninstall.sh LICENSE; do
   install -Dm644 "$REPO_ROOT/$FILE" "$STAGE/$FILE"
