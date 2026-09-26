@@ -3,7 +3,7 @@ import { haptic } from './motion.js';
 import I18N from './i18n.js';
 import router_state from './router.js';
 import { addLog } from './logs.js';
-import { fetchIsConfigFile, getDefaultQdisc, getNetworkProfile, getQdiscCapabilities, getRuntimeSnapshot, setDefaultQdisc } from './common.js';
+import { fetchIsConfigFile, getDefaultQdisc, getNetworkProfile, getQdiscCapabilities, getRuntimeSnapshot, loadBundledAlgorithm, setDefaultQdisc } from './common.js';
 import { ALL_ALGOS, ALL_QDISCS, getAlgorithmDescription, getQdiscDescription } from './capabilities.js';
 import { setDynamicColorEnabled, setThemeMode } from './theme.js';
 
@@ -115,12 +115,35 @@ function buildAlgoChips(containerId, selectedAlgo, onClick) {
 			chip.classList.add('selected');
 			updateDescription(algo);
 		}
-		chip.addEventListener('click', () => {
+		chip.addEventListener('click', async () => {
 			if (!supported.has(algo)) {
 				toast(I18N.t('algo_not_supported', { algo }));
 				return;
 			}
 			if (chip.classList.contains('selected')) return;
+
+			if (bundled.has(algo) && !runtime.has(algo)) {
+				chip.disabled = true;
+				chip.classList.add('is-loading');
+				try {
+					await loadBundledAlgorithm(algo);
+					if (!router_state.native_algorithms.includes(algo)) router_state.native_algorithms.push(algo);
+					if (!router_state.available_algorithms.includes(algo)) router_state.available_algorithms.push(algo);
+					runtime.add(algo);
+					chip.dataset.source = 'runtime';
+					chip.classList.remove('capability-bundled');
+					addLog(`Loaded bundled congestion control: ${algo}`);
+				} catch (error) {
+					console.error(`Failed to load bundled algorithm ${algo}:`, error);
+					addLog(`Kernel module load failed for ${algo}: ${error.message || error}`);
+					toast(I18N.t('toast_error'));
+					return;
+				} finally {
+					chip.disabled = false;
+					chip.classList.remove('is-loading');
+				}
+			}
+
 			container.querySelectorAll('.algo-chip.selected').forEach(c => c.classList.remove('selected'));
 			chip.classList.add('selected');
 			updateDescription(algo);
