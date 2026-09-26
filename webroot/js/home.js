@@ -2,7 +2,7 @@ import { exec, toast } from './kernelsu.js';
 import I18N from './i18n.js';
 import { get_active_iface, get_active_algorithm, getInitcwndInitrwndValue, getModuleActiveState, getDefaultQdisc, getProxyStatus, getHostsStatus, getRuntimeSnapshot, repairRuntimePolicy, formatLocalDateTime } from './common.js';
 import router_state from './router.js';
-import { getAlgorithmDescription, getQdiscDescription } from './capabilities.js';
+import { getAlgorithmDescription, getAlgorithmDisplayName, getQdiscDescription } from './capabilities.js';
 import { haptic, setAnimatedText } from './motion.js';
 
 let _lastAlgoSet = '';
@@ -350,7 +350,7 @@ function updateAlgoChips() {
 			: bundled.has(algo) ? 'capability_bundled' : 'capability_unsupported';
 		chip.title = `${getAlgorithmDescription(algo, I18N.currentLang)} · ${I18N.t(sourceKey)}`;
 		const label = document.createElement('span');
-		label.textContent = algo;
+		label.textContent = getAlgorithmDisplayName(algo);
 		chip.appendChild(label);
 		chip.setAttribute('aria-label', `${algo}: ${I18N.t(sourceKey)}`);
 		if (bundled.has(algo) && !runtime.has(algo)) {
@@ -493,7 +493,7 @@ export function updateHomeUI() {
 
 	setAnimatedText(document.getElementById('iface-type-value'), notInstalled ? "\u2014" : (enabled ? p.active_iface_type : "\u2014"));
 	setAnimatedText(document.getElementById('iface-name-value'), notInstalled ? "\u2014" : (enabled ? p.active_iface : "\u2014"));
-	setAnimatedText(document.getElementById('tcp-algo-value'), notInstalled ? "\u2014" : (enabled ? p.active_algorithm : "\u2014"));
+	setAnimatedText(document.getElementById('tcp-algo-value'), notInstalled ? "\u2014" : (enabled ? getAlgorithmDisplayName(p.active_algorithm) : "\u2014"));
 	setAnimatedText(document.getElementById('qdisc-value'), notInstalled ? "\u2014" : (enabled ? p.default_qdisc : "\u2014"));
 	document.querySelector('.network-panel')?.classList.toggle('is-live', enabled && !notInstalled);
 
