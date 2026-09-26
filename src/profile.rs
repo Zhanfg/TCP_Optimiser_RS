@@ -247,6 +247,12 @@ fn selected_algorithm(prefix: &str) -> Option<String> {
 }
 
 fn kernel_release() -> Option<String> {
+    if let Ok(release) = fs::read_to_string("/proc/sys/kernel/osrelease") {
+        let release = release.trim();
+        if !release.is_empty() {
+            return Some(release.to_string());
+        }
+    }
     let output = Command::new("uname").arg("-r").output().ok()?;
     output
         .status
