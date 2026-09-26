@@ -37,17 +37,42 @@ if [ -f "$TARGET_PROFILE" ]; then
     # shellcheck disable=SC1090
     . "$TARGET_PROFILE"
 
-    [ -n "${TARGET_PRODUCT:-}" ] || abort "! Device profile is missing TARGET_PRODUCT"
+    [ -n "${TARGET_MODEL:-}" ] || abort "! Device profile is missing TARGET_MODEL"
+    [ -n "${TARGET_DEVICE:-}" ] || abort "! Device profile is missing TARGET_DEVICE"
     [ -n "${TARGET_ABI:-}" ] || abort "! Device profile is missing TARGET_ABI"
     [ -n "${TARGET_KMI:-}" ] || abort "! Device profile is missing TARGET_KMI"
 
     [ "$RUST_ABI" = "$TARGET_ABI" ] || abort "! This package requires ABI $TARGET_ABI"
 
+    MODEL_MATCH=0
     DEVICE_MATCH=0
-    for PROP in ro.product.device ro.product.vendor.device ro.product.product.device ro.product.odm.device; do
-        [ "$(getprop "$PROP" 2>/dev/null)" = "$TARGET_PRODUCT" ] && DEVICE_MATCH=1
+    IDENTITY_MATCH=0
+
+    for PROP in \
+        ro.product.model ro.product.vendor.model ro.product.product.model ro.product.odm.model \
+        ro.product.name ro.product.vendor.name ro.product.product.name ro.product.odm.name; do
+        [ "$(getprop "$PROP" 2>/dev/null)" = "$TARGET_MODEL" ] && MODEL_MATCH=1
     done
-    [ "$DEVICE_MATCH" -eq 1 ] || abort "! This package is restricted to $TARGET_PRODUCT"
+
+    for PROP in \
+        ro.product.device ro.product.vendor.device ro.product.product.device ro.product.odm.device \
+        ro.build.product; do
+        [ "$(getprop "$PROP" 2>/dev/null)" = "$TARGET_DEVICE" ] && DEVICE_MATCH=1
+    done
+
+    BUILD_FINGERPRINT="$(getprop ro.build.fingerprint 2>/dev/null)"
+    case "$BUILD_FINGERPRINT" in
+        OnePlus/"$TARGET_MODEL"/"$TARGET_DEVICE":*) IDENTITY_MATCH=1 ;;
+    esac
+
+    if [ "$IDENTITY_MATCH" -ne 1 ] && { [ "$MODEL_MATCH" -ne 1 ] || [ "$DEVICE_MATCH" -ne 1 ]; }; then
+        ui_print "! Detected model: $(getprop ro.product.model 2>/dev/null)"
+        ui_print "! Detected name: $(getprop ro.product.name 2>/dev/null)"
+        ui_print "! Detected device: $(getprop ro.product.device 2>/dev/null)"
+        ui_print "! Detected build.product: $(getprop ro.build.product 2>/dev/null)"
+        ui_print "! Detected fingerprint: $BUILD_FINGERPRINT"
+        abort "! This package requires OnePlus $TARGET_MODEL ($TARGET_DEVICE)"
+    fi
 
     KERNEL_RELEASE="$(cat /proc/sys/kernel/osrelease 2>/dev/null)"
     VERSION_PART="${KERNEL_RELEASE%%-*}"
@@ -59,7 +84,7 @@ if [ -f "$TARGET_PROFILE" ]; then
     CURRENT_KMI="$MAJOR_MINOR-$ANDROID_PART-$KMI_GEN"
     [ "$CURRENT_KMI" = "$TARGET_KMI" ] || abort "! Kernel KMI mismatch: expected $TARGET_KMI, got $CURRENT_KMI"
 
-    ui_print "- Device gate: $TARGET_PRODUCT / $TARGET_KMI verified"
+    ui_print "- Device gate: $TARGET_MODEL ($TARGET_DEVICE) / $TARGET_KMI verified"
 fi
 
 "$RUST_BIN" install || abort "! Rust installer failed"
