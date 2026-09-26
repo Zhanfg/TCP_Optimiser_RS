@@ -34,7 +34,6 @@ fn build_algo_map() -> HashMap<&'static str, AlgoConfig> {
             300,
             "Google BBR - high throughput, low latency",
         ),
-        ("bbr2", "fq", 200, 300, "BBR v2 - improved fairness"),
         ("bbr3", "fq", 220, 320, "BBR v3 - experimental"),
         (
             "cubic",
@@ -156,7 +155,6 @@ fn build_algo_map() -> HashMap<&'static str, AlgoConfig> {
 /// All known algorithms in display order
 pub const ALL_ALGOS: &[&str] = &[
     "bbr",
-    "bbr2",
     "bbr3",
     "cubic",
     "westwood",
