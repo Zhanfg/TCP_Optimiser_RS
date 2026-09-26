@@ -88,7 +88,7 @@ const coreCoverage = [
 	['Install', 'customize.sh', '"$RUST_BIN" install'],
 	['VerifyModule', 'customize.sh', 'verify-module'],
 	['Status', 'webroot/js/common.js', "'status'"],
-	['Adaptive', 'webroot/js/common.js', "'adaptive'"],
+	['Adaptive', 'webroot/js/common.js', 'adaptive --sample-ms'],
 	['Sample', 'webroot/js/common.js', "'sample'"],
 	['Repair', 'webroot/js/common.js', "'repair'"],
 	['Proxy', 'webroot/js/common.js', "'proxy'"],
