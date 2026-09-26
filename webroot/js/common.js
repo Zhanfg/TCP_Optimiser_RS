@@ -154,6 +154,28 @@ export async function getDefaultQdisc() {
 
 const runtimeSnapshotCache = new Map();
 const runtimeSnapshotCheckedAt = new Map();
+let webuiHeartbeatAt = 0;
+
+async function readModuleJson(name, timeoutMs = 2200) {
+	const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
+	try {
+		const { stdout } = await exec(`cat ${shellQuote(`${dir}/${name}`)} 2>/dev/null`, { timeoutMs });
+		const value = JSON.parse(stdout.trim());
+		return value && typeof value === 'object' ? value : null;
+	} catch (_) {
+		return null;
+	}
+}
+
+export async function signalWebUiActive(force = false) {
+	const now = Date.now();
+	if (!force && now - webuiHeartbeatAt < 4000) return;
+	webuiHeartbeatAt = now;
+	const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
+	try {
+		await exec(`touch ${shellQuote(`${dir}/webui.active`)}`, { timeoutMs: 1200 });
+	} catch (_) {}
+}
 
 function rustBinaryCommand(marker, subcommand) {
 	const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
@@ -191,11 +213,26 @@ export async function getRuntimeSnapshot(
 	if (!force && runtimeSnapshotCache.has(cacheKey) && now - (runtimeSnapshotCheckedAt.get(cacheKey) || 0) < ttl) {
 		return runtimeSnapshotCache.get(cacheKey);
 	}
+
+	// Fast path: the daemon continuously publishes this small JSON file. This
+	// avoids starting a new Rust process for every WebUI paint/telemetry tick.
+	const persisted = await readModuleJson('runtime_snapshot.json', 1600);
+	if (persisted?.active_iface && Number.isFinite(persisted.generated_epoch)) {
+		const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000) - persisted.generated_epoch);
+		if (ageSeconds <= 90 || !force) {
+			runtimeSnapshotCache.set(cacheKey, persisted);
+			runtimeSnapshotCheckedAt.set(cacheKey, now);
+			return persisted;
+		}
+	}
+
+	// Compatibility fallback for first boot / daemon restart. Keep this bounded
+	// so a broken runtime command cannot freeze the whole WebUI for 15 seconds.
 	const args = includeStats ? ['sample'] : ['status', '--runtime-only'];
 	if (includeDetails) args.push('--details');
 	if (!includeStats && includeVerification) args.push('--verify');
 	const marker = includeStats ? 'runtime-stats-sample' : 'runtime-status-snapshot';
-	const { stdout } = await exec(rustBinaryCommand(marker, args.join(' ')));
+	const { stdout } = await exec(rustBinaryCommand(marker, args.join(' ')), { timeoutMs: 4500 });
 	const snapshot = JSON.parse(stdout.trim());
 	if (!snapshot || typeof snapshot !== 'object' || !snapshot.active_iface) {
 		throw new Error('Invalid runtime status payload');
@@ -206,16 +243,35 @@ export async function getRuntimeSnapshot(
 }
 
 export async function getNetworkProfile(refresh = false, auto = null) {
+	if (!refresh && auto === null) {
+		const persisted = await readModuleJson('auto_profile.json', 1600);
+		if (persisted?.schema === 1) return persisted;
+	}
 	const args = ['profile'];
 	if (refresh) args.push('--refresh');
 	if (auto === true) args.push('--auto', 'on');
 	else if (auto === false) args.push('--auto', 'off');
-	const { stdout } = await exec(rustBinaryCommand('network-auto-profile', args.join(' ')));
+	const { stdout } = await exec(rustBinaryCommand('network-auto-profile', args.join(' ')), { timeoutMs: 5000 });
 	const profile = JSON.parse(stdout.trim());
 	if (!profile || typeof profile !== 'object' || profile.schema !== 1) {
 		throw new Error('Invalid network profile payload');
 	}
 	return profile;
+}
+
+export async function loadBundledAlgorithm(algorithm) {
+	if (!ALL_QDISCS && !algorithm) throw new Error('Invalid algorithm');
+	const { stdout } = await exec(
+		rustBinaryCommand('kernel-module-load', `load-algorithm ${shellQuote(algorithm)}`),
+		{ timeoutMs: 5000 },
+	);
+	const result = JSON.parse(stdout.trim());
+	if (!result?.available || result.algorithm !== algorithm) {
+		throw new Error(`${algorithm} did not become available`);
+	}
+	runtimeSnapshotCache.clear();
+	runtimeSnapshotCheckedAt.clear();
+	return result;
 }
 
 export async function repairRuntimePolicy() {
@@ -233,7 +289,18 @@ let buildInfoCache = null;
 
 export async function getBuildInfo(force = false) {
 	if (!force && buildInfoCache) return buildInfoCache;
-	const { stdout } = await exec(rustBinaryCommand('runtime-build-info', 'build-info'));
+	const packaged = await readModuleJson('build-info.json', 1400);
+	if (packaged?.revision) {
+		const info = {
+			version: packaged.version || router_state.moduleInformation?.version || '—',
+			channel: packaged.channel || 'official-github',
+			source: packaged.source || packaged.repository || '—',
+			revision: packaged.revision,
+		};
+		buildInfoCache = info;
+		return info;
+	}
+	const { stdout } = await exec(rustBinaryCommand('runtime-build-info', 'build-info'), { timeoutMs: 3500 });
 	const info = JSON.parse(stdout.trim());
 	if (!info || typeof info !== 'object' || !info.version || !info.revision) {
 		throw new Error('Invalid build-info payload');
