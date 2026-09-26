@@ -23,7 +23,12 @@ chmod 0755 "$RUST_BIN" || abort "! Cannot make Rust binary executable"
 
 export TCP_OPTIMISER_MODULE_DIR="$MODPATH"
 export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:$PATH"
-"$RUST_BIN" verify-module "$MODPATH" || abort "! Module signature or file hash verification failed"
+VERIFY_OUTPUT="$("$RUST_BIN" verify-module "$MODPATH" 2>&1)"
+VERIFY_RC=$?
+if [ "$VERIFY_RC" -ne 0 ]; then
+    [ -n "$VERIFY_OUTPUT" ] && ui_print "! $VERIFY_OUTPUT"
+    abort "! Module signature or file hash verification failed"
+fi
 
 TARGET_PROFILE="$MODPATH/device_profile/target.properties"
 if [ -f "$TARGET_PROFILE" ]; then
