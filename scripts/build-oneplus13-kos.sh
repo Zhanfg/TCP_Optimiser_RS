@@ -8,7 +8,8 @@ SOURCE_REPO=https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8750.g
 SOURCE_REV=e1b346b6b4f4096eb342ae3684838a942fd6f6c4
 BBR_REPO=https://github.com/hrimfaxi/tcp_bbr_modules.git
 BBR_REV=c5c557584175b5fed8939bf91ec249aed158597d
-JOBS=${TCP_OPTIMISER_BUILD_JOBS:-2}
+JOBS=${TCP_OPTIMISER_BUILD_JOBS:-$(nproc)}
+SYMVERS_CACHE=${TCP_OPTIMISER_SYMVERS_CACHE:-}
 
 WORK=$(mktemp -d)
 cleanup() { rm -rf "$WORK"; }
@@ -24,6 +25,12 @@ git -C "$KERNEL" fetch --depth=1 origin "$SOURCE_REV"
 git -C "$KERNEL" checkout --detach FETCH_HEAD
 
 KBUILD=(ARCH=arm64 LLVM=-18 LLVM_IAS=1)
+if command -v ccache >/dev/null 2>&1; then
+  export CCACHE_BASEDIR="$WORK"
+  export CCACHE_NOHASHDIR=true
+  export CCACHE_COMPILERCHECK=content
+  KBUILD+=(CC="ccache clang-18")
+fi
 make -C "$KERNEL" "${KBUILD[@]}" gki_defconfig
 
 CONFIG="$KERNEL/.config"
@@ -50,25 +57,48 @@ grep -qx 'CONFIG_NET_SCH_CAKE=m' "$CONFIG"
 grep -qx 'CONFIG_NET_SCH_PIE=m' "$CONFIG"
 grep -qx 'CONFIG_NET_SCH_FQ_PIE=m' "$CONFIG"
 
-# Generate the source CRC table using the pinned OnePlus kernel. Do not emit
-# any device bundle unless all 65 live-device CRC fingerprints match.
-make -C "$KERNEL" -j"$JOBS" "${KBUILD[@]}" vmlinux
+# Prepare generated headers first. This is cheap and is sufficient for
+# targeted module builds once a verified vmlinux.symvers is available.
+make -C "$KERNEL" -j"$JOBS" "${KBUILD[@]}" modules_prepare
 
-echo "Generated symbol tables:"
-ls -lh "$KERNEL"/*symvers 2>/dev/null || true
+ABI_REPORT="$WORK/device-abi-report.json"
+if [[ -n "$SYMVERS_CACHE" && -s "$SYMVERS_CACHE/vmlinux.symvers" ]]; then
+  echo "Using cached PJZ110 vmlinux.symvers: $SYMVERS_CACHE/vmlinux.symvers"
+  python3 "$REPO_ROOT/scripts/verify-device-symvers.py" \
+    "$PROFILE" "$SYMVERS_CACHE/vmlinux.symvers" \
+    --report "$ABI_REPORT"
+  install -m 0644 "$SYMVERS_CACHE/vmlinux.symvers" "$KERNEL/vmlinux.symvers"
+else
+  echo "PJZ110 symvers cache miss; building vmlinux once with JOBS=$JOBS"
+  make -C "$KERNEL" -j"$JOBS" "${KBUILD[@]}" vmlinux
 
-# Android GKI 6.6 exposes the linked kernel CRC table as vmlinux.symvers.
-# This is the table we must compare with the live PJZ110 vendor-module ABI.
-test -s "$KERNEL/vmlinux.symvers"
-python3 "$REPO_ROOT/scripts/verify-device-symvers.py" \
-  "$PROFILE" "$KERNEL/vmlinux.symvers" \
-  --report "$WORK/device-abi-report.json"
+  echo "Generated symbol tables:"
+  ls -lh "$KERNEL"/*symvers 2>/dev/null || true
 
-# External-module Kbuild expects Module.symvers. Feed it only the symbol table
-# that has already passed the live-device CRC gate above.
+  test -s "$KERNEL/vmlinux.symvers"
+  python3 "$REPO_ROOT/scripts/verify-device-symvers.py" \
+    "$PROFILE" "$KERNEL/vmlinux.symvers" \
+    --report "$ABI_REPORT"
+
+  if [[ -n "$SYMVERS_CACHE" ]]; then
+    mkdir -p "$SYMVERS_CACHE"
+    install -m 0644 "$KERNEL/vmlinux.symvers" "$SYMVERS_CACHE/vmlinux.symvers"
+    install -m 0644 "$ABI_REPORT" "$SYMVERS_CACHE/abi-report.json"
+    printf '%s\n' "$SOURCE_REV" > "$SYMVERS_CACHE/source-revision.txt"
+    echo "Stored verified PJZ110 symvers cache"
+  fi
+fi
+
+# External-module/in-tree M= builds expect Module.symvers at the kernel root.
 install -m 0644 "$KERNEL/vmlinux.symvers" "$KERNEL/Module.symvers"
 
-make -C "$KERNEL" -j"$JOBS" "${KBUILD[@]}" M=net/sched   net/sched/sch_cake.ko net/sched/sch_pie.ko net/sched/sch_fq_pie.ko
+# M=net/sched already establishes the directory prefix. Build the directory as
+# a unit so sch_fq_pie can resolve PIE exports from sch_pie in the same modpost.
+make -C "$KERNEL" -j"$JOBS" "${KBUILD[@]}" M=net/sched modules
+
+for ko in sch_cake.ko sch_pie.ko sch_fq_pie.ko; do
+  test -s "$KERNEL/net/sched/$ko"
+done
 
 git clone --filter=blob:none "$BBR_REPO" "$BBR"
 git -C "$BBR" checkout --detach "$BBR_REV"
@@ -94,7 +124,7 @@ install -m 0644 "$KERNEL/net/sched/sch_pie.ko" "$DEST/6.6-android15-8/aarch64/"
 install -m 0644 "$KERNEL/net/sched/sch_fq_pie.ko" "$DEST/6.6-android15-8/aarch64/"
 install -m 0644 "$BBR/tcp_bbr3.ko" "$DEST/6.6-android15-8/aarch64/"
 install -m 0644 "$PROFILE" "$DEST/device_profile/oneplus13-pjz110.json"
-install -m 0644 "$WORK/device-abi-report.json" "$DEST/device_profile/abi-report.json"
+install -m 0644 "$ABI_REPORT" "$DEST/device_profile/abi-report.json"
 
 # Every output must carry symbol versions. Android's module loader ignores the
 # kernel-release prefix in vermagic when __versions is present, but it still
@@ -141,7 +171,6 @@ manifest={
 (root/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
 PY
 
-cp "$KERNEL/vmlinux.symvers" "$DEST/device_profile/vmlinux.symvers"
 cp "$KERNEL/vmlinux.symvers" "$DEST/device_profile/vmlinux.symvers"
 cp "$KERNEL/Module.symvers" "$DEST/device_profile/Module.symvers"
 printf 'built OnePlus 13 PJZ110 KO-only bundle with %s modules\n'   "$(find "$DEST/6.6-android15-8/aarch64" -name '*.ko' | wc -l)"
