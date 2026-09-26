@@ -114,8 +114,16 @@ for line in text.splitlines():
 p.write_text(text)
 PY
 
-make -C "$BBR"   KDIR="$KERNEL" ARCH=arm64 LLVM=-18 LLVM_IAS=1   CC_PROBE=clang-18 PROBE_J="$JOBS" probe
-make -C "$BBR"   KDIR="$KERNEL" ARCH=arm64 LLVM=-18 LLVM_IAS=1   CC_PROBE=clang-18 PROBE_J="$JOBS"
+BBR_CC_ARGS=()
+if command -v ccache >/dev/null 2>&1; then
+  BBR_CC_ARGS+=(CC="ccache clang-18")
+fi
+make -C "$BBR" \
+  KDIR="$KERNEL" ARCH=arm64 LLVM=-18 LLVM_IAS=1 \
+  "${BBR_CC_ARGS[@]}" CC_PROBE=clang-18 PROBE_J="$JOBS" probe
+make -C "$BBR" \
+  KDIR="$KERNEL" ARCH=arm64 LLVM=-18 LLVM_IAS=1 \
+  "${BBR_CC_ARGS[@]}" CC_PROBE=clang-18 PROBE_J="$JOBS"
 
 rm -rf "$DEST"
 mkdir -p "$DEST/6.6-android15-8/aarch64" "$DEST/device_profile"
