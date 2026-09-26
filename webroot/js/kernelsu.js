@@ -93,10 +93,10 @@ function mockExec(cmd) {
 			build: { version: '3.0.0', git_sha: 'preview', build_epoch: 0 },
 			active_iface: 'wlan0', module_active: true, algorithm: 'bbr3', default_qdisc: 'fq',
 			native_algorithms: ['bbr', 'cubic', 'reno', 'westwood'],
-			available_algorithms: ['bbr', 'bbr2', 'bbr3', 'cubic', 'westwood', 'reno', 'htcp', 'vegas', 'yeah', 'illinois', 'dctcp', 'cdg', 'bic', 'highspeed', 'hybla', 'nv', 'scalable', 'lp'],
-			bundled_algorithms: ['bbr2', 'bbr3', 'htcp', 'vegas'],
+			available_algorithms: ['bbr', 'bbr3', 'cubic', 'westwood', 'reno', 'htcp', 'vegas', 'yeah', 'illinois', 'dctcp', 'cdg', 'bic', 'highspeed', 'hybla', 'nv', 'scalable', 'lp'],
+			bundled_algorithms: ['bbr3', 'htcp', 'vegas'],
 			bundled_qdiscs: ['fq', 'fq_codel', 'codel', 'pie'],
-			kernel_bundle: { kernel_release: '6.6.139-4k-gce3170e88ddc', kmi: null, arch: 'aarch64', manifest_present: true, matching_mode: 'exact_release', matched_modules: 8, bundled_algorithms: ['bbr2', 'bbr3', 'htcp', 'vegas'], bundled_qdiscs: ['fq', 'fq_codel', 'codel', 'pie'] },
+			kernel_bundle: { kernel_release: '6.6.139-4k-gce3170e88ddc', kmi: null, arch: 'aarch64', manifest_present: true, matching_mode: 'exact_release', matched_modules: 8, bundled_algorithms: ['bbr3', 'htcp', 'vegas'], bundled_qdiscs: ['fq', 'fq_codel', 'codel', 'pie'] },
 			auto_tuning_enabled: true, qdisc_policy: 'per_algorithm',
 			proxy: 'Mihomo · TPROXY', hosts: 'none', init_windows: [32, 32],
 			tcp: { retrans: 1234, in_segs: 15234567, out_segs: 12345678 },
@@ -114,9 +114,9 @@ function mockExec(cmd) {
 			kernel_release: '6.6.139-4k-gce3170e88ddc', kmi: null, arch: 'aarch64',
 			memory_kib: 12582912, active_iface: 'wlan0', iface_mode: 'Wi-Fi', iface_mtu: 1500,
 			proxy: { family: 'mihomo', label: 'Mihomo', mode: 'tproxy', transparent: true, tproxy: true, virtual_iface: null },
-			available_algorithms: ['bbr', 'bbr2', 'bbr3', 'cubic', 'reno'],
-			bundled_algorithms: ['bbr2', 'bbr3'], bundled_qdiscs: ['fq', 'fq_codel'],
-			wifi_algorithm: 'bbr3', cellular_algorithm: 'bbr2', qdisc_policy: 'per_algorithm',
+			available_algorithms: ['bbr', 'bbr3', 'cubic', 'reno'],
+			bundled_algorithms: ['bbr3'], bundled_qdiscs: ['fq', 'fq_codel'],
+			wifi_algorithm: 'bbr3', cellular_algorithm: qdisc_policy: 'per_algorithm',
 			recommendations: { socket_buffer_floor: 33554432, somaxconn: 4096, netdev_max_backlog: 8192, nf_conntrack_max: 262144, tcp_mtu_probing: 1, tcp_sack: 1, tcp_dsack: 1, tcp_no_metrics_save: 0, tcp_autocorking: 1 }
 		}), stderr: '' };
 	}
