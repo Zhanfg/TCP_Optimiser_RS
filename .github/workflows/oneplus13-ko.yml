@@ -143,6 +143,11 @@ jobs:
           echo "ANDROID_NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
           echo "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
 
+      - name: Validate Rust source
+        run: |
+          cargo test --all-targets --locked
+          cargo fmt --all -- --check
+
       - name: Build PJZ110 arm64 runtime
         env:
           TCP_OPTIMISER_OFFICIAL_BUILD: '1'
