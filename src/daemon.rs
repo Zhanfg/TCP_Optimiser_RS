@@ -63,9 +63,9 @@ pub fn run() -> io::Result<()> {
             Ok(_) => logging::log_print(
                 "[WARN] BBRv3 module was present but did not register as a TCP congestion control",
             ),
-            Err(error) => logging::log_print(&format!(
-                "[WARN] BBRv3 warm registration failed: {error}"
-            )),
+            Err(error) => {
+                logging::log_print(&format!("[WARN] BBRv3 warm registration failed: {error}"))
+            }
         }
     }
 
