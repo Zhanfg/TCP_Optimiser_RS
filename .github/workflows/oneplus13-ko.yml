@@ -59,7 +59,6 @@ jobs:
       - name: Build and verify against live-device CRC fingerprint
         env:
           TCP_OPTIMISER_SYMVERS_CACHE: ${{ github.workspace }}/.oneplus13-symvers-cache
-          CCACHE_DIR: ${{ runner.temp }}/unused
         run: |
           set -o pipefail
           bash scripts/build-oneplus13-kos.sh oneplus13_kernel_modules \
