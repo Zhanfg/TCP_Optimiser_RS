@@ -462,35 +462,21 @@ export async function initSettings() {
 			.filter(item => item.state === 'supported')
 			.forEach(capability => {
 			const q = capability.name;
-			const state = capability?.state || 'unknown';
-			const source = capability?.source || 'unknown';
+			const source = capability?.source || 'runtime';
 			const chip = document.createElement('button');
 			chip.className = 'algo-chip';
 			chip.dataset.qdisc = q;
-			chip.dataset.capability = state;
+			chip.dataset.capability = 'supported';
 			chip.dataset.source = source;
 			if (source === 'bundle') chip.classList.add('capability-bundled');
-			const stateLabel = I18N.t(state === 'supported' ? 'capability_supported' : state === 'unsupported' ? 'capability_unsupported' : 'capability_unknown');
+			const stateLabel = I18N.t('capability_supported');
 			chip.setAttribute('aria-label', `${q}: ${stateLabel}. ${getQdiscDescription(q, I18N.currentLang)}`);
 			const label = document.createElement('span');
 			label.textContent = q;
 			chip.appendChild(label);
-			chip.title = `${getQdiscDescription(q, I18N.currentLang)} · ${I18N.t(state === 'supported' ? 'capability_supported' : state === 'unsupported' ? 'capability_unsupported' : 'capability_unknown')}`;
-			if (state !== 'supported') {
-				chip.classList.add(state === 'unsupported' ? 'unsupported' : 'capability-unknown');
-				chip.dataset.unavailable = 'true';
-				const mark = document.createElement('span');
-				mark.className = 'capability-mark';
-				mark.textContent = state === 'unsupported' ? '×' : '?';
-				mark.setAttribute('aria-hidden', 'true');
-				chip.appendChild(mark);
-			}
+			chip.title = `${getQdiscDescription(q, I18N.currentLang)} · ${stateLabel}`;
 			if (hasManualQdisc && q === currentQdisc) chip.classList.add('selected');
 			chip.addEventListener('click', async () => {
-				if (state !== 'supported') {
-					toast(`${q}: ${getQdiscDescription(q, I18N.currentLang)}`);
-					return;
-				}
 				if (chip.classList.contains('selected')) return;
 				const ok = await setDefaultQdisc(q);
 				if (ok) {
@@ -725,15 +711,16 @@ function renderAdvancedControls(values) {
 	if (!container) return;
 	container.replaceChildren();
 	const groups = ['lifecycle', 'memory', 'queue', 'recovery', 'plb', 'latency', 'conntrack'];
-	let supported = 0;
 	for (const group of groups) {
-		const items = ADVANCED_SYSCTLS.filter(item => item.group === group);
-		const available = items.filter(item => /^\d+$/.test(values.get(item.key) || '')).length;
-		supported += available;
+		const items = ADVANCED_SYSCTLS
+			.filter(item => item.group === group)
+			.filter(item => /^\d+$/.test(values.get(item.key) || ''));
+		if (items.length === 0) continue;
+
 		const details = document.createElement('details');
 		details.className = 'settings-group';
 		details.open = group === 'lifecycle';
-		details.innerHTML = `<summary class="settings-group__summary"><span class="settings-group__icon ui-icon icon-sliders" aria-hidden="true"></span><span class="settings-group__copy"><strong>${I18N.t(`advanced_group_${group}`)}</strong><small>${I18N.t('advanced_group_count', { supported: available, total: items.length })}</small></span><span class="collapsible-chevron ui-icon icon-chevron-down" aria-hidden="true"></span></summary>`;
+		details.innerHTML = `<summary class="settings-group__summary"><span class="settings-group__icon ui-icon icon-sliders" aria-hidden="true"></span><span class="settings-group__copy"><strong>${I18N.t(`advanced_group_${group}`)}</strong></span><span class="collapsible-chevron ui-icon icon-chevron-down" aria-hidden="true"></span></summary>`;
 		const body = document.createElement('div');
 		body.className = 'settings-group__body';
 		const grid = document.createElement('div');
@@ -744,25 +731,23 @@ function renderAdvancedControls(values) {
 		container.appendChild(details);
 	}
 	const count = document.getElementById('advanced-supported-count');
-	if (count) count.textContent = I18N.t('advanced_supported_count', { supported, total: ADVANCED_SYSCTLS.length });
+	if (count) count.hidden = true;
 }
 
 function createAdvancedControl(item, rawValue) {
-	const supported = /^\d+$/.test(rawValue || '');
 	const wrapper = document.createElement('div');
 	wrapper.className = 'knob advanced-control';
-	wrapper.dataset.supported = supported ? 'true' : 'false';
+	wrapper.dataset.supported = 'true';
 	const label = document.createElement('label');
 	label.htmlFor = `adv-${item.key}`;
 	label.textContent = I18N.t(`advanced_${item.key}`);
 	const hint = document.createElement('small');
 	hint.className = 'advanced-control__hint';
-	hint.textContent = supported ? item.key : I18N.t('advanced_unsupported');
+	hint.textContent = item.key;
 	wrapper.append(label, hint);
 	const input = document.createElement('input');
 	input.id = `adv-${item.key}`;
 	input.dataset.sysctlKey = item.key;
-	input.disabled = !supported;
 	if (item.boolean) {
 		input.type = 'checkbox';
 		input.checked = rawValue === '1';
@@ -779,8 +764,8 @@ function createAdvancedControl(item, rawValue) {
 		input.min = item.min;
 		input.max = item.max;
 		input.step = item.step;
-		input.value = supported ? rawValue : '';
-		input.dataset.initialValue = supported ? rawValue : '';
+		input.value = rawValue;
+		input.dataset.initialValue = rawValue;
 		wrapper.appendChild(input);
 	}
 	return wrapper;
@@ -1102,42 +1087,34 @@ function savePresets(presets) {
 function initPresets() {
 	const builtin = getBuiltinPresets();
 	const saved = getSavedPresets();
-	const all = [...builtin, ...saved];
+	const isCompatible = (preset) => {
+		const qdiscSupported = router_state.qdiscCapabilities
+			.some(item => item.name === preset.qdisc && item.state === 'supported');
+		return router_state.available_algorithms.includes(preset.wlanAlgo)
+			&& router_state.available_algorithms.includes(preset.cellAlgo)
+			&& qdiscSupported;
+	};
+	const all = [...builtin, ...saved].filter(isCompatible);
 
 	const container = document.getElementById('preset-list');
 	if (!container) return;
 	container.innerHTML = '';
 
-	all.forEach((preset, idx) => {
-		const isBuiltin = idx < builtin.length;
-		const qdiscSupported = router_state.qdiscCapabilities
-			.some(item => item.name === preset.qdisc && item.state === 'supported');
-		const compatible = router_state.available_algorithms.includes(preset.wlanAlgo)
-			&& router_state.available_algorithms.includes(preset.cellAlgo)
-			&& qdiscSupported;
+	all.forEach(preset => {
+		const isBuiltin = builtin.some(item => item.name === preset.name);
 		const chip = document.createElement('button');
 		chip.className = 'preset-chip';
 		chip.dataset.name = preset.name;
-		chip.title = `${preset.desc || preset.name}${compatible ? '' : ` · ${I18N.t('capability_unsupported')}`}`;
+		chip.title = preset.desc || preset.name;
 		const dot = document.createElement('span');
 		dot.className = 'preset-dot';
 		dot.style.background = isBuiltin ? 'var(--md-sys-color-primary)' : 'var(--md-sys-color-tertiary)';
 		const label = document.createElement('span');
 		label.textContent = preset.name;
 		chip.append(dot, label);
-		if (compatible) {
-			chip.addEventListener('click', async () => {
-				await applyPreset(preset);
-			});
-		} else {
-			chip.classList.add('unsupported');
-			chip.disabled = true;
-			const mark = document.createElement('span');
-			mark.className = 'capability-mark';
-			mark.textContent = '×';
-			mark.setAttribute('aria-hidden', 'true');
-			chip.appendChild(mark);
-		}
+		chip.addEventListener('click', async () => {
+			await applyPreset(preset);
+		});
 		container.appendChild(chip);
 	});
 
