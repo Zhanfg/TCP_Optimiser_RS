@@ -309,7 +309,9 @@ export async function initSettings() {
 	const forceApplyBtn = document.getElementById('force-apply-btn');
 
 	initThemeSettings();
-	await initAutoProfile();
+	// Profile rendering is independent from the controls below. Populate it in
+	// the background so a slow bridge/file read never blocks the settings page.
+	void initAutoProfile();
 
 	// Language selector
 	const savedLang = localStorage.getItem('tcp_lang') || 'en';
@@ -324,18 +326,34 @@ export async function initSettings() {
 		});
 	});
 
-	if (router_state.available_algorithms.length === 0) await fetchAvailableAlgorithms();
-	if (router_state.settingsPageParams.killConnections == null)
-		router_state.settingsPageParams.killConnections = await fetchIsConfigFile("kill_connections");
-	if (router_state.settingsPageParams.initcwndInitrwnd == null)
-		router_state.settingsPageParams.initcwndInitrwnd = await fetchIsConfigFile("initcwnd_initrwnd");
+	const [
+		_algorithmsReady,
+		killConnectionsValue,
+		initcwndInitrwndValue,
+		wlanAlgo,
+		rmnetAlgo,
+		currentQdisc,
+		qdiscCapabilities,
+	] = await Promise.all([
+		router_state.available_algorithms.length === 0 ? fetchAvailableAlgorithms() : Promise.resolve(),
+		router_state.settingsPageParams.killConnections == null
+			? fetchIsConfigFile("kill_connections")
+			: Promise.resolve(router_state.settingsPageParams.killConnections),
+		router_state.settingsPageParams.initcwndInitrwnd == null
+			? fetchIsConfigFile("initcwnd_initrwnd")
+			: Promise.resolve(router_state.settingsPageParams.initcwndInitrwnd),
+		checkAndGetPrefixValueExists("wlan"),
+		checkAndGetPrefixValueExists("rmnet_data"),
+		getDefaultQdisc(),
+		getQdiscCapabilities(),
+	]);
 
+	router_state.settingsPageParams.killConnections = Boolean(killConnectionsValue);
+	router_state.settingsPageParams.initcwndInitrwnd = Boolean(initcwndInitrwndValue);
 	killConnections.checked = router_state.settingsPageParams.killConnections;
 	initcwndInitrwnd.checked = router_state.settingsPageParams.initcwndInitrwnd;
 
 	// Build algo chip selectors
-	const wlanAlgo = await checkAndGetPrefixValueExists("wlan");
-	const rmnetAlgo = await checkAndGetPrefixValueExists("rmnet_data");
 
 	buildAlgoChips('wifi-algo-chips', wlanAlgo || 'cubic', (algo) => {
 		router_state.settingsPageParams.wlanAlgo = algo;
@@ -413,8 +431,6 @@ export async function initSettings() {
 	});
 
 	// Qdisc selector
-	const currentQdisc = await getDefaultQdisc();
-	const qdiscCapabilities = await getQdiscCapabilities();
 	router_state.qdiscCapabilities = qdiscCapabilities;
 	const qdiscContainer = document.getElementById('qdisc-chips');
 	if (qdiscContainer) {
@@ -515,7 +531,7 @@ export async function initSettings() {
 	initPresets();
 	// Debug capture is global, so initialise its persisted state even when the
 	// advanced page is disabled and never opened.
-	await initDebugToggle();
+	void initDebugToggle();
 
 	// Advanced kernel toggle. Heavy sysctl/baseband probing is deferred until
 	// the Advanced page is actually opened.
