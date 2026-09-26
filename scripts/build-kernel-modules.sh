@@ -17,7 +17,21 @@ PREFLIGHT_REPORT=${TCP_OPTIMISER_PREFLIGHT_REPORT:-}
 PREFLIGHT_CACHE=${TCP_OPTIMISER_PREFLIGHT_CACHE:-}
 GKI_RELEASE_PINS=${GKI_RELEASE_PINS:-"$REPO_ROOT/scripts/gki-release-pins.json"}
 USE_OFFICIAL_GKI=${TCP_OPTIMISER_OFFICIAL_GKI:-1}
+EXACT_RELEASE_BUNDLE=${TCP_OPTIMISER_EXACT_RELEASE_BUNDLE:-0}
+PAIRED_KERNEL_BUNDLE=${TCP_OPTIMISER_PAIRED_KERNEL_BUNDLE:-0}
+PAIRED_KERNEL_CACHE=${PAIRED_KERNEL_CACHE:-}
 OFFICIAL_RELEASE=
+
+if [[ "$PAIRED_KERNEL_BUNDLE" == "1" ]]; then
+  EXACT_RELEASE_BUNDLE=1
+  KMI_PREFLIGHT=0
+  PREFLIGHT_ONLY=0
+  MINIMAL_KERNEL_BUILD=1
+  USE_OFFICIAL_GKI=0
+elif [[ "$EXACT_RELEASE_BUNDLE" == "1" ]]; then
+  KMI_PREFLIGHT=0
+  PREFLIGHT_ONLY=0
+fi
 
 case "$KMI" in
   android12-5.10|android13-5.15|android14-6.1|android15-6.6) ;;
@@ -128,6 +142,16 @@ while IFS='=' read -r option value; do
       ;;
   esac
 done < "$CONFIG_SPEC"
+
+if [[ "$PAIRED_KERNEL_BUNDLE" == "1" && ( "$KMI" == "android12-5.10" || "$KMI" == "android13-5.15" ) ]]; then
+  printf 'disabling LTO/CFI for resource-bounded paired development kernel: %s\n' "$KMI"
+  "$KERNEL_DIR/scripts/config" --file "$CONFIG" --disable LTO_CLANG_THIN || true
+  "$KERNEL_DIR/scripts/config" --file "$CONFIG" --disable LTO_CLANG_FULL || true
+  "$KERNEL_DIR/scripts/config" --file "$CONFIG" --disable CFI_CLANG || true
+  "$KERNEL_DIR/scripts/config" --file "$CONFIG" --disable CFI || true
+  "$KERNEL_DIR/scripts/config" --file "$CONFIG" --disable CFI_PERMISSIVE || true
+fi
+
 make -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" olddefconfig
 
 config_state() {
@@ -184,7 +208,49 @@ register_in_tree_target NET_SCH_FQ_PIE sch_fq_pie.ko sched
 make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" modules_prepare
 
 SYMVERS_HIT=0
-if [[ "$USE_OFFICIAL_GKI" == "1" ]]; then
+PAIRED_IMAGE=
+if [[ "$PAIRED_KERNEL_BUNDLE" == "1" ]]; then
+  if [[ -n "$PAIRED_KERNEL_CACHE" && -s "$PAIRED_KERNEL_CACHE/Module.symvers" && -s "$PAIRED_KERNEL_CACHE/Image" && -s "$PAIRED_KERNEL_CACHE/kernel.release" ]]; then
+    install -m 0644 "$PAIRED_KERNEL_CACHE/Module.symvers" "$KERNEL_DIR/Module.symvers"
+    OFFICIAL_RELEASE=$(cat "$PAIRED_KERNEL_CACHE/kernel.release")
+    test -n "$OFFICIAL_RELEASE"
+    printf '%s\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/config/kernel.release"
+    printf '#define UTS_RELEASE "%s"\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/generated/utsrelease.h"
+    KBUILD_ARGS+=(KERNELRELEASE="$OFFICIAL_RELEASE")
+    PAIRED_IMAGE="$PAIRED_KERNEL_CACHE/Image"
+    SYMVERS_HIT=1
+    printf 'using cached paired kernel: %s (%s)\n' "$KMI" "$OFFICIAL_RELEASE"
+  else
+    printf 'paired kernel cache miss: source build required for %s\n' "$KMI"
+  fi
+elif [[ "$EXACT_RELEASE_BUNDLE" == "1" ]]; then
+  GKI_PREBUILT_DIR="$WORK/gki-prebuilt"
+  bash "$REPO_ROOT/scripts/fetch-gki-prebuilt.sh" "$KMI" "$GKI_PREBUILT_DIR"
+  OFFICIAL_RELEASE=$(python3 - "$GKI_PREBUILT_DIR/metadata.json" <<'PY'
+import json
+import sys
+print(json.load(open(sys.argv[1]))["kernel_release"])
+PY
+)
+  test -n "$OFFICIAL_RELEASE"
+  printf '%s\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/config/kernel.release"
+  printf '#define UTS_RELEASE "%s"\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/generated/utsrelease.h"
+  KBUILD_ARGS+=(KERNELRELEASE="$OFFICIAL_RELEASE")
+
+  if [[ -n "$SYMVERS_CACHE" && -s "$SYMVERS_CACHE" ]]; then
+    install -m 0644 "$SYMVERS_CACHE" "$KERNEL_DIR/Module.symvers"
+    printf 'using cached pinned vmlinux.symvers: %s\n' "$SYMVERS_CACHE"
+  else
+    install -m 0644 "$GKI_PREBUILT_DIR/vmlinux.symvers" "$KERNEL_DIR/Module.symvers"
+    if [[ -n "$SYMVERS_CACHE" ]]; then
+      mkdir -p "$(dirname "$SYMVERS_CACHE")"
+      install -m 0644 "$KERNEL_DIR/Module.symvers" "$SYMVERS_CACHE"
+    fi
+    printf 'using pinned official vmlinux.symvers: %s\n' "$GKI_TAG"
+  fi
+  SYMVERS_HIT=1
+  printf 'building exact-release KO bundle for %s (%s) without full-kernel LTO\n' "$GKI_TAG" "$OFFICIAL_RELEASE"
+elif [[ "$USE_OFFICIAL_GKI" == "1" ]]; then
   GKI_PREBUILT_DIR="$WORK/gki-prebuilt"
   bash "$REPO_ROOT/scripts/fetch-gki-prebuilt.sh" "$KMI" "$GKI_PREBUILT_DIR"
   install -m 0644 "$GKI_PREBUILT_DIR/vmlinux.symvers" "$KERNEL_DIR/Module.symvers"
@@ -255,8 +321,17 @@ build_in_tree_targets() {
     extra+=(KBUILD_MODPOST_WARN=1)
   fi
   if (( ${#IPV4_TARGETS[@]} )); then
-    make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
-      M=net/ipv4 "${IPV4_TARGETS[@]}"
+    if [[ "$KMI" == "android13-5.15" ]]; then
+      # Android 13 / 5.15 ThinLTO has the same single-target issue here as
+      # net/sched: tcp_bbr.ko may depend on a generated tcp_bbr.lto.o that
+      # single_modpost never creates. Build the directory as a unit, then stage
+      # only the allowlisted tcp_bbr.ko.
+      make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
+        M=net/ipv4 modules
+    else
+      make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" "${extra[@]}" \
+        M=net/ipv4 "${IPV4_TARGETS[@]}"
+    fi
   fi
   if (( ${#QDISC_TARGETS[@]} )); then
     if [[ "$KMI" == "android13-5.15" ]]; then
@@ -377,7 +452,42 @@ PY
   build_bbr3 0
 fi
 
-if [[ "$SYMVERS_HIT" != "1" ]]; then
+if [[ "$PAIRED_KERNEL_BUNDLE" == "1" ]]; then
+  if [[ "$SYMVERS_HIT" != "1" ]]; then
+    clean_target_outputs
+    printf 'building paired kernel from pinned source for complete exact symbol CRCs\n'
+    make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" vmlinux
+
+    if [[ ! -s "$KERNEL_DIR/Module.symvers" ]]; then
+      printf 'vmlinux did not produce Module.symvers; falling back to Image+modules\n'
+      make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" Image modules
+    else
+      printf 'building paired Image and allowlisted modules only\n'
+      make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" Image
+      build_in_tree_targets 0
+    fi
+
+    test -s "$KERNEL_DIR/Module.symvers"
+    test -s "$KERNEL_DIR/arch/arm64/boot/Image"
+    OFFICIAL_RELEASE=$(make -s -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" kernelrelease)
+    test -n "$OFFICIAL_RELEASE"
+    PAIRED_IMAGE="$KERNEL_DIR/arch/arm64/boot/Image"
+
+    if [[ -n "$PAIRED_KERNEL_CACHE" ]]; then
+      mkdir -p "$PAIRED_KERNEL_CACHE"
+      install -m 0644 "$KERNEL_DIR/Module.symvers" "$PAIRED_KERNEL_CACHE/Module.symvers"
+      install -m 0644 "$PAIRED_IMAGE" "$PAIRED_KERNEL_CACHE/Image"
+      printf '%s\n' "$OFFICIAL_RELEASE" > "$PAIRED_KERNEL_CACHE/kernel.release"
+    fi
+  else
+    build_in_tree_targets 0
+  fi
+
+  make -C "$BBR_DIR" \
+    KDIR="$KERNEL_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- clean || true
+  prepare_bbr_probe
+  build_bbr3 0
+elif [[ "$SYMVERS_HIT" != "1" ]]; then
   clean_target_outputs
 
   if [[ "$MINIMAL_KERNEL_BUILD" == "1" ]]; then
@@ -389,7 +499,6 @@ if [[ "$SYMVERS_HIT" != "1" ]]; then
     printf 'Module.symvers unavailable; falling back to full GKI Image+modules build\n'
     make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" Image modules
   else
-    # A vmlinux-only build has not built our selected modular targets.
     build_in_tree_targets 0
   fi
 
@@ -400,15 +509,37 @@ if [[ "$SYMVERS_HIT" != "1" ]]; then
     printf 'stored exact Module.symvers cache candidate: %s\n' "$SYMVERS_CACHE"
   fi
 
-  # The preflight BBR3 module was built without exact CRCs. Rebuild it against
-  # the exact target Module.symvers.
   make -C "$BBR_DIR" \
     KDIR="$KERNEL_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- clean || true
   build_bbr3 0
 elif [[ "$KMI_PREFLIGHT" != "1" ]]; then
-  # Cached accepted classification: compile modular capabilities plus BBRv3.
-  build_in_tree_targets 0
-  build_bbr3 0
+  if [[ "$EXACT_RELEASE_BUNDLE" == "1" ]]; then
+    # First build only the requested modules in warn-only mode. This produces
+    # real object import sets without requiring a full vmlinux/LTO rebuild.
+    build_in_tree_targets 1
+    build_bbr3 1
+    stage_modules "$PREFLIGHT_DIR"
+
+    # Android's published vmlinux.symvers is intentionally KMI-focused. Recover
+    # CRCs for the additional symbols that these exact-release KOs actually
+    # import from the official vmlinux belonging to the same pinned build.
+    expanded_symvers="$WORK/Module.symvers.exact"
+    python3 "$REPO_ROOT/scripts/expand-vmlinux-symvers.py" \
+      "$GKI_PREBUILT_DIR/vmlinux" "$KERNEL_DIR/Module.symvers" \
+      "$PREFLIGHT_DIR" "$expanded_symvers"
+    install -m 0644 "$expanded_symvers" "$KERNEL_DIR/Module.symvers"
+
+    # Warn-only objects can never escape into the final bundle. Rebuild the
+    # allowlisted targets strictly against the recovered exact-release CRC set.
+    clean_target_outputs
+    prepare_bbr_probe
+    build_in_tree_targets 0
+    build_bbr3 0
+  else
+    # Cached accepted classification: compile modular capabilities plus BBRv3.
+    build_in_tree_targets 0
+    build_bbr3 0
+  fi
 fi
 
 python3 "$REPO_ROOT/scripts/audit-module-exports.py" \
@@ -422,14 +553,28 @@ rm -rf "$DEST"
 mkdir -p "$DEST/$KMI/aarch64"
 stage_modules "$DEST/$KMI/aarch64"
 
-python3 "$REPO_ROOT/scripts/audit-gki-symbols.py" \
-  "$KERNEL_DIR" "$DEST/$KMI/aarch64" \
-  --json "$DEST/kmi-symbol-audit-$KMI.json" --strict
+if [[ "$PAIRED_KERNEL_BUNDLE" == "1" ]]; then
+  test -s "$PAIRED_IMAGE"
+  mkdir -p "$DEST/paired_kernel/$KMI"
+  install -m 0644 "$PAIRED_IMAGE" "$DEST/paired_kernel/$KMI/Image"
+  install -m 0644 "$KERNEL_DIR/Module.symvers" "$DEST/paired_kernel/$KMI/Module.symvers"
+  printf '%s\n' "$OFFICIAL_RELEASE" > "$DEST/paired_kernel/$KMI/kernel.release"
+fi
+
+if [[ "$EXACT_RELEASE_BUNDLE" == "1" ]]; then
+  python3 "$REPO_ROOT/scripts/audit-gki-symbols.py" \
+    "$KERNEL_DIR" "$DEST/$KMI/aarch64" \
+    --json "$DEST/kmi-symbol-audit-$KMI.json"
+else
+  python3 "$REPO_ROOT/scripts/audit-gki-symbols.py" \
+    "$KERNEL_DIR" "$DEST/$KMI/aarch64" \
+    --json "$DEST/kmi-symbol-audit-$KMI.json" --strict
+fi
 
 builtin_csv=$(IFS=,; printf '%s' "${BUILTIN_CAPABILITIES[*]-}")
 unavailable_csv=$(IFS=,; printf '%s' "${UNAVAILABLE_CAPABILITIES[*]-}")
 python3 - "$DEST" "$KMI" "$KERNEL_RELEASE" "$KERNEL_REV" "$BBR_SOURCE_REV" \
-  "$builtin_csv" "$unavailable_csv" <<'PY'
+  "$builtin_csv" "$unavailable_csv" "$EXACT_RELEASE_BUNDLE" "$PAIRED_KERNEL_BUNDLE" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -437,15 +582,26 @@ import re
 import sys
 
 root = Path(sys.argv[1])
-kernel_branch, release, kernel_rev, bbr_rev, builtin_csv, unavailable_csv = sys.argv[2:]
+kernel_branch, release, kernel_rev, bbr_rev, builtin_csv, unavailable_csv, exact_release_raw, paired_kernel_raw = sys.argv[2:]
+exact_release = exact_release_raw == "1"
+paired_kernel = paired_kernel_raw == "1"
 module_dir = root / kernel_branch / "aarch64"
 builtin_capabilities = [x for x in builtin_csv.split(",") if x]
 unavailable_capabilities = [x for x in unavailable_csv.split(",") if x]
 
 match = re.match(r"^(\d+)\.(\d+)\.\d+-(android\d+)-(\d+)", release)
-if not match:
+if match:
+    kmi = f"{match.group(1)}.{match.group(2)}-{match.group(3)}-{match.group(4)}"
+elif paired_kernel:
+    # Paired kernels are exact-release scoped. Their uname -r may be a normal
+    # common-kernel release without Android's ABI-generation suffix, so the
+    # pinned matrix identity is only a grouping key. Runtime loading remains
+    # gated by exact uname -r and architecture.
+    if not re.fullmatch(r"android\d+-\d+\.\d+", kernel_branch):
+        raise SystemExit(f"invalid paired kernel identity: {kernel_branch}")
+    kmi = kernel_branch
+else:
     raise SystemExit(f"cannot derive Android KMI from kernel release: {release}")
-kmi = f"{match.group(1)}.{match.group(2)}-{match.group(3)}-{match.group(4)}"
 
 modules = []
 for path in sorted(module_dir.glob("*.ko")):
@@ -455,10 +611,13 @@ for path in sorted(module_dir.glob("*.ko")):
         "arch": "aarch64",
         "file": path.relative_to(root).as_posix(),
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "kernel_release": release if exact_release else None,
     })
 
 manifest = {
     "schema": 1,
+    "scope": "paired-kernel" if paired_kernel else ("exact-release" if exact_release else "generic-kmi"),
+    "requires_paired_kernel": paired_kernel,
     "kmi": kmi,
     "kernel_branch": kernel_branch,
     "kernel_release": release,

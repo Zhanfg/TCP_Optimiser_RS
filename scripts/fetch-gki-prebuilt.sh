@@ -41,6 +41,8 @@ files = data["target"]["dir_list"]
 open(sys.argv[2], "w").write("\n".join(files) + "\n")
 if "vmlinux.symvers" not in files:
     raise SystemExit("official GKI build is missing required artifact: vmlinux.symvers")
+if "vmlinux" not in files:
+    raise SystemExit("official GKI build is missing required artifact: vmlinux")
 
 mods = sorted(x for x in files if x.endswith(".ko"))
 image = "Image" if "Image" in files else None
@@ -53,6 +55,7 @@ if not mods and image is None:
 selection = {
     "official_module": mods[0] if mods else None,
     "official_image": image,
+    "vmlinux": "vmlinux",
     "gki_info": "gki-info.txt" if "gki-info.txt" in files else None,
 }
 open(sys.argv[3], "w").write(json.dumps(selection, sort_keys=True) + "\n")
@@ -61,15 +64,17 @@ PY
 readarray -t selected < <(python3 - "$OUT/selection.json" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1]))
-for key in ("official_module", "official_image", "gki_info"):
+for key in ("official_module", "official_image", "vmlinux", "gki_info"):
     print(data.get(key) or "")
 PY
 )
 official_module=${selected[0]}
 official_image=${selected[1]}
-gki_info=${selected[2]}
+vmlinux=${selected[2]}
+gki_info=${selected[3]}
 
 curl --fail --location --retry 3 --retry-all-errors   "$base/vmlinux.symvers" -o "$OUT/vmlinux.symvers"
+curl --fail --location --retry 3 --retry-all-errors   "$base/$vmlinux" -o "$OUT/vmlinux"
 
 if [[ -n "$official_module" ]]; then
   curl --fail --location --retry 3 --retry-all-errors     "$base/$official_module" -o "$OUT/official-module.ko"
@@ -145,6 +150,7 @@ out = pathlib.Path(sys.argv[1])
 gki_info = out / "gki-info.txt"
 official_module_path = out / "official-module.ko"
 official_image_path = out / "official-kernel-image"
+vmlinux_path = out / "vmlinux"
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
@@ -164,6 +170,7 @@ meta = {
     "vmlinux_symvers_sha256": digest(out / "vmlinux.symvers"),
     "official_module_sha256": digest(official_module_path),
     "official_image_sha256": digest(official_image_path),
+    "vmlinux_sha256": digest(vmlinux_path),
     "gki_info_sha256": digest(gki_info),
 }
 (out / "metadata.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")

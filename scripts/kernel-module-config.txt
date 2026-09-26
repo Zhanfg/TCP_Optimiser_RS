@@ -1,6 +1,7 @@
 # Kernel options required by the TCP Optimiser KO bundle.
 # This file is intentionally separate because its hash is part of the
 # Module.symvers cache key. Changing any option invalidates the cache.
+TCP_CONG_ADVANCED=y
 TCP_CONG_BBR=m
 NET_SCH_FQ=m
 NET_SCH_CODEL=m

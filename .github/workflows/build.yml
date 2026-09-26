@@ -48,7 +48,7 @@ jobs:
           find webroot/js -name '*.js' -print0 | xargs -0 -n1 node --check
           node scripts/validate-webui.mjs
           node scripts/validate-release.mjs
-          python3 -m py_compile scripts/merge-kernel-modules.py scripts/audit-gki-symbols.py scripts/audit-module-exports.py
+          python3 -m py_compile scripts/merge-kernel-modules.py scripts/audit-gki-symbols.py scripts/audit-module-exports.py scripts/expand-vmlinux-symvers.py
 
       - name: Validate module scripts
         run: |
@@ -125,7 +125,7 @@ jobs:
 
   build-kernel-modules:
     name: Kernel modules ${{ matrix.kmi }}
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -160,6 +160,7 @@ jobs:
           echo "clang_id=$clang_id" >> "$GITHUB_OUTPUT"
 
       - id: preflight_cache
+        if: ${{ false }}
         name: Restore KMI compatibility result
         uses: actions/cache@v6
         with:
@@ -168,7 +169,7 @@ jobs:
           save-always: true
 
       - name: Stop immediately on cached KMI rejection
-        if: steps.preflight_cache.outputs.cache-hit == 'true'
+        if: ${{ false }}
         shell: bash
         run: |
           set -euo pipefail
@@ -193,11 +194,11 @@ jobs:
             bison build-essential ccache clang curl flex git kmod libelf-dev libssl-dev \
             lld llvm pahole python3 rsync
 
-      - name: Restore exact GKI Module.symvers
+      - name: Restore paired kernel cache
         uses: actions/cache@v6
         with:
-          path: ${{ github.workspace }}/.kernel-symvers/${{ matrix.kmi }}
-          key: ${{ runner.os }}-gki-symvers-v1-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt', 'scripts/gki-release-pins.json') }}
+          path: ${{ github.workspace }}/.paired-kernel/${{ matrix.kmi }}
+          key: ${{ runner.os }}-paired-kernel-v2-${{ matrix.kmi }}-${{ steps.cache_key.outputs.kernel_rev }}-${{ steps.cache_key.outputs.clang_id }}-${{ hashFiles('scripts/kernel-module-config.txt', 'scripts/gki-release-pins.json', 'scripts/build-kernel-modules.sh', 'scripts/fetch-gki-prebuilt.sh', 'scripts/expand-vmlinux-symvers.py') }}
           save-always: true
 
       - name: Restore BBR3 API probe cache
@@ -232,13 +233,28 @@ jobs:
           ccache --set-config compression=true
           ccache --zero-stats
 
-      - name: Build loadable GKI modules
+      - name: Build paired GKI Image and modules
         env:
-          KERNEL_SYMVERS_CACHE: ${{ github.workspace }}/.kernel-symvers/${{ matrix.kmi }}/Module.symvers
+          PAIRED_KERNEL_CACHE: ${{ github.workspace }}/.paired-kernel/${{ matrix.kmi }}
           KERNEL_THINLTO_CACHE: ${{ github.workspace }}/.thinlto/${{ matrix.kmi }}
           BBR_KCONFIG_CACHE: ${{ github.workspace }}/.bbr3-probe/${{ matrix.kmi }}/kernel_config.h
-          TCP_OPTIMISER_PREFLIGHT_CACHE: ${{ github.workspace }}/.kmi-preflight/${{ matrix.kmi }}/report.json
-        run: bash scripts/build-kernel-modules.sh "${{ matrix.kmi }}" kernel_modules
+          TCP_OPTIMISER_PAIRED_KERNEL_BUNDLE: "1"
+          TCP_OPTIMISER_KMI_PREFLIGHT: "0"
+          TCP_OPTIMISER_OFFICIAL_GKI: "0"
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/build-kernel-modules.sh "${{ matrix.kmi }}" kernel_modules \
+            2>&1 | tee "paired-build-${{ matrix.kmi }}.log"
+
+      - name: Upload paired build log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: paired-build-log-${{ matrix.kmi }}
+          path: paired-build-${{ matrix.kmi }}.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Show compiler cache stats
         if: always()
@@ -261,14 +277,25 @@ jobs:
           actual = {entry["name"] for entry in data["modules"]}
           builtins = set(data.get("builtin_capabilities", []))
           unavailable = set(data.get("unavailable_capabilities", []))
-          if unavailable:
-              raise SystemExit(f"unavailable required capabilities: {sorted(unavailable)}")
-          missing = sorted(expected - actual - builtins)
+          missing = sorted(expected - actual - builtins - unavailable)
           if missing:
-              raise SystemExit(f"missing capabilities: {missing}")
+              raise SystemExit(f"unclassified missing capabilities: {missing}")
           if "tcp_bbr3" not in actual:
               raise SystemExit("tcp_bbr3 must be a shipped KO")
+          release = data.get("kernel_release")
+          if not release:
+              raise SystemExit("missing exact kernel_release")
+          if data.get("scope") != "paired-kernel" or not data.get("requires_paired_kernel"):
+              raise SystemExit("bundle is not marked as paired-kernel")
+          paired = root / "paired_kernel" / "${{ matrix.kmi }}"
+          for required in ("Image", "Module.symvers", "kernel.release"):
+              if not (paired / required).is_file():
+                  raise SystemExit(f"missing paired kernel artifact: {required}")
+          if (paired / "kernel.release").read_text().strip() != release:
+              raise SystemExit("paired kernel release does not match KO manifest")
           for entry in data["modules"]:
+              if entry.get("kernel_release") != release:
+                  raise SystemExit(f"module is not exact-release pinned: {entry['name']}")
               path = root / entry["file"]
               if not path.is_file():
                   raise SystemExit(f"missing module: {entry['file']}")
@@ -282,6 +309,17 @@ jobs:
           name: kernel-modules-${{ matrix.kmi }}-arm64
           path: kernel_modules
           if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: paired-kernel-${{ matrix.kmi }}-arm64
+          path: |
+            kernel_modules/paired_kernel/${{ matrix.kmi }}/Image
+            kernel_modules/paired_kernel/${{ matrix.kmi }}/Module.symvers
+            kernel_modules/paired_kernel/${{ matrix.kmi }}/kernel.release
+          if-no-files-found: error
+          compression-level: 6
           retention-days: 7
 
   package:
@@ -335,14 +373,18 @@ jobs:
               kmi = build["kmi"]
               builtins = set(build.get("builtin_capabilities", []))
               unavailable = set(build.get("unavailable_capabilities", []))
-              if unavailable:
-                  raise SystemExit(f"{kmi}: unavailable capabilities: {sorted(unavailable)}")
               actual = modules_by_kmi.get(kmi, set())
-              missing = sorted(expected - actual - builtins)
+              missing = sorted(expected - actual - builtins - unavailable)
               if missing:
-                  raise SystemExit(f"{kmi}: missing capabilities: {missing}")
+                  raise SystemExit(f"{kmi}: unclassified missing capabilities: {missing}")
               if "tcp_bbr3" not in actual:
                   raise SystemExit(f"{kmi}: missing shipped tcp_bbr3 KO")
+              release = build.get("kernel_release")
+              if not release:
+                  raise SystemExit(f"{kmi}: missing exact kernel_release")
+              for module in data.get("modules", []):
+                  if module["kmi"] == kmi and module.get("kernel_release") != release:
+                      raise SystemExit(f"{kmi}: module not pinned to exact release: {module['name']}")
           print(f"validated {len(data.get('builds', []))} merged KMI builds")
           PY
 

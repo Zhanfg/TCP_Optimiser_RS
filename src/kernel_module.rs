@@ -20,6 +20,8 @@ struct ModuleEntry {
     arch: String,
     file: String,
     sha256: String,
+    #[serde(default)]
+    kernel_release: Option<String>,
 }
 
 /// Return the full Android GKI KMI version, e.g. `6.6-android15-8`, when it
@@ -235,9 +237,8 @@ fn build_module_index() -> Result<Option<ModuleIndex>, String> {
         ));
     }
 
-    let Some(kmi) = current_kmi() else {
-        return Ok(None);
-    };
+    let release = kernel_release().map_err(|error| error.to_string())?;
+    let kmi = derive_kmi(&release);
     let arch = current_arch();
     let mut entries = Vec::new();
     let mut names = HashSet::new();
@@ -245,7 +246,7 @@ fn build_module_index() -> Result<Option<ModuleIndex>, String> {
     for entry in manifest
         .modules
         .into_iter()
-        .filter(|entry| entry.kmi == kmi && entry.arch == arch)
+        .filter(|entry| entry_matches_kernel(entry, &release, kmi.as_deref(), arch))
     {
         let relative = safe_relative_path(&entry.file).map_err(|error| error.to_string())?;
         if root.join(relative).is_file() {
@@ -259,6 +260,24 @@ fn build_module_index() -> Result<Option<ModuleIndex>, String> {
         entries,
         names,
     }))
+}
+
+fn entry_matches_kernel(
+    entry: &ModuleEntry,
+    release: &str,
+    derived_kmi: Option<&str>,
+    arch: &str,
+) -> bool {
+    if entry.arch != arch {
+        return false;
+    }
+
+    match entry.kernel_release.as_deref() {
+        // Exact-release matching is stricter than KMI matching and also works
+        // for paired kernels whose uname -r has no Android ABI-generation tag.
+        Some(expected) => expected == release,
+        None => derived_kmi.is_some_and(|kmi| entry.kmi == kmi),
+    }
 }
 
 fn module_index() -> io::Result<Option<&'static ModuleIndex>> {
@@ -422,6 +441,31 @@ mod tests {
             Some("5.15-android13-8".to_string())
         );
         assert_eq!(derive_kmi("6.6.30-custom"), None);
+    }
+
+    #[test]
+    fn exact_release_entry_only_matches_identical_uname_release() {
+        let entry = ModuleEntry {
+            name: "tcp_bbr3".to_string(),
+            kmi: "6.6-android15-8".to_string(),
+            arch: "aarch64".to_string(),
+            file: "android15-6.6/aarch64/tcp_bbr3.ko".to_string(),
+            sha256: "0".repeat(64),
+            kernel_release: Some("6.6.30-android15-8-g123456789abc-ab12345678".to_string()),
+        };
+        let release = "6.6.139-4k-gce3170e88ddc";
+        let mut paired = entry.clone();
+        paired.kmi = "android15-6.6".to_string();
+        paired.kernel_release = Some(release.to_string());
+
+        assert!(entry_matches_kernel(&paired, release, None, "aarch64"));
+        assert!(!entry_matches_kernel(
+            &paired,
+            "6.6.139-4k-gdifferent",
+            None,
+            "aarch64"
+        ));
+        assert!(!entry_matches_kernel(&paired, release, None, "x86_64"));
     }
 
     #[test]
