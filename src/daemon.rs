@@ -476,7 +476,9 @@ fn apply_interface_settings_inner(
 
                 if let Some(fallback) = runtime_fallback_qdisc(&requested_qdisc) {
                     if let Err(load_error) = ensure_qdisc_for_policy(&fallback) {
-                        failures.push(format!("Fallback qdisc {fallback} load failed: {load_error}"));
+                        failures.push(format!(
+                            "Fallback qdisc {fallback} load failed: {load_error}"
+                        ));
                     } else if let Err(default_error) = sysctl::set_default_qdisc(&fallback) {
                         failures.push(format!(
                             "Fallback default qdisc {fallback} failed: {default_error}"
@@ -582,8 +584,7 @@ fn runtime_fallback_qdisc(requested: &str) -> Option<String> {
     ["fq_codel", "fq", "codel", "pfifo_fast"]
         .into_iter()
         .find(|candidate| {
-            *candidate != requested
-                && !crate::kernel_module::qdisc_marked_unavailable(candidate)
+            *candidate != requested && !crate::kernel_module::qdisc_marked_unavailable(candidate)
         })
         .map(str::to_string)
 }
