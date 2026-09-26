@@ -129,5 +129,6 @@ manifest={
 (root/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
 PY
 
+cp "$KERNEL/vmlinux.symvers" "$DEST/device_profile/vmlinux.symvers"
 cp "$KERNEL/Module.symvers" "$DEST/device_profile/Module.symvers"
 printf 'built OnePlus 13 PJZ110 KO-only bundle with %s modules\n'   "$(find "$DEST/6.6-android15-8/aarch64" -name '*.ko' | wc -l)"
