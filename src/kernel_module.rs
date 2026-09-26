@@ -238,22 +238,7 @@ pub fn ensure_algorithm(algorithm: &str) -> io::Result<bool> {
 fn algorithm_module(algorithm: &str) -> Option<&'static str> {
     Some(match algorithm {
         "bbr" => "tcp_bbr",
-        "bbr1" => "tcp_bbr1",
-        "bbr2" => "tcp_bbr2",
         "bbr3" => "tcp_bbr3",
-        "bic" => "tcp_bic",
-        "cdg" => "tcp_cdg",
-        "dctcp" => "tcp_dctcp",
-        "highspeed" => "tcp_highspeed",
-        "htcp" => "tcp_htcp",
-        "hybla" => "tcp_hybla",
-        "illinois" => "tcp_illinois",
-        "lp" => "tcp_lp",
-        "nv" => "tcp_nv",
-        "scalable" => "tcp_scalable",
-        "vegas" => "tcp_vegas",
-        "westwood" => "tcp_westwood",
-        "yeah" => "tcp_yeah",
         _ => return None,
     })
 }
