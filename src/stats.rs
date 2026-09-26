@@ -2,6 +2,7 @@ use std::fs;
 use std::io;
 use std::net::IpAddr;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -101,6 +102,7 @@ pub fn stats_snapshot(active_iface: &str, include_details: bool) -> io::Result<S
 /// Single-call stats: read /proc/net/{snmp,dev,sockstat} in one batch
 #[derive(Debug, Serialize)]
 pub struct NetworkSnapshot {
+    pub generated_epoch: u64,
     pub build: crate::build_info::BuildInfo,
     pub active_iface: String,
     pub module_active: bool,
@@ -154,6 +156,10 @@ pub fn network_snapshot(
     };
 
     Ok(NetworkSnapshot {
+        generated_epoch: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
         build: crate::build_info::current(),
         active_iface: active_iface.to_string(),
         module_active: crate::daemon::is_running(),
