@@ -42,6 +42,8 @@ pub struct KernelBundleStatus {
     pub bundled_algorithms: Vec<String>,
     pub bundled_qdiscs: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_load_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -83,14 +85,23 @@ pub fn bundle_status() -> KernelBundleStatus {
         matched_modules,
         bundled_algorithms: bundled_algorithms(),
         bundled_qdiscs: bundled_qdiscs(),
+        last_load_error: fs::read_to_string(
+            crate::config::module_dir().join("kernel_module_last_error")
+        )
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty()),
         error,
     }
 }
 
 pub fn augment_algorithms(mut native: Vec<String>) -> Vec<String> {
-    let blocked = unavailable_algorithms();
+    // A previous insmod failure is diagnostic state, not a permanent
+    // capability verdict. Keep bundled algorithms visible so the user can
+    // retry after reboot/module replacement instead of turning one transient
+    // failure into a permanent UI "unsupported" state.
     for algorithm in bundled_algorithms() {
-        if !blocked.contains(&algorithm) && !native.iter().any(|item| item == &algorithm) {
+        if !native.iter().any(|item| item == &algorithm) {
             native.push(algorithm);
         }
     }
@@ -378,14 +389,20 @@ fn try_load(module_name: &str) -> io::Result<bool> {
 
     let output = Command::new("insmod").arg(&path).output()?;
     if output.status.success() || module_present(module_name) {
+        let _ = fs::remove_file(crate::config::module_dir().join("kernel_module_last_error"));
         return Ok(true);
     }
 
-    Err(io::Error::other(format!(
+    let message = format!(
         "insmod {} failed: {}",
         path.display(),
         String::from_utf8_lossy(&output.stderr).trim()
-    )))
+    );
+    let _ = fs::write(
+        crate::config::module_dir().join("kernel_module_last_error"),
+        format!("{module_name}: {message}\n"),
+    );
+    Err(io::Error::other(message))
 }
 
 fn module_present(module_name: &str) -> bool {
