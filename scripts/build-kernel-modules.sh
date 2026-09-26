@@ -142,6 +142,16 @@ while IFS='=' read -r option value; do
       ;;
   esac
 done < "$CONFIG_SPEC"
+
+if [[ "$PAIRED_KERNEL_BUNDLE" == "1" && ( "$KMI" == "android12-5.10" || "$KMI" == "android13-5.15" ) ]]; then
+  printf 'disabling LTO/CFI for resource-bounded paired development kernel: %s\n' "$KMI"
+  "$KERNEL_DIR/scripts/config" --file "$CONFIG" --disable LTO_CLANG_THIN || true
+  "$KERNEL_DIR/scripts/config" --file "$CONFIG" --disable LTO_CLANG_FULL || true
+  "$KERNEL_DIR/scripts/config" --file "$CONFIG" --disable CFI_CLANG || true
+  "$KERNEL_DIR/scripts/config" --file "$CONFIG" --disable CFI || true
+  "$KERNEL_DIR/scripts/config" --file "$CONFIG" --disable CFI_PERMISSIVE || true
+fi
+
 make -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" olddefconfig
 
 config_state() {
@@ -199,7 +209,6 @@ make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" modules_prepare
 
 SYMVERS_HIT=0
 PAIRED_IMAGE=
-PAIRED_PREBUILT=0
 if [[ "$PAIRED_KERNEL_BUNDLE" == "1" ]]; then
   if [[ -n "$PAIRED_KERNEL_CACHE" && -s "$PAIRED_KERNEL_CACHE/Module.symvers" && -s "$PAIRED_KERNEL_CACHE/Image" && -s "$PAIRED_KERNEL_CACHE/kernel.release" ]]; then
     install -m 0644 "$PAIRED_KERNEL_CACHE/Module.symvers" "$KERNEL_DIR/Module.symvers"
@@ -212,25 +221,7 @@ if [[ "$PAIRED_KERNEL_BUNDLE" == "1" ]]; then
     SYMVERS_HIT=1
     printf 'using cached paired kernel: %s (%s)\n' "$KMI" "$OFFICIAL_RELEASE"
   else
-    GKI_PREBUILT_DIR="$WORK/gki-prebuilt"
-    bash "$REPO_ROOT/scripts/fetch-gki-prebuilt.sh" "$KMI" "$GKI_PREBUILT_DIR"
-    OFFICIAL_RELEASE=$(python3 - "$GKI_PREBUILT_DIR/metadata.json" <<'PY'
-import json
-import sys
-print(json.load(open(sys.argv[1]))["kernel_release"])
-PY
-)
-    test -n "$OFFICIAL_RELEASE"
-    test -s "$GKI_PREBUILT_DIR/official-kernel-image"
-    test -s "$GKI_PREBUILT_DIR/vmlinux"
-    test -s "$GKI_PREBUILT_DIR/vmlinux.symvers"
-    printf '%s\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/config/kernel.release"
-    printf '#define UTS_RELEASE "%s"\n' "$OFFICIAL_RELEASE" > "$KERNEL_DIR/include/generated/utsrelease.h"
-    KBUILD_ARGS+=(KERNELRELEASE="$OFFICIAL_RELEASE")
-    install -m 0644 "$GKI_PREBUILT_DIR/vmlinux.symvers" "$KERNEL_DIR/Module.symvers"
-    PAIRED_IMAGE="$GKI_PREBUILT_DIR/official-kernel-image"
-    PAIRED_PREBUILT=1
-    printf 'paired kernel cache miss: using pinned official GKI prebuilt %s (%s)\n' "$GKI_TAG" "$OFFICIAL_RELEASE"
+    printf 'paired kernel cache miss: source build required for %s\n' "$KMI"
   fi
 elif [[ "$EXACT_RELEASE_BUNDLE" == "1" ]]; then
   GKI_PREBUILT_DIR="$WORK/gki-prebuilt"
@@ -462,36 +453,25 @@ PY
 fi
 
 if [[ "$PAIRED_KERNEL_BUNDLE" == "1" ]]; then
-  if [[ "$SYMVERS_HIT" == "1" ]]; then
-    # Cached paired artifacts already contain the expanded exact-release CRC
-    # set, so only the allowlisted modules need to be rebuilt.
-    build_in_tree_targets 0
-    make -C "$BBR_DIR" \
-      KDIR="$KERNEL_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- clean || true
-    prepare_bbr_probe
-    build_bbr3 0
-  elif [[ "$PAIRED_PREBUILT" == "1" ]]; then
-    # Build temporary warn-only modules only to discover their real import set.
-    # These objects never leave the job.
-    build_in_tree_targets 1
-    build_bbr3 1
-    stage_modules "$PREFLIGHT_DIR"
-
-    # Recover exact CRCs from the pinned official vmlinux. This preserves
-    # CONFIG_MODVERSIONS without guessing or bypassing CRC checks and avoids
-    # a memory-heavy full-kernel ThinLTO link on hosted runners.
-    expanded_symvers="$WORK/Module.symvers.paired"
-    python3 "$REPO_ROOT/scripts/expand-vmlinux-symvers.py" \
-      "$GKI_PREBUILT_DIR/vmlinux" "$KERNEL_DIR/Module.symvers" \
-      "$PREFLIGHT_DIR" "$expanded_symvers"
-    install -m 0644 "$expanded_symvers" "$KERNEL_DIR/Module.symvers"
-
-    # Rebuild strictly against the exact CRC set. Warn-only KOs are removed
-    # first so they cannot be mistaken for distributable output.
+  if [[ "$SYMVERS_HIT" != "1" ]]; then
     clean_target_outputs
-    prepare_bbr_probe
-    build_in_tree_targets 0
-    build_bbr3 0
+    printf 'building paired kernel from pinned source for complete exact symbol CRCs\n'
+    make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" vmlinux
+
+    if [[ ! -s "$KERNEL_DIR/Module.symvers" ]]; then
+      printf 'vmlinux did not produce Module.symvers; falling back to Image+modules\n'
+      make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" Image modules
+    else
+      printf 'building paired Image and allowlisted modules only\n'
+      make -C "$KERNEL_DIR" -j"$JOBS" "${KBUILD_ARGS[@]}" Image
+      build_in_tree_targets 0
+    fi
+
+    test -s "$KERNEL_DIR/Module.symvers"
+    test -s "$KERNEL_DIR/arch/arm64/boot/Image"
+    OFFICIAL_RELEASE=$(make -s -C "$KERNEL_DIR" "${KBUILD_ARGS[@]}" kernelrelease)
+    test -n "$OFFICIAL_RELEASE"
+    PAIRED_IMAGE="$KERNEL_DIR/arch/arm64/boot/Image"
 
     if [[ -n "$PAIRED_KERNEL_CACHE" ]]; then
       mkdir -p "$PAIRED_KERNEL_CACHE"
@@ -500,9 +480,13 @@ if [[ "$PAIRED_KERNEL_BUNDLE" == "1" ]]; then
       printf '%s\n' "$OFFICIAL_RELEASE" > "$PAIRED_KERNEL_CACHE/kernel.release"
     fi
   else
-    printf 'paired kernel preparation produced neither a cache hit nor a pinned prebuilt\n' >&2
-    exit 1
+    build_in_tree_targets 0
   fi
+
+  make -C "$BBR_DIR" \
+    KDIR="$KERNEL_DIR" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- clean || true
+  prepare_bbr_probe
+  build_bbr3 0
 elif [[ "$SYMVERS_HIT" != "1" ]]; then
   clean_target_outputs
 
