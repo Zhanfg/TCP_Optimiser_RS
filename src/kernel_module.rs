@@ -238,21 +238,16 @@ fn build_module_index() -> Result<Option<ModuleIndex>, String> {
     }
 
     let release = kernel_release().map_err(|error| error.to_string())?;
-    let Some(kmi) = derive_kmi(&release) else {
-        return Ok(None);
-    };
+    let kmi = derive_kmi(&release);
     let arch = current_arch();
     let mut entries = Vec::new();
     let mut names = HashSet::new();
 
-    for entry in manifest.modules.into_iter().filter(|entry| {
-        entry.kmi == kmi
-            && entry.arch == arch
-            && entry
-                .kernel_release
-                .as_deref()
-                .is_none_or(|expected| expected == release)
-    }) {
+    for entry in manifest
+        .modules
+        .into_iter()
+        .filter(|entry| entry_matches_kernel(entry, &release, kmi.as_deref(), arch))
+    {
         let relative = safe_relative_path(&entry.file).map_err(|error| error.to_string())?;
         if root.join(relative).is_file() {
             names.insert(entry.name.clone());
@@ -265,6 +260,24 @@ fn build_module_index() -> Result<Option<ModuleIndex>, String> {
         entries,
         names,
     }))
+}
+
+fn entry_matches_kernel(
+    entry: &ModuleEntry,
+    release: &str,
+    derived_kmi: Option<&str>,
+    arch: &str,
+) -> bool {
+    if entry.arch != arch {
+        return false;
+    }
+
+    match entry.kernel_release.as_deref() {
+        // Exact-release matching is stricter than KMI matching and also works
+        // for paired kernels whose uname -r has no Android ABI-generation tag.
+        Some(expected) => expected == release,
+        None => derived_kmi.is_some_and(|kmi| entry.kmi == kmi),
+    }
 }
 
 fn module_index() -> io::Result<Option<&'static ModuleIndex>> {
@@ -440,12 +453,19 @@ mod tests {
             sha256: "0".repeat(64),
             kernel_release: Some("6.6.30-android15-8-g123456789abc-ab12345678".to_string()),
         };
-        let release = "6.6.30-android15-8-g123456789abc-ab12345678";
-        assert_eq!(entry.kernel_release.as_deref(), Some(release));
-        assert_ne!(
-            entry.kernel_release.as_deref(),
-            Some("6.6.30-android15-8-gdifferent-ab12345678")
-        );
+        let release = "6.6.139-4k-gce3170e88ddc";
+        let mut paired = entry.clone();
+        paired.kmi = "android15-6.6".to_string();
+        paired.kernel_release = Some(release.to_string());
+
+        assert!(entry_matches_kernel(&paired, release, None, "aarch64"));
+        assert!(!entry_matches_kernel(
+            &paired,
+            "6.6.139-4k-gdifferent",
+            None,
+            "aarch64"
+        ));
+        assert!(!entry_matches_kernel(&paired, release, None, "x86_64"));
     }
 
     #[test]
