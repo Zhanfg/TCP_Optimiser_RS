@@ -214,14 +214,16 @@ export async function getRuntimeSnapshot(
 		return runtimeSnapshotCache.get(cacheKey);
 	}
 
-	// Fast path: the daemon continuously publishes this small JSON file. This
-	// avoids starting a new Rust process for every WebUI paint/telemetry tick.
-	const canUsePersisted = !includeDetails && !includeVerification;
-	if (canUsePersisted) {
-		const persisted = await readModuleJson('runtime_snapshot.json', 1600);
+	// Fast path: the daemon continuously publishes small JSON snapshots.
+	// Detailed RTT/CWND/DNS/proxy data is kept in a separate low-frequency
+	// file so the 2-second counter/state path remains cheap.
+	if (!includeVerification) {
+		const snapshotFile = includeDetails ? 'runtime_details.json' : 'runtime_snapshot.json';
+		const persisted = await readModuleJson(snapshotFile, 1600);
 		if (persisted?.active_iface && Number.isFinite(persisted.generated_epoch)) {
 			const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000) - persisted.generated_epoch);
-			if (ageSeconds <= 90 || !force) {
+			const maxAge = includeDetails ? 30 : (force ? 6 : 90);
+			if (ageSeconds <= maxAge) {
 				runtimeSnapshotCache.set(cacheKey, persisted);
 				runtimeSnapshotCheckedAt.set(cacheKey, now);
 				return persisted;
