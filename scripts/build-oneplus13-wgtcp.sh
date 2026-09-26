@@ -49,12 +49,19 @@ make -C "$KERNEL" "${KBUILD[@]}" gki_defconfig
 make -C "$KERNEL" -j"$JOBS" "${KBUILD[@]}" olddefconfig modules_prepare
 
 if [[ -n "$SYMVERS_CACHE" && -s "$SYMVERS_CACHE/vmlinux.symvers" ]]; then
+  echo "Using cached verified PJZ110 vmlinux.symvers"
   install -m 0644 "$SYMVERS_CACHE/vmlinux.symvers" "$KERNEL/vmlinux.symvers"
 else
-  echo "verified PJZ110 vmlinux.symvers cache is required" >&2
-  exit 2
+  echo "PJZ110 symvers cache miss; building vmlinux once"
+  make -C "$KERNEL" -j"$JOBS" "${KBUILD[@]}" vmlinux
+  test -s "$KERNEL/vmlinux.symvers"
 fi
-python3 "$REPO_ROOT/scripts/verify-device-symvers.py"   "$REPO_ROOT/scripts/device-profiles/oneplus13-pjz110.json"   "$KERNEL/vmlinux.symvers"   --report "$WORK/abi-report.json"
+python3 "$REPO_ROOT/scripts/verify-device-symvers.py" "$REPO_ROOT/scripts/device-profiles/oneplus13-pjz110.json" "$KERNEL/vmlinux.symvers" --report "$WORK/abi-report.json"
+if [[ -n "$SYMVERS_CACHE" && ! -s "$SYMVERS_CACHE/vmlinux.symvers" ]]; then
+  mkdir -p "$SYMVERS_CACHE"
+  install -m 0644 "$KERNEL/vmlinux.symvers" "$SYMVERS_CACHE/vmlinux.symvers"
+  install -m 0644 "$WORK/abi-report.json" "$SYMVERS_CACHE/abi-report.json"
+fi
 install -m 0644 "$KERNEL/vmlinux.symvers" "$KERNEL/Module.symvers"
 
 mkdir -p "$EXT"
