@@ -32,108 +32,28 @@ fn build_algo_map() -> HashMap<&'static str, AlgoConfig> {
             "fq",
             200,
             300,
-            "Google BBR - high throughput, low latency",
+            "BBRv1 - kernel native model-based congestion control",
         ),
-        ("bbr3", "fq", 220, 320, "BBR v3 - experimental"),
+        (
+            "bbr3",
+            "fq",
+            220,
+            320,
+            "BBRv3 - bundled PJZ110 kernel module",
+        ),
         (
             "cubic",
             "fq_codel",
             150,
             200,
-            "Default Linux - stable and reliable",
-        ),
-        (
-            "westwood",
-            "fq_codel",
-            150,
-            200,
-            "Bandwidth estimation - good for wireless",
-        ),
-        (
-            "westwood_plus",
-            "fq_codel",
-            150,
-            200,
-            "Westwood+ - improved wireless variant",
+            "CUBIC - kernel native default congestion control",
         ),
         (
             "reno",
             "fq_codel",
             150,
             200,
-            "Classic TCP - widely compatible",
-        ),
-        (
-            "htcp",
-            "fq_codel",
-            150,
-            200,
-            "Hamilton TCP - high-speed long-distance",
-        ),
-        (
-            "vegas",
-            "fq_codel",
-            120,
-            180,
-            "Delay-based - low latency, less aggressive",
-        ),
-        (
-            "yeah",
-            "fq_codel",
-            120,
-            180,
-            "YeAH - high-speed with fairness",
-        ),
-        (
-            "illinois",
-            "fq_codel",
-            120,
-            180,
-            "Illinois - hybrid for high BDP paths",
-        ),
-        (
-            "dctcp",
-            "fq",
-            100,
-            150,
-            "Data Center TCP - low queuing delay",
-        ),
-        ("cdg", "fq", 120, 180, "CAIA Delay Gradient - delay-based"),
-        (
-            "bic",
-            "fq_codel",
-            150,
-            200,
-            "Binary Increase - high-speed predecessor",
-        ),
-        (
-            "highspeed",
-            "fq_codel",
-            180,
-            250,
-            "HighSpeed - RFC 3649 for fast links",
-        ),
-        (
-            "hybla",
-            "fq_codel",
-            120,
-            180,
-            "Hybla - satellite / high-latency links",
-        ),
-        ("nv", "fq_codel", 120, 180, "New Vegas - modern delay-based"),
-        (
-            "scalable",
-            "fq_codel",
-            180,
-            250,
-            "Scalable - simple high-speed variant",
-        ),
-        (
-            "lp",
-            "fq_codel",
-            120,
-            180,
-            "Low Priority - background transfers",
+            "Reno - kernel native classic congestion control",
         ),
     ];
 
@@ -152,39 +72,20 @@ fn build_algo_map() -> HashMap<&'static str, AlgoConfig> {
     map
 }
 
-/// All known algorithms in display order
-pub const ALL_ALGOS: &[&str] = &[
-    "bbr",
-    "bbr3",
-    "cubic",
-    "westwood",
-    "westwood_plus",
-    "reno",
-    "htcp",
-    "vegas",
-    "yeah",
-    "illinois",
-    "dctcp",
-    "cdg",
-    "bic",
-    "highspeed",
-    "hybla",
-    "nv",
-    "scalable",
-    "lp",
-];
+/// Algorithms intentionally exposed by the PJZ110 build.
+/// The WebUI still renders only the subset reported by the running kernel
+/// plus a bundled algorithm that can actually be loaded.
+pub const ALL_ALGOS: &[&str] = &["bbr", "bbr3", "cubic", "reno"];
 
-/// Known qdiscs for the global selector
+/// Queue disciplines intentionally exposed by the PJZ110 build.
+/// Each is either native on the target kernel or provided by this package.
 pub const KNOWN_QDISCS: &[&str] = &[
     "fq",
     "fq_codel",
-    "cake",
-    "pfifo_fast",
     "codel",
-    "fq_pie",
-    "pfifo",
+    "cake",
     "pie",
-    "pfifo_head_drop",
+    "fq_pie",
 ];
 
 /// Default description for module.prop
