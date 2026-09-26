@@ -6,9 +6,12 @@ on:
     branches:
       - 'device/oneplus13-pjz110-ko'
     paths:
-      - 'src/kernel_module.rs'
-      - 'src/daemon.rs'
+      - 'src/**'
+      - 'webroot/**'
+      - 'build.rs'
       - 'customize.sh'
+      - 'service.sh'
+      - 'post-fs-data.sh'
       - 'scripts/package-module.sh'
       - 'scripts/validate-package.sh'
       - 'scripts/build-oneplus13-kos.sh'
@@ -143,10 +146,13 @@ jobs:
           echo "ANDROID_NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
           echo "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
 
-      - name: Validate Rust source
+      - name: Validate Rust and WebUI source
         run: |
           cargo test --all-targets --locked
           cargo fmt --all -- --check
+          for js in webroot/js/*.js; do
+            node --check "$js"
+          done
 
       - name: Build PJZ110 arm64 runtime
         env:
