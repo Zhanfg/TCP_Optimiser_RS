@@ -63,10 +63,13 @@ chmod 755 "$STAGE/customize.sh" "$STAGE/service.sh" "$STAGE/post-fs-data.sh" "$S
 
 EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$REPO_ROOT" log -1 --format=%ct)}
 if [ "${GITHUB_ACTIONS:-false}" = "true" ]; then
+  MODULE_VERSION=$(sed -n 's/^version=//p' "$STAGE/module.prop" | head -n1)
   cat > "$STAGE/build-info.json" <<EOF
 {
   "official": true,
+  "version": "${MODULE_VERSION}",
   "channel": "official-github",
+  "source": "https://github.com/${GITHUB_REPOSITORY}",
   "repository": "https://github.com/${GITHUB_REPOSITORY}",
   "revision": "${GITHUB_SHA}",
   "sourceDateEpoch": ${EPOCH}
