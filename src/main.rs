@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::process;
 
+mod bbr2;
 mod build_info;
 mod config;
 mod daemon;
@@ -63,6 +64,8 @@ enum Command {
     },
     /// Print fast JSON state for proxy-aware policy/UI integration
     Proxy,
+    /// Probe native and compact-provider paths for BBRv2
+    Bbr2Provider,
     /// Print or refresh the install/runtime auto-tuning profile
     Profile {
         /// Re-detect the device/network and rewrite the managed auto profile
@@ -97,6 +100,7 @@ fn main() {
         Command::Sample { iface, details } => print_sample(iface, details),
         Command::Repair { iface } => repair_policy(iface),
         Command::Proxy => print_proxy_status(),
+        Command::Bbr2Provider => print_bbr2_provider(),
         Command::Profile { refresh, auto } => print_profile(refresh, auto),
         Command::BuildInfo => print_build_info(),
         Command::VerifyModule { path } => integrity::verify_module(&path),
@@ -133,6 +137,15 @@ fn print_proxy_status() -> std::io::Result<()> {
     println!(
         "{}",
         serde_json::to_string(&snapshot).map_err(std::io::Error::other)?
+    );
+    Ok(())
+}
+
+fn print_bbr2_provider() -> std::io::Result<()> {
+    let status = bbr2::probe();
+    println!(
+        "{}",
+        serde_json::to_string(&status).map_err(std::io::Error::other)?
     );
     Ok(())
 }
