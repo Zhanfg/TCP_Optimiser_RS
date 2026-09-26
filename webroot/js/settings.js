@@ -3,7 +3,7 @@ import { haptic } from './motion.js';
 import I18N from './i18n.js';
 import router_state from './router.js';
 import { addLog } from './logs.js';
-import { fetchIsConfigFile, getDefaultQdisc, getNetworkProfile, getQdiscCapabilities, setDefaultQdisc } from './common.js';
+import { fetchIsConfigFile, getDefaultQdisc, getNetworkProfile, getQdiscCapabilities, getRuntimeSnapshot, setDefaultQdisc } from './common.js';
 import { ALL_ALGOS, ALL_QDISCS, getAlgorithmDescription, getQdiscDescription } from './capabilities.js';
 import { setDynamicColorEnabled, setThemeMode } from './theme.js';
 
@@ -38,26 +38,26 @@ async function checkAndGetPrefixValueExists(prefix) {
 const fetchAvailableAlgorithms = async (force = false) => {
 	if (!force && router_state.available_algorithms.length > 0) return;
 	try {
-		const { stdout: output } = await exec('cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null');
-		const algos = output.trim().split(/\s+/).filter(a => ALL_ALGOS.includes(a));
-		if (algos.length > 0) {
-			router_state.available_algorithms = algos;
-			// Update cache for next time
-			const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
-			await exec(`printf '%s\\n' ${shellQuote(algos.join(' '))} > ${shellQuote(`${dir}/available_algos`)} 2>/dev/null`).catch(() => {});
-			return;
-		}
-	} catch (e) {}
-	// Fallback: try cached file
+		const snapshot = await getRuntimeSnapshot(force, false, false, false);
+		router_state.available_algorithms = (snapshot.available_algorithms || []).filter(a => ALL_ALGOS.includes(a));
+		router_state.native_algorithms = (snapshot.native_algorithms || snapshot.available_algorithms || []).filter(a => ALL_ALGOS.includes(a));
+		router_state.bundled_algorithms = (snapshot.bundled_algorithms || []).filter(a => ALL_ALGOS.includes(a));
+		router_state.bundled_qdiscs = snapshot.bundled_qdiscs || [];
+		router_state.kernelBundle = snapshot.kernel_bundle || router_state.kernelBundle;
+		if (router_state.available_algorithms.length > 0) return;
+	} catch (error) {
+		console.warn('Unified capability snapshot unavailable:', error);
+	}
 	try {
-		const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
-		const { stdout: cached } = await exec(`cat ${shellQuote(`${dir}/available_algos`)} 2>/dev/null`);
-		const algos = cached.trim().split(/\s+/).filter(a => ALL_ALGOS.includes(a));
+		const { stdout } = await exec('cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null');
+		const algos = stdout.trim().split(/\s+/).filter(a => ALL_ALGOS.includes(a));
 		if (algos.length > 0) {
 			router_state.available_algorithms = algos;
+			router_state.native_algorithms = algos;
+			router_state.bundled_algorithms = [];
 			return;
 		}
-	} catch (e) {}
+	} catch (_) {}
 	toast(I18N.t('toast_no_congestion_algo'));
 };
 
@@ -72,6 +72,8 @@ function buildAlgoChips(containerId, selectedAlgo, onClick) {
 		return;
 	}
 	const supported = new Set(avail);
+	const runtime = new Set(router_state.native_algorithms || []);
+	const bundled = new Set(router_state.bundled_algorithms || []);
 	const description = document.getElementById(containerId === 'wifi-algo-chips'
 		? 'wifi-algo-description' : 'cell-algo-description');
 	const updateDescription = (algo) => {
@@ -88,7 +90,10 @@ function buildAlgoChips(containerId, selectedAlgo, onClick) {
 		const chip = document.createElement('button');
 		chip.className = 'algo-chip';
 		chip.dataset.algo = algo;
-		const capabilityLabel = I18N.t(supported.has(algo) ? 'capability_supported' : 'capability_unsupported');
+		const sourceKey = runtime.has(algo) ? 'capability_runtime'
+			: bundled.has(algo) ? 'capability_bundled' : 'capability_unsupported';
+		const capabilityLabel = I18N.t(sourceKey);
+		chip.dataset.source = runtime.has(algo) ? 'runtime' : bundled.has(algo) ? 'bundle' : 'unavailable';
 		const algorithmDescription = getAlgorithmDescription(algo, I18N.currentLang);
 		chip.title = `${algorithmDescription} · ${capabilityLabel}`;
 		chip.setAttribute('aria-label', `${algo}: ${capabilityLabel}. ${algorithmDescription}`);
@@ -103,6 +108,8 @@ function buildAlgoChips(containerId, selectedAlgo, onClick) {
 			mark.textContent = '×';
 			mark.setAttribute('aria-hidden', 'true');
 			chip.appendChild(mark);
+		} else if (bundled.has(algo) && !runtime.has(algo)) {
+			chip.classList.add('capability-bundled');
 		}
 		if (algo === selectedAlgo) {
 			chip.classList.add('selected');
@@ -133,7 +140,8 @@ function refreshCapabilityLabels() {
 		if (count) count.textContent = algorithmCount;
 	}
 	document.querySelectorAll('[data-algo].algo-chip').forEach(chip => {
-		const stateKey = chip.classList.contains('unsupported') ? 'capability_unsupported' : 'capability_supported';
+		const stateKey = chip.dataset.source === 'runtime' ? 'capability_runtime'
+			: chip.dataset.source === 'bundle' ? 'capability_bundled' : 'capability_unsupported';
 		chip.title = `${getAlgorithmDescription(chip.dataset.algo, I18N.currentLang)} · ${I18N.t(stateKey)}`;
 		chip.setAttribute('aria-label', `${chip.dataset.algo}: ${I18N.t(stateKey)}. ${getAlgorithmDescription(chip.dataset.algo, I18N.currentLang)}`);
 	});
@@ -175,6 +183,7 @@ async function initAutoProfile() {
 	if (!toggle || !summary) return;
 
 	const render = (profile) => {
+		router_state.networkProfile = profile;
 		toggle.checked = profile.auto_tuning_enabled !== false;
 		const iface = profile.active_iface || I18N.t('home_status_unknown');
 		const mtu = Number.isFinite(profile.iface_mtu) ? profile.iface_mtu : '—';
@@ -191,6 +200,19 @@ async function initAutoProfile() {
 			buffers: buffers || '—',
 			qdisc: qdiscMode,
 		});
+		const setFact = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+		const memoryGiB = Number.isFinite(profile.memory_kib) ? (profile.memory_kib / 1048576).toFixed(1) : '—';
+		setFact('profile-kernel-value', profile.kernel_release || '—');
+		setFact('profile-kmi-value', profile.kmi || I18N.t('kernel_bundle_exact_only'));
+		setFact('profile-memory-value', memoryGiB === '—' ? '—' : `${memoryGiB} GiB`);
+		setFact('profile-link-value', `${profile.iface_mode || '—'} · ${iface} · MTU ${mtu}`);
+		setFact('profile-proxy-value', proxyFamily === 'none' ? I18N.t('home_proxy_none') : `${profile.proxy?.label || proxyFamily} · ${proxyMode.toUpperCase()}`);
+		setFact('profile-bundle-value', I18N.t('settings_profile_bundle_value', { algorithms: profile.bundled_algorithms?.length || 0, qdiscs: profile.bundled_qdiscs?.length || 0 }));
+		setFact('profile-recommendation-value', I18N.t('settings_profile_recommendation_value', {
+			buffers: buffers || '—',
+			backlog: profile.recommendations?.netdev_max_backlog ?? '—',
+			conntrack: profile.recommendations?.nf_conntrack_max ?? '—',
+		}));
 	};
 
 	const load = async (refresh = false, auto = null) => {
@@ -411,11 +433,15 @@ export async function initSettings() {
 		});
 		qdiscContainer.appendChild(autoChip);
 		ALL_QDISCS.forEach(q => {
-			const state = qdiscCapabilities.find(item => item.name === q)?.state || 'unknown';
+			const capability = qdiscCapabilities.find(item => item.name === q);
+			const state = capability?.state || 'unknown';
+			const source = capability?.source || 'unknown';
 			const chip = document.createElement('button');
 			chip.className = 'algo-chip';
 			chip.dataset.qdisc = q;
 			chip.dataset.capability = state;
+			chip.dataset.source = source;
+			if (source === 'bundle') chip.classList.add('capability-bundled');
 			const stateLabel = I18N.t(state === 'supported' ? 'capability_supported' : state === 'unsupported' ? 'capability_unsupported' : 'capability_unknown');
 			chip.setAttribute('aria-label', `${q}: ${stateLabel}. ${getQdiscDescription(q, I18N.currentLang)}`);
 			const label = document.createElement('span');

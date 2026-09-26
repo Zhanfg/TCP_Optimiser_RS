@@ -476,14 +476,14 @@ current=$(cat /proc/sys/net/core/default_qdisc 2>/dev/null); for q in ${names}; 
 			.map(line => line.trim().split(':', 2))
 			.filter(([name, state]) => ALL_QDISCS.includes(name) && ['supported', 'unsupported'].includes(state)));
 		const bundled = new Set(router_state.runtimeSnapshot?.bundled_qdiscs || []);
-		qdiscCapabilityCache = ALL_QDISCS.map(name => ({
-			name,
-			state: bundled.has(name)
-				? 'supported'
-				: (['supported', 'unsupported'].includes(byName.get(name)) ? byName.get(name) : 'unknown'),
-		}));
+		qdiscCapabilityCache = ALL_QDISCS.map(name => {
+			const runtimeState = ['supported', 'unsupported'].includes(byName.get(name)) ? byName.get(name) : 'unknown';
+			const source = runtimeState === 'supported' ? 'runtime'
+				: bundled.has(name) ? 'bundle' : runtimeState === 'unsupported' ? 'unavailable' : 'unknown';
+			return { name, state: bundled.has(name) ? 'supported' : runtimeState, source };
+		});
 	} catch (error) {
-		qdiscCapabilityCache = ALL_QDISCS.map(name => ({ name, state: 'unknown' }));
+		qdiscCapabilityCache = ALL_QDISCS.map(name => ({ name, state: 'unknown', source: 'unknown' }));
 	}
 	qdiscCapabilityCheckedAt = now;
 	return qdiscCapabilityCache;

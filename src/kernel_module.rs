@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
@@ -29,6 +29,60 @@ struct ModuleEntry {
 pub fn current_kmi() -> Option<String> {
     let release = kernel_release().ok()?;
     derive_kmi(&release)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KernelBundleStatus {
+    pub kernel_release: String,
+    pub kmi: Option<String>,
+    pub arch: String,
+    pub manifest_present: bool,
+    pub matching_mode: String,
+    pub matched_modules: usize,
+    pub bundled_algorithms: Vec<String>,
+    pub bundled_qdiscs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+pub fn bundle_status() -> KernelBundleStatus {
+    let kernel_release = kernel_release().unwrap_or_else(|_| "unknown".to_string());
+    let kmi = derive_kmi(&kernel_release);
+    let arch = current_arch().to_string();
+    let manifest_present = crate::config::module_dir()
+        .join("kernel_modules")
+        .join("manifest.json")
+        .is_file();
+
+    let (matching_mode, matched_modules, error) = match module_index() {
+        Ok(Some(index)) if !index.entries.is_empty() => {
+            let exact = index.entries.iter()
+                .filter(|entry| entry.kernel_release.as_deref() == Some(kernel_release.as_str()))
+                .count();
+            let mode = if exact == index.entries.len() {
+                "exact_release"
+            } else if exact == 0 {
+                "kmi"
+            } else {
+                "mixed"
+            };
+            (mode.to_string(), index.entries.len(), None)
+        }
+        Ok(Some(_)) | Ok(None) => ("none".to_string(), 0, None),
+        Err(error) => ("invalid".to_string(), 0, Some(error.to_string())),
+    };
+
+    KernelBundleStatus {
+        kernel_release,
+        kmi,
+        arch,
+        manifest_present,
+        matching_mode,
+        matched_modules,
+        bundled_algorithms: bundled_algorithms(),
+        bundled_qdiscs: bundled_qdiscs(),
+        error,
+    }
 }
 
 pub fn augment_algorithms(mut native: Vec<String>) -> Vec<String> {

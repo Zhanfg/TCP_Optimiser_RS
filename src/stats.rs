@@ -106,8 +106,13 @@ pub struct NetworkSnapshot {
     pub module_active: bool,
     pub algorithm: String,
     pub default_qdisc: String,
+    pub native_algorithms: Vec<String>,
     pub available_algorithms: Vec<String>,
+    pub bundled_algorithms: Vec<String>,
     pub bundled_qdiscs: Vec<String>,
+    pub kernel_bundle: crate::kernel_module::KernelBundleStatus,
+    pub auto_tuning_enabled: bool,
+    pub qdisc_policy: String,
     pub proxy: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_state: Option<crate::proxy::ProxySnapshot>,
@@ -137,6 +142,16 @@ pub fn network_snapshot(
         .as_ref()
         .map(|state| state.label.clone())
         .unwrap_or_else(|| "deferred".to_string());
+    let native_algorithms = crate::sysctl::available_algorithms().unwrap_or_default();
+    let kernel_bundle = crate::kernel_module::bundle_status();
+    let bundled_algorithms = kernel_bundle.bundled_algorithms.clone();
+    let bundled_qdiscs = kernel_bundle.bundled_qdiscs.clone();
+    let available_algorithms = crate::kernel_module::augment_algorithms(native_algorithms.clone());
+    let qdisc_policy = if crate::config::module_dir().join("qdisc").is_file() {
+        "manual"
+    } else {
+        "per_algorithm"
+    };
 
     Ok(NetworkSnapshot {
         build: crate::build_info::current(),
@@ -144,10 +159,13 @@ pub fn network_snapshot(
         module_active: crate::daemon::is_running(),
         algorithm: crate::sysctl::current_algorithm().unwrap_or_else(|_| "unknown".to_string()),
         default_qdisc: crate::sysctl::default_qdisc().unwrap_or_else(|_| "unknown".to_string()),
-        available_algorithms: crate::kernel_module::augment_algorithms(
-            crate::sysctl::available_algorithms().unwrap_or_default(),
-        ),
-        bundled_qdiscs: crate::kernel_module::bundled_qdiscs(),
+        native_algorithms,
+        available_algorithms,
+        bundled_algorithms,
+        bundled_qdiscs,
+        kernel_bundle,
+        auto_tuning_enabled: crate::profile::auto_tuning_enabled(),
+        qdisc_policy: qdisc_policy.to_string(),
         proxy: proxy_label,
         proxy_state,
         hosts: if include_details {

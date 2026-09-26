@@ -76,9 +76,30 @@ function renderChart(canvasId, data, label, unit, color, height) {
 	container.innerHTML = html;
 }
 
+function renderPathHealthSummary() {
+	const state = router_state.runtimeSnapshot?.adaptive;
+	const sample = state?.latest?.sample;
+	const stateEl = document.getElementById('stats-path-state');
+	const inflationEl = document.getElementById('stats-rtt-inflation');
+	const queueEl = document.getElementById('stats-queue-pressure');
+	const proxyEl = document.getElementById('stats-proxy-path');
+	if (!stateEl || !inflationEl || !queueEl || !proxyEl) return;
+	stateEl.textContent = state?.stable_state ? I18N.t(`adaptive_state_${state.stable_state}`) : I18N.t('adaptive_waiting');
+	const current = sample?.avg_rtt_ms;
+	const baseline = state?.baseline_rtt_ms;
+	inflationEl.textContent = Number.isFinite(current) && Number.isFinite(baseline) && baseline > 0
+		? `${(current / baseline).toFixed(2)}×` : '—';
+	const backlog = sample?.qdisc_backlog_bytes;
+	queueEl.textContent = Number.isFinite(backlog)
+		? (backlog >= 1000 ? `${(backlog / 1000).toFixed(1)} KB` : `${backlog} B`) : '—';
+	proxyEl.textContent = sample?.transparent_proxy == null ? '—'
+		: I18N.t(sample.transparent_proxy ? 'stats_proxy_transparent' : 'stats_proxy_direct');
+}
+
 function updateStatsUI() {
 	if (router_state.current_active_page !== 'stats') return;
 	const p = router_state.statsParams;
+	renderPathHealthSummary();
 
 	// Info cards
 	setVal('stats-tcp-conns', p.tcpConns);
