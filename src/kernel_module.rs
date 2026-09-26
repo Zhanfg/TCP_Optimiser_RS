@@ -56,7 +56,9 @@ pub fn bundle_status() -> KernelBundleStatus {
 
     let (matching_mode, matched_modules, error) = match module_index() {
         Ok(Some(index)) if !index.entries.is_empty() => {
-            let exact = index.entries.iter()
+            let exact = index
+                .entries
+                .iter()
                 .filter(|entry| entry.kernel_release.as_deref() == Some(kernel_release.as_str()))
                 .count();
             let mode = if exact == index.entries.len() {
