@@ -30,19 +30,51 @@ jobs:
       - name: Install kernel build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y             bc binutils-aarch64-linux-gnu bison build-essential clang-18 flex git             kmod libelf-dev libssl-dev lld-18 llvm-18 pahole python3 rsync
+          sudo apt-get install -y \
+            bc binutils-aarch64-linux-gnu bison build-essential ccache clang-18 flex git \
+            kmod libelf-dev libssl-dev lld-18 llvm-18 pahole python3 rsync
 
-      - uses: actions/cache@v6
+      - id: symvers_cache
+        name: Restore verified PJZ110 symvers
+        uses: actions/cache/restore@v6
         with:
-          path: ~/.cache/tcp-optimiser-oneplus13
-          key: oneplus13-pjz110-v1-e1b346b6-clang18-${{ hashFiles('scripts/device-profiles/oneplus13-pjz110.json', 'scripts/build-oneplus13-kos.sh') }}
+          path: .oneplus13-symvers-cache
+          key: oneplus13-pjz110-symvers-v2-e1b346b6-${{ hashFiles('scripts/device-profiles/oneplus13-pjz110.json') }}
+
+      - name: Restore compiler cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache-oneplus13
+          key: oneplus13-pjz110-ccache-v1-e1b346b6-clang18
+          restore-keys: |
+            oneplus13-pjz110-ccache-v1-
+
+      - name: Configure ccache
+        run: |
+          ccache --set-config=cache_dir="$HOME/.cache/ccache-oneplus13"
+          ccache --set-config=max_size=2G
+          ccache --set-config=compression=true
+          ccache --zero-stats
 
       - name: Build and verify against live-device CRC fingerprint
         env:
-          TCP_OPTIMISER_BUILD_JOBS: '2'
+          TCP_OPTIMISER_SYMVERS_CACHE: ${{ github.workspace }}/.oneplus13-symvers-cache
+          CCACHE_DIR: ${{ runner.temp }}/unused
         run: |
           set -o pipefail
-          bash scripts/build-oneplus13-kos.sh oneplus13_kernel_modules             2>&1 | tee oneplus13-ko-build.log
+          bash scripts/build-oneplus13-kos.sh oneplus13_kernel_modules \
+            2>&1 | tee oneplus13-ko-build.log
+
+      - name: Save verified PJZ110 symvers
+        if: ${{ always() && steps.symvers_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .oneplus13-symvers-cache
+          key: oneplus13-pjz110-symvers-v2-e1b346b6-${{ hashFiles('scripts/device-profiles/oneplus13-pjz110.json') }}
+
+      - name: Show compiler cache stats
+        if: always()
+        run: ccache --show-stats || true
 
       - name: Verify output
         run: |
