@@ -1,8 +1,15 @@
 import { exec, toast, moduleInfo, shellQuote, isBridgeAvailable } from './kernelsu.js';
 import I18N from './i18n.js';
 import router_state from './router.js';
-import { addLog } from './logs.js';
 import { ALL_QDISCS } from './capabilities.js';
+
+function addDiagnosticLog(message) {
+	console.warn(message);
+	if (!router_state.moduleInformation) return;
+	void import('./logs.js')
+		.then(module => module.addLog(message))
+		.catch(() => {});
+}
 
 async function readModuleProp() {
 	try {
@@ -85,7 +92,7 @@ printf '%s\\n' "$iface"`);
 		return active_iface.trim() || 'unknown';
 	} catch (error) {
 		console.error('Error fetching active interface:', error);
-		addLog('Error fetching active interface.');
+		addDiagnosticLog('Error fetching active interface.');
 		return "error";
 	}
 }
@@ -96,7 +103,7 @@ export async function get_active_algorithm() {
 		return active_algo.trim();
 	} catch (error) {
 		console.error('Error fetching active algorithm:', error);
-		addLog('Error fetching active algorithm.');
+		addDiagnosticLog('Error fetching active algorithm.');
 		return "error";
 	}
 }

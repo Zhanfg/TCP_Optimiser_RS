@@ -9,6 +9,8 @@ let _lastAlgoSet = '';
 let _lastActiveAlgo = '';
 let _lastEnabled = false;
 let _detailRefreshPromise = null;
+let _lastAdaptiveRender = '';
+let _lastVerificationRender = '';
 
 async function refreshHomeDetails(force = false) {
 	if (_detailRefreshPromise) return _detailRefreshPromise;
@@ -104,6 +106,10 @@ function renderAdaptiveObserver() {
 	const reason = document.getElementById('adaptive-observer-reason');
 	if (!panel || !badge || !latestState || !confidence || !rtt || !retransmission || !queue || !reason) return;
 
+	const renderKey = JSON.stringify([I18N.currentLang, adaptive || null]);
+	if (renderKey === _lastAdaptiveRender) return;
+	_lastAdaptiveRender = renderKey;
+
 	const latest = adaptive?.latest;
 	const sample = latest?.sample;
 	if (!adaptive || !latest || !sample) {
@@ -173,6 +179,16 @@ function renderVerification() {
 	const repairButton = document.getElementById('verification-repair-btn');
 	if (!list || !count || !panel || !lastRepair) return;
 
+	const renderKey = JSON.stringify([
+		I18N.currentLang,
+		router_state.homePageParams.module_status === 'Enabled',
+		snapshot?.summary || null,
+		snapshot?.checks || null,
+		snapshot?.last_repair || null,
+	]);
+	if (renderKey === _lastVerificationRender) return;
+	_lastVerificationRender = renderKey;
+
 	list.replaceChildren();
 	if (!snapshot?.summary || !Array.isArray(snapshot.checks)) {
 		if (repairButton) repairButton.disabled = true;
@@ -240,7 +256,7 @@ function updateAlgoChips() {
 		total: ALL_ALGOS.length,
 	}) : I18N.t('home_status_unknown'));
 
-	const curSet = [...(avail || [])].sort().join(',');
+	const curSet = `${I18N.currentLang}|${[...(avail || [])].sort().join(',')}`;
 	if (curSet === _lastAlgoSet && active === _lastActiveAlgo && enabled === _lastEnabled) return;
 	_lastAlgoSet = curSet;
 	_lastActiveAlgo = active;

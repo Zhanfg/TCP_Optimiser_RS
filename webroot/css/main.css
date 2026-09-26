@@ -2771,7 +2771,7 @@ body {
   flex-direction: row;
   gap: 0;
   border-radius: 18px;
-  transition: flex-grow 0.28s ease, max-width 0.28s ease, color 0.2s ease, background-color 0.2s ease;
+  transition: color 0.16s ease, background-color 0.16s ease;
 }
 
 .nav-item .nav-icon {
@@ -2788,7 +2788,7 @@ body {
   font-size: 0.78rem;
   white-space: nowrap;
   transform: translateX(-5px);
-  transition: max-width 0.28s ease, margin-left 0.28s ease, opacity 0.18s ease, transform 0.28s ease;
+  transition: opacity 0.16s ease, transform 0.16s ease;
 }
 
 .nav-item.active {
@@ -3099,9 +3099,25 @@ body {
   transform: rotate(180deg);
 }
 
+/* ===== WebView performance containment ===== */
+@supports (content-visibility: auto) {
+  .settings-group,
+  .capability-panel,
+  .stats-disclosure,
+  .chart-card,
+  .log-card {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 180px;
+  }
+}
+
+#pages > section[hidden] {
+  content-visibility: hidden;
+}
+
 /* ===== Product Motion & Haptics Feedback ===== */
-.motion-ready #pages > section:not([hidden]) > * {
-  animation: content-reveal 0.18s ease-out both;
+.motion-ready #pages > section:not([hidden]) > .page-intro {
+  animation: content-reveal 0.16s ease-out both;
 }
 
 .value-updated {

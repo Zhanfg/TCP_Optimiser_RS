@@ -468,10 +468,15 @@ export async function initSettings() {
 	// advanced page is disabled and never opened.
 	await initDebugToggle();
 
-	// Advanced kernel toggle
+	// Advanced kernel toggle. Heavy sysctl/baseband probing is deferred until
+	// the Advanced page is actually opened.
 	initAdvancedToggle();
-	if (isAdvancedEnabled()) await initAdvancedKnobs();
 
+}
+
+export async function ensureAdvancedInitialized() {
+	if (!isAdvancedEnabled()) return;
+	await initAdvancedKnobs();
 }
 
 function isAdvancedEnabled() {
@@ -563,7 +568,7 @@ function showAdvancedWarning() {
 		localStorage.setItem('tcp_adv_enabled', 'true');
 		setAdvancedNavVisible(true);
 		reorderNav(true);
-		void initAdvancedKnobs();
+		if (router_state.current_active_page === 'adv') void initAdvancedKnobs();
 		toast(I18N.t('toast_adv_enabled'));
 	}
 

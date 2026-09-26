@@ -20,6 +20,9 @@ let _sampling = false;
 let _warmupTimer = null;
 let _lastDetailAt = 0;
 let _detailCache = { dns: null, ssInfo: null };
+let _dnsSignature = '';
+let _uiFrame = 0;
+const _chartSignatures = new Map();
 const DETAIL_INTERVAL_MS = 15000;
 
 function pushHistory(arr, v) {
@@ -44,12 +47,15 @@ function svgArea(points, min, max, w, h) {
 function renderChart(canvasId, data, label, unit, color, height) {
 	const container = document.getElementById(canvasId + '-container');
 	if (!container) return;
-	const w = container.clientWidth || 300;
+	const w = 320;
 	const h = height || 100;
+	const signature = `${label}|${unit}|${color}|${h}|${data.join(',')}`;
+	if (_chartSignatures.get(canvasId) === signature) return;
+	_chartSignatures.set(canvasId, signature);
 	const min = Math.min(...data, 0);
 	const max = Math.max(...data, 1) * 1.05;
 
-	let html = `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" style="display:block">`;
+	let html = `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none" style="display:block">`;
 	html += `<rect width="${w}" height="${h}" fill="none"/>`;
 	// Grid lines
 	for (let i = 0; i <= 3; i++) {
@@ -97,7 +103,10 @@ function updateStatsUI() {
 	// DNS
 	const dnsEl = document.getElementById('dns-list');
 	if (dnsEl && Array.isArray(p.dnsServers)) {
-		dnsEl.replaceChildren();
+		const dnsSignature = JSON.stringify([I18N.currentLang, p.dnsServers]);
+		if (dnsSignature !== _dnsSignature) {
+			_dnsSignature = dnsSignature;
+			dnsEl.replaceChildren();
 		if (p.dnsServers.length === 0) {
 			const empty = document.createElement('span');
 			empty.className = 'stat-dim';
@@ -115,6 +124,7 @@ function updateStatsUI() {
 				}
 				dnsEl.appendChild(row);
 			}
+		}
 		}
 	}
 
@@ -226,12 +236,20 @@ async function sampleStats() {
 	};
 }
 
+function scheduleStatsUI() {
+	if (_uiFrame || document.hidden) return;
+	_uiFrame = requestAnimationFrame(() => {
+		_uiFrame = 0;
+		updateStatsUI();
+	});
+}
+
 export async function updateStats() {
 	if (_sampling) return;
 	_sampling = true;
 	try {
 		await sampleStats();
-		updateStatsUI();
+		scheduleStatsUI();
 		if (_prevBytes && _history.tputRx.length === 0 && !_warmupTimer && router_state.current_active_page === 'stats') {
 			_warmupTimer = setTimeout(() => {
 				_warmupTimer = null;
@@ -244,7 +262,7 @@ export async function updateStats() {
 }
 
 export function initStatsUI() {
-	updateStatsUI();
+	scheduleStatsUI();
 	document.getElementById('stats-charts-panel')?.addEventListener('toggle', event => {
 		if (event.currentTarget.open) renderDetailCharts();
 	});
@@ -255,5 +273,5 @@ let _resizeTimer = null;
 window.addEventListener('resize', () => {
 	if (router_state.current_active_page !== 'stats') return;
 	clearTimeout(_resizeTimer);
-	_resizeTimer = setTimeout(updateStatsUI, 200);
+	_resizeTimer = setTimeout(scheduleStatsUI, 200);
 });
