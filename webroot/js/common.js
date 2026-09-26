@@ -1,7 +1,7 @@
 import { exec, toast, moduleInfo, shellQuote, isBridgeAvailable } from './kernelsu.js';
 import I18N from './i18n.js';
 import router_state from './router.js';
-import { ALL_QDISCS } from './capabilities.js';
+import { ALL_ALGOS, ALL_QDISCS } from './capabilities.js';
 
 function addDiagnosticLog(message) {
 	console.warn(message);
@@ -260,7 +260,7 @@ export async function getNetworkProfile(refresh = false, auto = null) {
 }
 
 export async function loadBundledAlgorithm(algorithm) {
-	if (!ALL_QDISCS && !algorithm) throw new Error('Invalid algorithm');
+	if (!ALL_ALGOS.includes(algorithm)) throw new Error('Invalid algorithm');
 	const { stdout } = await exec(
 		rustBinaryCommand('kernel-module-load', `load-algorithm ${shellQuote(algorithm)}`),
 		{ timeoutMs: 5000 },
