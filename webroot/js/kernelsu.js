@@ -267,10 +267,11 @@ export function exec(command, options = {}) {
 
 	return new Promise((resolve, reject) => {
 		const name = callbackName();
+		const timeoutMs = Math.max(500, Math.min(60000, Number(options.timeoutMs) || 15000));
 		const timer = setTimeout(() => {
 			cleanup();
-			reject(new Error('KernelSU command timed out'));
-		}, 15000);
+			reject(new Error(`KernelSU command timed out after ${timeoutMs} ms`));
+		}, timeoutMs);
 		const cleanup = () => {
 			clearTimeout(timer);
 			delete window[name];
