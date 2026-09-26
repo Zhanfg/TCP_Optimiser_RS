@@ -46,7 +46,7 @@ jobs:
       - name: Simulate seven days of adaptive transitions
         run: cargo test --locked adaptive::tests::compressed_week_ -- --nocapture
       - name: Exercise kernel identity and tamper matrix
-        run: cargo test --locked kernel_module::tests::complex_kernel_identity_matrix_never_weakens_exact_release_matching kernel_module::tests::kernel_module_hash_verification_rejects_tampering -- --nocapture
+        run: cargo test --locked kernel_module::tests:: -- --nocapture
       - name: Validate every algorithm policy mapping
         run: cargo test --locked config::tests::every_algorithm_resolves_to_a_supported_policy_shape -- --nocapture
 

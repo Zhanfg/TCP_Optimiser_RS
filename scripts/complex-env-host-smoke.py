@@ -190,15 +190,29 @@ def main():
 
             direct, _ = run_json(binary, ["proxy"], env)
             assert direct.get("transparent") is False, direct
+
+            # The production core intentionally caches TPROXY detection for 60s.
+            # Age the cache rather than sleeping so a minute of wall time becomes
+            # effectively instantaneous in this compressed environment test.
+            proxy_cache = module / "proxy_tproxy_cache"
+            proxy_cache.write_text("0 0\n")
+
             env_tproxy = env.copy()
             env_tproxy["SIM_PROXY"] = "tproxy"
             tproxy, _ = run_json(binary, ["proxy"], env_tproxy)
             assert tproxy.get("transparent") is True, tproxy
             assert tproxy.get("tproxy") is True, tproxy
+
+            proxy_cache.write_text("0 1\n")
+            direct_again, _ = run_json(binary, ["proxy"], env)
+            assert direct_again.get("transparent") is False, direct_again
+
             report["checks"]["proxy_modes"] = {
                 "direct": direct.get("mode"),
                 "tproxy": tproxy.get("mode"),
+                "direct_after_ttl": direct_again.get("mode"),
                 "family": tproxy.get("family"),
+                "cache_ttl_compressed": True,
             }
 
             sample, _ = run_json(binary, ["sample", "--iface", "lo", "--details"], env_tproxy)
