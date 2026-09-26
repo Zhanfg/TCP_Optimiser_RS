@@ -118,9 +118,66 @@ BBR_CC_ARGS=()
 if command -v ccache >/dev/null 2>&1; then
   BBR_CC_ARGS+=(CC="ccache clang-18")
 fi
-make -C "$BBR" \
-  KDIR="$KERNEL" ARCH=arm64 LLVM=-18 LLVM_IAS=1 \
-  "${BBR_CC_ARGS[@]}" CC_PROBE=clang-18 PROBE_J="$JOBS" probe
+# The upstream probe runner mis-detects every API on this Android GKI tree
+# because its throwaway module builds do not reproduce the pinned OnePlus
+# clang/Kbuild environment. For this *exact* source revision, use a reviewed
+# capability map derived from the official headers instead. Refuse to reuse it
+# for any other source revision.
+ACTUAL_SOURCE_REV=$(git -C "$KERNEL" rev-parse HEAD)
+if [[ "$ACTUAL_SOURCE_REV" != "$SOURCE_REV" ]]; then
+  echo "refusing PJZ110 static BBR3 API map on unexpected source: $ACTUAL_SOURCE_REV" >&2
+  exit 3
+fi
+
+cat > "$BBR/kernel_config.h" <<'EOF'
+#pragma once
+/* PJZ110 / OnePlus SM8750 Android 16 static BBR3 API map.
+ * Valid only for source e1b346b6b4f4096eb342ae3684838a942fd6f6c4.
+ * Derived from the pinned official OnePlus headers.
+ */
+#define HAVE_TCP_ECN_OK 1
+#define HAVE_TCP_CONG_NEEDS_ECN 1
+#define HAVE_CA_EVENT_ECN_IS_CE 1
+
+#define HAVE_RATE_SAMPLE_LOSSES 1
+#define HAVE_RATE_SAMPLE_PRIOR_IN_FLIGHT 1
+#define HAVE_RATE_SAMPLE_DELIVERED_CE 1
+
+#define HAVE_TCP_SOCK_DELIVERED_CE 1
+#define HAVE_TCP_SOCK_IS_SACK_RENEG 1
+#define HAVE_TCP_SOCK_LOST 1
+#define HAVE_TCP_SOCK_LOST_OUT 1
+#define HAVE_TCP_SOCK_PRIOR_CWND 1
+#define HAVE_TCP_SOCK_TCP_CLOCK_CACHE 1
+#define HAVE_TCP_SOCK_ECN_FLAGS 1
+#define HAVE_TCP_SOCK_SND_CWND 1
+
+#define HAVE_SKB_CB_TX_DELIVERED_MSTAMP 1
+#define HAVE_SKB_CB_TX_IS_APP_LIMITED 1
+
+#define HAVE_TCP_SND_CWND 1
+#define HAVE_TCP_SND_CWND_SET 1
+#define HAVE_TCP_STAMP_US_DELTA 1
+#define HAVE_TCP_MIN_RTT 1
+#define HAVE___TCP_SEND_ACK 1
+
+#define HAVE_GET_RANDOM_U32_BELOW 1
+
+#define HAVE_TCP_PLB_STATE 1
+#define HAVE_TCP_PLB_SCALE 1
+#define HAVE_TCP_PLB_UPDATE_STATE 1
+#define HAVE_TCP_PLB_CHECK_REHASH 1
+#define HAVE_TCP_PLB_UPDATE_STATE_UPON_RTO 1
+#define HAVE_SYSCTL_TCP_PLB_ENABLED 1
+
+#define HAVE_ICSK_CA_PRIV 1
+EOF
+
+# Ensure the generated header is newer than the upstream probe inputs so make
+# cannot regenerate it through the broken Android probe path.
+touch "$BBR/kernel_config.h"
+echo "Using pinned PJZ110 BBR3 API map; skipping 47 throwaway probe builds"
+
 make -C "$BBR" \
   KDIR="$KERNEL" ARCH=arm64 LLVM=-18 LLVM_IAS=1 \
   "${BBR_CC_ARGS[@]}" CC_PROBE=clang-18 PROBE_J="$JOBS"
