@@ -81,12 +81,19 @@ function buildAlgoChips(containerId, selectedAlgo, onClick) {
 	};
 	const countId = containerId === 'wifi-algo-chips' ? 'wifi-capability-count' : 'cell-capability-count';
 	const count = document.getElementById(countId);
-	if (count) count.textContent = I18N.t('capability_available_count', {
-		available: supported.size,
-		total: ALL_ALGOS.length,
-	});
+	if (count) count.hidden = true;
 
-	ALL_ALGOS.forEach(algo => {
+	const preferredOrder = ['bbr', 'bbr3', 'cubic', 'reno'];
+	const visibleAlgorithms = [...new Set(avail)]
+		.filter(algo => ALL_ALGOS.includes(algo))
+		.sort((a, b) => {
+			const ai = preferredOrder.indexOf(a);
+			const bi = preferredOrder.indexOf(b);
+			if (ai !== -1 || bi !== -1) return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+			return a.localeCompare(b);
+		});
+
+	visibleAlgorithms.forEach(algo => {
 		const chip = document.createElement('button');
 		chip.className = 'algo-chip';
 		chip.dataset.algo = algo;
@@ -100,15 +107,7 @@ function buildAlgoChips(containerId, selectedAlgo, onClick) {
 		const label = document.createElement('span');
 		label.textContent = algo;
 		chip.appendChild(label);
-		if (!supported.has(algo)) {
-			chip.classList.add('unsupported');
-			chip.dataset.unavailable = 'true';
-			const mark = document.createElement('span');
-			mark.className = 'capability-mark';
-			mark.textContent = '×';
-			mark.setAttribute('aria-hidden', 'true');
-			chip.appendChild(mark);
-		} else if (bundled.has(algo) && !runtime.has(algo)) {
+		if (bundled.has(algo) && !runtime.has(algo)) {
 			chip.classList.add('capability-bundled');
 		}
 		if (algo === selectedAlgo) {
@@ -154,13 +153,9 @@ function buildAlgoChips(containerId, selectedAlgo, onClick) {
 }
 
 function refreshCapabilityLabels() {
-	const algorithmCount = I18N.t('capability_available_count', {
-		available: router_state.available_algorithms.length,
-		total: ALL_ALGOS.length,
-	});
 	for (const id of ['wifi-capability-count', 'cell-capability-count']) {
 		const count = document.getElementById(id);
-		if (count) count.textContent = algorithmCount;
+		if (count) count.hidden = true;
 	}
 	document.querySelectorAll('[data-algo].algo-chip').forEach(chip => {
 		const stateKey = chip.dataset.source === 'runtime' ? 'capability_runtime'
@@ -176,12 +171,8 @@ function refreshCapabilityLabels() {
 		if (description && algo) description.textContent = getAlgorithmDescription(algo, I18N.currentLang);
 	}
 
-	const supportedQdiscs = router_state.qdiscCapabilities.filter(item => item.state === 'supported').length;
 	const qdiscCount = document.getElementById('qdisc-capability-count');
-	if (qdiscCount) qdiscCount.textContent = I18N.t('capability_available_count', {
-		available: supportedQdiscs,
-		total: ALL_QDISCS.length,
-	});
+	if (qdiscCount) qdiscCount.hidden = true;
 	document.querySelectorAll('[data-qdisc].algo-chip').forEach(chip => {
 		const state = chip.dataset.capability || 'unknown';
 		const stateKey = state === 'supported' ? 'capability_supported'
@@ -434,12 +425,8 @@ export async function initSettings() {
 	router_state.qdiscCapabilities = qdiscCapabilities;
 	const qdiscContainer = document.getElementById('qdisc-chips');
 	if (qdiscContainer) {
-		const supportedCount = qdiscCapabilities.filter(item => item.state === 'supported').length;
 		const qdiscCount = document.getElementById('qdisc-capability-count');
-		if (qdiscCount) qdiscCount.textContent = I18N.t('capability_available_count', {
-			available: supportedCount,
-			total: ALL_QDISCS.length,
-		});
+		if (qdiscCount) qdiscCount.hidden = true;
 		qdiscContainer.innerHTML = '';
 		const dir = router_state.moduleInformation.moduleDir;
 		let hasManualQdisc = false;
@@ -471,8 +458,10 @@ export async function initSettings() {
 			}
 		});
 		qdiscContainer.appendChild(autoChip);
-		ALL_QDISCS.forEach(q => {
-			const capability = qdiscCapabilities.find(item => item.name === q);
+		qdiscCapabilities
+			.filter(item => item.state === 'supported')
+			.forEach(capability => {
+			const q = capability.name;
 			const state = capability?.state || 'unknown';
 			const source = capability?.source || 'unknown';
 			const chip = document.createElement('button');
@@ -1095,7 +1084,6 @@ function getBuiltinPresets() {
 		{ name: 'Balanced', wlanAlgo: 'cubic', cellAlgo: 'cubic', killConnections: false, initcwndInitrwnd: true, qdisc: 'fq_codel', pacing_ca: 150, pacing_ss: 200, tcp_fastopen: 3, tcp_ecn: 1, desc: 'Stable defaults — good for most users' },
 		{ name: 'Gaming', wlanAlgo: 'bbr', cellAlgo: 'bbr', killConnections: true, initcwndInitrwnd: true, qdisc: 'fq', pacing_ca: 200, pacing_ss: 300, tcp_fastopen: 3, tcp_ecn: 1, desc: 'Low latency — aggressive BBR + FQ' },
 		{ name: 'Streaming', wlanAlgo: 'bbr', cellAlgo: 'cubic', killConnections: false, initcwndInitrwnd: true, qdisc: 'fq_codel', pacing_ca: 180, pacing_ss: 250, tcp_fastopen: 3, tcp_ecn: 1, desc: 'High throughput — BBR for Wi-Fi, cubic for cell' },
-		{ name: 'Battery Saver', wlanAlgo: 'vegas', cellAlgo: 'westwood', killConnections: false, initcwndInitrwnd: false, qdisc: 'fq_codel', pacing_ca: 120, pacing_ss: 180, tcp_fastopen: 1, tcp_ecn: 0, desc: 'Power efficient — delay-based, reduced pacing' },
 		{ name: 'High-Speed', wlanAlgo: 'bbr3', cellAlgo: 'bbr3', killConnections: true, initcwndInitrwnd: true, qdisc: 'fq', pacing_ca: 220, pacing_ss: 320, tcp_fastopen: 3, tcp_ecn: 1, desc: 'Maximum throughput — BBR v3 experimental' },
 	];
 }
