@@ -4,7 +4,7 @@ import I18N from './i18n.js';
 import router_state from './router.js';
 import { addLog } from './logs.js';
 import { fetchIsConfigFile, getDefaultQdisc, getNetworkProfile, getQdiscCapabilities, getRuntimeSnapshot, loadBundledAlgorithm, setDefaultQdisc } from './common.js';
-import { ALL_ALGOS, ALL_QDISCS, getAlgorithmDescription, getQdiscDescription } from './capabilities.js';
+import { ALL_ALGOS, ALL_QDISCS, getAlgorithmDescription, getAlgorithmDisplayName, getQdiscDescription } from './capabilities.js';
 import { setDynamicColorEnabled, setThemeMode } from './theme.js';
 
 let advancedInitialized = false;
@@ -105,7 +105,7 @@ function buildAlgoChips(containerId, selectedAlgo, onClick) {
 		chip.title = `${algorithmDescription} · ${capabilityLabel}`;
 		chip.setAttribute('aria-label', `${algo}: ${capabilityLabel}. ${algorithmDescription}`);
 		const label = document.createElement('span');
-		label.textContent = algo;
+		label.textContent = getAlgorithmDisplayName(algo);
 		chip.appendChild(label);
 		if (bundled.has(algo) && !runtime.has(algo)) {
 			chip.classList.add('capability-bundled');
@@ -1084,7 +1084,7 @@ function getBuiltinPresets() {
 		{ name: 'Balanced', wlanAlgo: 'cubic', cellAlgo: 'cubic', killConnections: false, initcwndInitrwnd: true, qdisc: 'fq_codel', pacing_ca: 150, pacing_ss: 200, tcp_fastopen: 3, tcp_ecn: 1, desc: 'Stable defaults — good for most users' },
 		{ name: 'Gaming', wlanAlgo: 'bbr', cellAlgo: 'bbr', killConnections: true, initcwndInitrwnd: true, qdisc: 'fq', pacing_ca: 200, pacing_ss: 300, tcp_fastopen: 3, tcp_ecn: 1, desc: 'Low latency — aggressive BBR + FQ' },
 		{ name: 'Streaming', wlanAlgo: 'bbr', cellAlgo: 'cubic', killConnections: false, initcwndInitrwnd: true, qdisc: 'fq_codel', pacing_ca: 180, pacing_ss: 250, tcp_fastopen: 3, tcp_ecn: 1, desc: 'High throughput — BBR for Wi-Fi, cubic for cell' },
-		{ name: 'High-Speed', wlanAlgo: 'bbr3', cellAlgo: 'bbr3', killConnections: true, initcwndInitrwnd: true, qdisc: 'fq', pacing_ca: 220, pacing_ss: 320, tcp_fastopen: 3, tcp_ecn: 1, desc: 'Maximum throughput — BBR v3 experimental' },
+		{ name: 'BBRv3', wlanAlgo: 'bbr3', cellAlgo: 'bbr3', killConnections: true, initcwndInitrwnd: true, qdisc: 'fq', pacing_ca: 220, pacing_ss: 320, tcp_fastopen: 3, tcp_ecn: 1, desc: 'BBRv3 + FQ' },
 	];
 }
 
