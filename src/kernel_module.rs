@@ -86,7 +86,7 @@ pub fn bundle_status() -> KernelBundleStatus {
         bundled_algorithms: bundled_algorithms(),
         bundled_qdiscs: bundled_qdiscs(),
         last_load_error: fs::read_to_string(
-            crate::config::module_dir().join("kernel_module_last_error")
+            crate::config::module_dir().join("kernel_module_last_error"),
         )
         .ok()
         .map(|value| value.trim().to_string())
