@@ -1,0 +1,93 @@
+name: OnePlus 13 WGTCP Probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'future/oneplus13-wgtcp'
+    paths:
+      - 'scripts/build-oneplus13-wgtcp.sh'
+      - 'scripts/verify-device-symvers.py'
+      - 'scripts/device-profiles/oneplus13-pjz110.json'
+      - '.github/workflows/oneplus13-wgtcp.yml'
+
+concurrency:
+  group: oneplus13-wgtcp-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe WGTCP as side-by-side KO
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc binutils-aarch64-linux-gnu bison build-essential ccache clang-18 flex git \
+            kmod libelf-dev libssl-dev lld-18 llvm-18 pahole python3 rsync
+
+      - id: symvers_cache
+        name: Restore PJZ110 symvers
+        uses: actions/cache/restore@v6
+        with:
+          path: .oneplus13-symvers-cache
+          key: oneplus13-pjz110-wgtcp-symvers-v1-e1b346b6-${{ hashFiles('scripts/device-profiles/oneplus13-pjz110.json') }}
+          restore-keys: |
+            oneplus13-pjz110-wgtcp-symvers-v1-
+
+      - name: Restore compiler cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache-oneplus13-wgtcp
+          key: oneplus13-wgtcp-ccache-v1-clang18
+          restore-keys: |
+            oneplus13-wgtcp-ccache-v1-
+
+      - name: Configure compiler cache
+        run: |
+          ccache --set-config=cache_dir="$HOME/.cache/ccache-oneplus13-wgtcp"
+          ccache --set-config=max_size=2G
+          ccache --set-config=compression=true
+          ccache --zero-stats
+
+      - id: probe
+        name: Build isolated WGTCP module
+        continue-on-error: true
+        env:
+          TCP_OPTIMISER_SYMVERS_CACHE: ${{ github.workspace }}/.oneplus13-symvers-cache
+        run: |
+          set -o pipefail
+          bash scripts/build-oneplus13-wgtcp.sh wgtcp_probe
+
+      - name: Save verified PJZ110 symvers
+        if: ${{ always() && steps.symvers_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .oneplus13-symvers-cache
+          key: oneplus13-pjz110-wgtcp-symvers-v1-e1b346b6-${{ hashFiles('scripts/device-profiles/oneplus13-pjz110.json') }}
+
+      - name: Show compiler cache stats
+        if: always()
+        run: ccache --show-stats || true
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: oneplus13-wgtcp-probe
+          path: wgtcp_probe
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce strict WGTCP build
+        if: always()
+        run: |
+          rc=$(cat wgtcp_probe/strict-build-rc.txt 2>/dev/null || echo 99)
+          echo "strict WGTCP build rc=$rc"
+          test "$rc" = 0
