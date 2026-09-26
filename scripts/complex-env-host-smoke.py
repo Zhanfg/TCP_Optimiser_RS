@@ -243,15 +243,18 @@ def main():
             }
 
             profile_direct, _ = run_json(binary, ["profile", "--refresh"], env)
+            proxy_cache.write_text("0 0\n")
             profile_proxy, _ = run_json(binary, ["profile", "--refresh"], env_tproxy)
             assert profile_direct.get("schema") == 1, profile_direct
             assert profile_proxy.get("schema") == 1, profile_proxy
+            assert profile_proxy.get("proxy", {}).get("transparent") is True, profile_proxy
             assert (profile_proxy.get("recommendations") or {}).get("nf_conntrack_max") is not None
             report["checks"]["profile_proxy_awareness"] = {
                 "direct_conntrack": (profile_direct.get("recommendations") or {}).get("nf_conntrack_max"),
                 "tproxy_conntrack": (profile_proxy.get("recommendations") or {}).get("nf_conntrack_max"),
             }
 
+            proxy_cache.write_text("0 0\n")
             adaptive, adaptive_elapsed = run_json(
                 binary,
                 ["adaptive", "--iface", "lo", "--sample-ms", "250", "--samples", "2"],
