@@ -53,8 +53,20 @@ grep -qx 'CONFIG_NET_SCH_FQ_PIE=m' "$CONFIG"
 # Generate the source CRC table using the pinned OnePlus kernel. Do not emit
 # any device bundle unless all 65 live-device CRC fingerprints match.
 make -C "$KERNEL" -j"$JOBS" "${KBUILD[@]}" vmlinux
-test -s "$KERNEL/Module.symvers"
-python3 "$REPO_ROOT/scripts/verify-device-symvers.py"   "$PROFILE" "$KERNEL/Module.symvers" --report "$WORK/device-abi-report.json"
+
+echo "Generated symbol tables:"
+ls -lh "$KERNEL"/*symvers 2>/dev/null || true
+
+# Android GKI 6.6 exposes the linked kernel CRC table as vmlinux.symvers.
+# This is the table we must compare with the live PJZ110 vendor-module ABI.
+test -s "$KERNEL/vmlinux.symvers"
+python3 "$REPO_ROOT/scripts/verify-device-symvers.py" \
+  "$PROFILE" "$KERNEL/vmlinux.symvers" \
+  --report "$WORK/device-abi-report.json"
+
+# External-module Kbuild expects Module.symvers. Feed it only the symbol table
+# that has already passed the live-device CRC gate above.
+install -m 0644 "$KERNEL/vmlinux.symvers" "$KERNEL/Module.symvers"
 
 make -C "$KERNEL" -j"$JOBS" "${KBUILD[@]}" M=net/sched   net/sched/sch_cake.ko net/sched/sch_pie.ko net/sched/sch_fq_pie.ko
 
@@ -129,6 +141,7 @@ manifest={
 (root/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
 PY
 
+cp "$KERNEL/vmlinux.symvers" "$DEST/device_profile/vmlinux.symvers"
 cp "$KERNEL/vmlinux.symvers" "$DEST/device_profile/vmlinux.symvers"
 cp "$KERNEL/Module.symvers" "$DEST/device_profile/Module.symvers"
 printf 'built OnePlus 13 PJZ110 KO-only bundle with %s modules\n'   "$(find "$DEST/6.6-android15-8/aarch64" -name '*.ko' | wc -l)"
