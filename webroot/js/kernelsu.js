@@ -83,47 +83,64 @@ function mockExec(cmd) {
 	if (cmd.includes('runtime-status-snapshot')) {
 		const checks = [
 			['interface_mode', 'Wi-Fi or Cellular', 'Wi-Fi'],
-			['congestion_algorithm', 'bbr', 'bbr'],
-			['default_qdisc', 'fq_codel', 'fq_codel'],
-			['interface_qdisc', 'fq_codel', 'fq_codel'],
-			['tcp_pacing_ca_ratio', '120', '120'],
-			['tcp_pacing_ss_ratio', '240', '240'],
+			['congestion_algorithm', 'bbr3', 'bbr3'],
+			['default_qdisc', 'fq', 'fq'],
+			['interface_qdisc', 'fq', 'fq'],
+			['tcp_pacing_ca_ratio', '220', '220'],
+			['tcp_pacing_ss_ratio', '320', '320'],
 		].map(([key, expected, actual]) => ({ key, expected, actual, state: 'match', repairable: key !== 'interface_mode' }));
 		return { errno: 0, stdout: JSON.stringify({
-			build: { version: '3.0.0', git_sha: 'preview', build_epoch: 0 },
+			generated_epoch: Math.floor(Date.now() / 1000),
+			build: { version: '3.0.0', channel: 'preview', source: 'https://github.com/Zhanfg/TCP_Optimiser_RS', revision: 'preview' },
 			active_iface: 'wlan0', module_active: true, algorithm: 'bbr3', default_qdisc: 'fq',
-			native_algorithms: ['bbr', 'cubic', 'reno', 'westwood'],
-			available_algorithms: ['bbr', 'bbr3', 'cubic', 'westwood', 'reno', 'htcp', 'vegas', 'yeah', 'illinois', 'dctcp', 'cdg', 'bic', 'highspeed', 'hybla', 'nv', 'scalable', 'lp'],
-			bundled_algorithms: ['bbr3', 'htcp', 'vegas'],
-			bundled_qdiscs: ['fq', 'fq_codel', 'codel', 'pie'],
-			kernel_bundle: { kernel_release: '6.6.139-4k-gce3170e88ddc', kmi: null, arch: 'aarch64', manifest_present: true, matching_mode: 'exact_release', matched_modules: 8, bundled_algorithms: ['bbr3', 'htcp', 'vegas'], bundled_qdiscs: ['fq', 'fq_codel', 'codel', 'pie'] },
+			native_algorithms: ['bbr', 'bbr3', 'cubic', 'reno'],
+			available_algorithms: ['bbr', 'bbr3', 'cubic', 'reno'],
+			bundled_algorithms: ['bbr3'],
+			bundled_qdiscs: ['cake', 'pie', 'fq_pie'],
+			kernel_bundle: {
+				kernel_release: '6.6.147-android15-8-g8c34ba09bf7f-abogki500782043-4k',
+				kmi: '6.6-android15-8', arch: 'aarch64', manifest_present: true,
+				matching_mode: 'kmi', matched_modules: 4,
+				bundled_algorithms: ['bbr3'], bundled_qdiscs: ['cake', 'pie', 'fq_pie'],
+			},
 			auto_tuning_enabled: true, qdisc_policy: 'per_algorithm',
-			proxy: 'Mihomo · TPROXY', hosts: 'none', init_windows: [32, 32],
+			proxy: 'deferred', proxy_state: null, hosts: 'deferred', init_windows: [],
+			tcp: { retrans: 1234, in_segs: 15234567, out_segs: 12345678 },
+			iface: { rx_bytes: 1234567890, tx_bytes: 987654321 },
+			sock: { tcp_in_use: 89, tcp_orphan: 2, tcp_tw: 12, tcp_alloc: 256, tcp_mem: 5 },
+			established: 7, dns: null, conn_info: null,
+			verification: { summary: { matched: checks.length, total: checks.length, drifted: 0, unavailable: 0 }, checks, errors: [], last_repair: mockLastRepair },
+		}), stderr: '' };
+	}
+	if (cmd.includes('runtime-stats-sample')) {
+		return { errno: 0, stdout: JSON.stringify({
+			generated_epoch: Math.floor(Date.now() / 1000),
+			active_iface: 'wlan0',
 			tcp: { retrans: 1234, in_segs: 15234567, out_segs: 12345678 },
 			iface: { rx_bytes: 1234567890, tx_bytes: 987654321 },
 			sock: { tcp_in_use: 89, tcp_orphan: 2, tcp_tw: 12, tcp_alloc: 256, tcp_mem: 5 },
 			established: 7,
 			dns: [{ iface: 'wlan0', ip: '1.1.1.1' }, { iface: 'system', ip: '8.8.8.8' }],
 			conn_info: { avg_rtt_ms: 43.14, max_rtt_ms: 72.8, avg_cwnd: 18, max_cwnd: 32, samples: 7 },
-			verification: { summary: { matched: checks.length, total: checks.length, drifted: 0, unavailable: 0 }, checks, errors: [], last_repair: mockLastRepair },
 		}), stderr: '' };
 	}
 	if (cmd.includes('network-auto-profile')) {
 		return { errno: 0, stdout: JSON.stringify({
 			schema: 1, generated_epoch: Math.floor(Date.now() / 1000), auto_tuning_enabled: true,
-			kernel_release: '6.6.139-4k-gce3170e88ddc', kmi: null, arch: 'aarch64',
+			kernel_release: '6.6.147-android15-8-g8c34ba09bf7f-abogki500782043-4k',
+			kmi: '6.6-android15-8', arch: 'aarch64',
 			memory_kib: 12582912, active_iface: 'wlan0', iface_mode: 'Wi-Fi', iface_mtu: 1500,
 			proxy: { family: 'mihomo', label: 'Mihomo', mode: 'tproxy', transparent: true, tproxy: true, virtual_iface: null },
 			available_algorithms: ['bbr', 'bbr3', 'cubic', 'reno'],
-			bundled_algorithms: ['bbr3'], bundled_qdiscs: ['fq', 'fq_codel'],
-			wifi_algorithm: 'bbr3', cellular_algorithm: qdisc_policy: 'per_algorithm',
+			bundled_algorithms: ['bbr3'], bundled_qdiscs: ['cake', 'pie', 'fq_pie'],
+			wifi_algorithm: 'bbr3', cellular_algorithm: 'bbr', qdisc_policy: 'per_algorithm',
 			recommendations: { socket_buffer_floor: 33554432, somaxconn: 4096, netdev_max_backlog: 8192, nf_conntrack_max: 262144, tcp_mtu_probing: 1, tcp_sack: 1, tcp_dsack: 1, tcp_no_metrics_save: 0, tcp_autocorking: 1 }
 		}), stderr: '' };
 	}
 	if (cmd.includes('tcp_available_congestion_control'))
-		return { errno: 0, stdout: 'bbr bbr2 cubic westwood reno htcp vegas yeah illinois dctcp cdg bic highspeed hybla nv scalable lp', stderr: '' };
+		return { errno: 0, stdout: 'bbr bbr3 cubic reno', stderr: '' };
 	if (cmd.includes('tcp_congestion_control'))
-		return { errno: 0, stdout: 'bbr', stderr: '' };
+		return { errno: 0, stdout: 'bbr3', stderr: '' };
 	if (cmd.includes('qdisc-capability-probe'))
 		return { errno: 0, stdout: 'fq:supported\nfq_codel:supported\ncake:unsupported\npfifo_fast:unsupported\ncodel:supported\nfq_pie:unsupported\npfifo:supported\npie:supported\npfifo_head_drop:unsupported\n', stderr: '' };
 	if (cmd.includes('dynamic-color-palette-probe'))
