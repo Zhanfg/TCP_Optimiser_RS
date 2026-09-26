@@ -295,10 +295,7 @@ impl DaemonGuard {
                 create_pid_file(&path)?;
                 Ok(Self { path })
             }
-            Err(error) => {
-            let _ = crate::kernel_module::mark_qdisc_unavailable(qdisc);
-            Err(error)
-        },
+            Err(error) => Err(error),
         }
     }
 }
@@ -623,7 +620,10 @@ fn ensure_qdisc_for_policy(qdisc: &str) -> io::Result<()> {
             Ok(())
         }
         Ok(false) => Ok(()),
-        Err(error) => Err(error),
+        Err(error) => {
+            let _ = crate::kernel_module::mark_qdisc_unavailable(qdisc);
+            Err(error)
+        }
     }
 }
 
