@@ -446,6 +446,12 @@ fn apply_interface_settings_inner(
     }
 
     if !policy.qdisc.is_empty() {
+        if let Err(error) = ensure_qdisc_for_policy(&policy.qdisc) {
+            logging::log_print(&format!(
+                "[WARN] Kernel module load for qdisc {} failed: {error}",
+                policy.qdisc
+            ));
+        }
         if let Err(error) = sysctl::set_default_qdisc(&policy.qdisc) {
             failures.push(format!("Default qdisc {} failed: {error}", policy.qdisc));
         }
@@ -544,6 +550,7 @@ fn reconcile_interface_qdisc(iface: &str, mode: IfaceMode) -> io::Result<()> {
         return Ok(());
     }
 
+    ensure_qdisc_for_policy(&policy.qdisc)?;
     if network::reconcile_qdisc(iface, &policy.qdisc)? {
         logging::log_print(&format!(
             "[INFO] Restored qdisc after kernel reset: {} ({iface})",
@@ -552,6 +559,17 @@ fn reconcile_interface_qdisc(iface: &str, mode: IfaceMode) -> io::Result<()> {
     }
     sysctl::set_default_qdisc(&policy.qdisc)?;
     Ok(())
+}
+
+fn ensure_qdisc_for_policy(qdisc: &str) -> io::Result<()> {
+    match crate::kernel_module::ensure_qdisc(qdisc) {
+        Ok(true) => {
+            let _ = crate::kernel_module::clear_qdisc_unavailable(qdisc);
+            Ok(())
+        }
+        Ok(false) => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn qdisc_check_interval(mode: IfaceMode) -> Duration {

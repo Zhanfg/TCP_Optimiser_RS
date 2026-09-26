@@ -2,7 +2,7 @@ import I18N from './i18n.js';
 import router_state from './router.js';
 import {
 	getTCPStatCounters, getIfaceBytes, getSockStat, getTCPConnsCount,
-	getDNSServers, getSSInfo, getRuntimeSnapshot,
+	getDNSServers, getSSInfo, getRuntimeSnapshot, runAdaptiveProbe,
 } from './common.js';
 
 // History buffers: 60 points × 5s = 5 minutes
@@ -20,6 +20,9 @@ let _sampling = false;
 let _warmupTimer = null;
 let _lastDetailAt = 0;
 let _detailCache = { dns: null, ssInfo: null };
+let _dnsSignature = '';
+let _uiFrame = 0;
+const _chartSignatures = new Map();
 const DETAIL_INTERVAL_MS = 15000;
 
 function pushHistory(arr, v) {
@@ -44,12 +47,15 @@ function svgArea(points, min, max, w, h) {
 function renderChart(canvasId, data, label, unit, color, height) {
 	const container = document.getElementById(canvasId + '-container');
 	if (!container) return;
-	const w = container.clientWidth || 300;
+	const w = 320;
 	const h = height || 100;
+	const signature = `${label}|${unit}|${color}|${h}|${data.join(',')}`;
+	if (_chartSignatures.get(canvasId) === signature) return;
+	_chartSignatures.set(canvasId, signature);
 	const min = Math.min(...data, 0);
 	const max = Math.max(...data, 1) * 1.05;
 
-	let html = `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" style="display:block">`;
+	let html = `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none" style="display:block">`;
 	html += `<rect width="${w}" height="${h}" fill="none"/>`;
 	// Grid lines
 	for (let i = 0; i <= 3; i++) {
@@ -70,9 +76,30 @@ function renderChart(canvasId, data, label, unit, color, height) {
 	container.innerHTML = html;
 }
 
+function renderPathHealthSummary() {
+	const state = router_state.runtimeSnapshot?.adaptive;
+	const sample = state?.latest?.sample;
+	const stateEl = document.getElementById('stats-path-state');
+	const inflationEl = document.getElementById('stats-rtt-inflation');
+	const queueEl = document.getElementById('stats-queue-pressure');
+	const proxyEl = document.getElementById('stats-proxy-path');
+	if (!stateEl || !inflationEl || !queueEl || !proxyEl) return;
+	stateEl.textContent = state?.stable_state ? I18N.t(`adaptive_state_${state.stable_state}`) : I18N.t('adaptive_waiting');
+	const current = sample?.avg_rtt_ms;
+	const baseline = state?.baseline_rtt_ms;
+	inflationEl.textContent = Number.isFinite(current) && Number.isFinite(baseline) && baseline > 0
+		? `${(current / baseline).toFixed(2)}×` : '—';
+	const backlog = sample?.qdisc_backlog_bytes;
+	queueEl.textContent = Number.isFinite(backlog)
+		? (backlog >= 1000 ? `${(backlog / 1000).toFixed(1)} KB` : `${backlog} B`) : '—';
+	proxyEl.textContent = sample?.transparent_proxy == null ? '—'
+		: I18N.t(sample.transparent_proxy ? 'stats_proxy_transparent' : 'stats_proxy_direct');
+}
+
 function updateStatsUI() {
 	if (router_state.current_active_page !== 'stats') return;
 	const p = router_state.statsParams;
+	renderPathHealthSummary();
 
 	// Info cards
 	setVal('stats-tcp-conns', p.tcpConns);
@@ -97,7 +124,10 @@ function updateStatsUI() {
 	// DNS
 	const dnsEl = document.getElementById('dns-list');
 	if (dnsEl && Array.isArray(p.dnsServers)) {
-		dnsEl.replaceChildren();
+		const dnsSignature = JSON.stringify([I18N.currentLang, p.dnsServers]);
+		if (dnsSignature !== _dnsSignature) {
+			_dnsSignature = dnsSignature;
+			dnsEl.replaceChildren();
 		if (p.dnsServers.length === 0) {
 			const empty = document.createElement('span');
 			empty.className = 'stat-dim';
@@ -115,6 +145,7 @@ function updateStatsUI() {
 				}
 				dnsEl.appendChild(row);
 			}
+		}
 		}
 	}
 
@@ -226,12 +257,20 @@ async function sampleStats() {
 	};
 }
 
+function scheduleStatsUI() {
+	if (_uiFrame || document.hidden) return;
+	_uiFrame = requestAnimationFrame(() => {
+		_uiFrame = 0;
+		updateStatsUI();
+	});
+}
+
 export async function updateStats() {
 	if (_sampling) return;
 	_sampling = true;
 	try {
 		await sampleStats();
-		updateStatsUI();
+		scheduleStatsUI();
 		if (_prevBytes && _history.tputRx.length === 0 && !_warmupTimer && router_state.current_active_page === 'stats') {
 			_warmupTimer = setTimeout(() => {
 				_warmupTimer = null;
@@ -243,10 +282,49 @@ export async function updateStats() {
 	}
 }
 
+function renderAdaptiveProbeResult(report) {
+	const panel = document.getElementById('adaptive-probe-result');
+	const state = document.getElementById('adaptive-probe-state');
+	const baseline = document.getElementById('adaptive-probe-baseline');
+	const confidence = document.getElementById('adaptive-probe-confidence');
+	const reason = document.getElementById('adaptive-probe-reason');
+	if (!panel || !state || !baseline || !confidence || !reason) return;
+
+	const observations = Array.isArray(report?.observations) ? report.observations : [];
+	const latest = observations.length ? observations[observations.length - 1] : null;
+	const key = report?.stable_state || latest?.state || 'unknown';
+	state.textContent = I18N.t(`adaptive_state_${key}`);
+	baseline.textContent = Number.isFinite(report?.baseline_rtt_ms)
+		? `${report.baseline_rtt_ms.toFixed(1)} ms`
+		: '—';
+	confidence.textContent = Number.isFinite(latest?.confidence) ? `${latest.confidence}%` : '—';
+	const localizedKey = `adaptive_state_desc_${key}`;
+	reason.textContent = I18N.t(localizedKey) || I18N.t('adaptive_probe_no_reason');
+	panel.hidden = false;
+}
+
 export function initStatsUI() {
-	updateStatsUI();
+	scheduleStatsUI();
 	document.getElementById('stats-charts-panel')?.addEventListener('toggle', event => {
 		if (event.currentTarget.open) renderDetailCharts();
+	});
+
+	const probeButton = document.getElementById('adaptive-probe-btn');
+	probeButton?.addEventListener('click', async () => {
+		if (probeButton.disabled) return;
+		const status = document.getElementById('adaptive-probe-status');
+		probeButton.disabled = true;
+		if (status) status.textContent = I18N.t('adaptive_probe_running');
+		try {
+			const report = await runAdaptiveProbe(600, 4);
+			renderAdaptiveProbeResult(report);
+			if (status) status.textContent = I18N.t('adaptive_probe_complete');
+		} catch (error) {
+			console.error('Active adaptive probe failed:', error);
+			if (status) status.textContent = I18N.t('adaptive_probe_failed');
+		} finally {
+			probeButton.disabled = false;
+		}
 	});
 }
 
@@ -255,5 +333,5 @@ let _resizeTimer = null;
 window.addEventListener('resize', () => {
 	if (router_state.current_active_page !== 'stats') return;
 	clearTimeout(_resizeTimer);
-	_resizeTimer = setTimeout(updateStatsUI, 200);
+	_resizeTimer = setTimeout(scheduleStatsUI, 200);
 });

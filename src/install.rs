@@ -21,11 +21,6 @@ pub fn run() -> io::Result<()> {
         ));
         vec!["cubic".to_string()]
     });
-    for algorithm in crate::kernel_module::bundled_algorithms() {
-        let _ = validate_algorithm_loadability(&algorithm);
-    }
-    preflight_bundled_qdiscs();
-
     let available = crate::kernel_module::augment_algorithms(
         sysctl::available_algorithms().unwrap_or_else(|_| native.clone()),
     );
@@ -48,8 +43,9 @@ pub fn run() -> io::Result<()> {
     validate_prefixed_config(&staging_dir, "wlan", safe_fallback)?;
     validate_prefixed_config(&staging_dir, "rmnet_data", safe_fallback)?;
 
-    // Rebuild the cache after real module-load preflight so WebUI fallback
-    // data never advertises a bundled algorithm that this device rejected.
+    // Rebuild the cache after validating only the selected/default algorithms.
+    // Other bundled KOs remain unloaded until the runtime policy actually
+    // requests them, avoiding install-time module accumulation.
     let available = crate::kernel_module::augment_algorithms(
         sysctl::available_algorithms().unwrap_or_else(|_| native.clone()),
     );
@@ -129,29 +125,6 @@ fn validate_algorithm_loadability(algorithm: &str) -> bool {
             ));
             let _ = crate::kernel_module::mark_algorithm_unavailable(algorithm);
             false
-        }
-    }
-}
-
-fn preflight_bundled_qdiscs() {
-    for qdisc in crate::kernel_module::bundled_qdiscs() {
-        match crate::kernel_module::ensure_qdisc(&qdisc) {
-            Ok(true) => {
-                let _ = crate::kernel_module::clear_qdisc_unavailable(&qdisc);
-                logging::log_print(&format!("[INFO] Qdisc preflight passed: {qdisc}"));
-            }
-            Ok(false) => {
-                let _ = crate::kernel_module::mark_qdisc_unavailable(&qdisc);
-                logging::log_print(&format!(
-                    "[WARN] Qdisc {qdisc} is bundled but did not become loadable"
-                ));
-            }
-            Err(error) => {
-                let _ = crate::kernel_module::mark_qdisc_unavailable(&qdisc);
-                logging::log_print(&format!(
-                    "[WARN] Qdisc {qdisc} preflight load failed: {error}"
-                ));
-            }
         }
     }
 }

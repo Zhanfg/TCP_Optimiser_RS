@@ -81,6 +81,28 @@ const rustQdiscs = quotedValues(rust, 'pub const KNOWN_QDISCS');
 const uiQdiscs = quotedValues(capabilities, 'export const ALL_QDISCS');
 if (JSON.stringify(rustQdiscs) !== JSON.stringify(uiQdiscs)) fail('Rust and WebUI qdisc lists differ');
 
+const mainRust = read('src/main.rs');
+const coreCoverage = [
+	['Daemon', 'service.sh', '"$RUST_BIN" daemon'],
+	['Once', 'post-fs-data.sh', '"$RUST_BIN" once'],
+	['Install', 'customize.sh', '"$RUST_BIN" install'],
+	['VerifyModule', 'customize.sh', 'verify-module'],
+	['Status', 'webroot/js/common.js', "'status'"],
+	['Adaptive', 'webroot/js/common.js', 'adaptive --sample-ms'],
+	['Sample', 'webroot/js/common.js', "'sample'"],
+	['Repair', 'webroot/js/common.js', "'repair'"],
+	['Proxy', 'webroot/js/common.js', "'proxy'"],
+	['Profile', 'webroot/js/common.js', "'profile'"],
+	['BuildInfo', 'webroot/js/common.js', "'build-info'"],
+];
+for (const [command, file, needle] of coreCoverage) {
+	if (!mainRust.includes(`Command::${command}`)) fail(`core coverage map references missing Rust command ${command}`);
+	if (!read(file).includes(needle)) fail(`Rust command ${command} has no consumer in ${file}`);
+}
+for (const id of ['adaptive-probe-btn', 'about-build-revision', 'about-integrity-btn', 'proxy-kill-override-toggle']) {
+	if (!ids.has(id)) fail(`core feature UI is missing #${id}`);
+}
+
 if (!process.exitCode) {
-	console.log(`webui validation: ${Object.keys(english).length} translations, ${rustAlgorithms.length} algorithms, ${rustQdiscs.length} qdiscs`);
+	console.log(`webui validation: ${Object.keys(english).length} translations, ${rustAlgorithms.length} algorithms, ${rustQdiscs.length} qdiscs, ${coreCoverage.length} core commands covered`);
 }

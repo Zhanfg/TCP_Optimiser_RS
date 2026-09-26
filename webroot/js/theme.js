@@ -63,6 +63,24 @@ const DYNAMIC_TOKENS = [...new Set(Object.values(TOKEN_MAP).flatMap(map => Objec
 let dynamicPalette = null;
 let dynamicColorEnabled = true;
 let mediaListenerInstalled = false;
+const PALETTE_CACHE_KEY = 'tcp_dynamic_palette_v1';
+const PALETTE_CACHE_MAX_AGE = 6 * 60 * 60 * 1000;
+
+function readCachedPalette() {
+	try {
+		const cached = JSON.parse(localStorage.getItem(PALETTE_CACHE_KEY) || 'null');
+		if (!cached || !cached.palette || Date.now() - cached.savedAt > PALETTE_CACHE_MAX_AGE) return null;
+		return DYNAMIC_COLOR_RESOURCES.every(name => cached.palette[name]) ? cached.palette : null;
+	} catch (_) {
+		return null;
+	}
+}
+
+function cachePalette(palette) {
+	try {
+		localStorage.setItem(PALETTE_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), palette }));
+	} catch (_) {}
+}
 
 function resolvedMode(mode) {
 	return mode === 'auto'
@@ -138,7 +156,7 @@ export async function setDynamicColorEnabled(enabled) {
 
 export async function initDynamicColorTheme() {
 	dynamicColorEnabled = localStorage.getItem('tcp_dynamicColor') !== 'false';
-	if (dynamicColorEnabled) dynamicPalette = await readSystemPalette();
+	if (dynamicColorEnabled) dynamicPalette = readCachedPalette();
 	setThemeMode(localStorage.getItem('tcp_themeMode') || 'auto');
 	updateDynamicColorStatus();
 	if (!mediaListenerInstalled) {
@@ -147,5 +165,14 @@ export async function initDynamicColorTheme() {
 		});
 		document.addEventListener('i18n-changed', updateDynamicColorStatus);
 		mediaListenerInstalled = true;
+	}
+	if (dynamicColorEnabled) {
+		void readSystemPalette().then(palette => {
+			if (!palette) return;
+			dynamicPalette = palette;
+			cachePalette(palette);
+			applyPalette(localStorage.getItem('tcp_themeMode') || 'auto');
+			updateDynamicColorStatus();
+		});
 	}
 }

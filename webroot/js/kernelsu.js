@@ -55,6 +55,27 @@ let mockLastRepair = null;
 
 function mockExec(cmd) {
 	// Simulate realistic return values for preview
+	if (cmd.includes('runtime-build-info')) {
+		return { errno: 0, stdout: JSON.stringify({
+			version: '3.0.0',
+			channel: 'preview',
+			source: 'https://github.com/Zhanfg/TCP_Optimiser_RS',
+			revision: '6ac8af83dee2e7b84a203ba9d80fe14f746d5422',
+		}), stderr: '' };
+	}
+	if (cmd.includes('adaptive-active-probe')) {
+		return { errno: 0, stdout: JSON.stringify({
+			stable_state: 'stable',
+			baseline_rtt_ms: 31.8,
+			baseline_samples: 4,
+			observations: [
+				{ state: 'stable', confidence: 88, reasons: ['RTT remains near the learned baseline', 'no qdisc drop pressure'], sample: { avg_rtt_ms: 34.2 } },
+			],
+		}), stderr: '' };
+	}
+	if (cmd.includes('module-integrity-check')) {
+		return { errno: 0, stdout: '', stderr: '' };
+	}
 	if (cmd.includes('runtime-policy-repair')) {
 		mockLastRepair = { timestamp_epoch: Math.floor(Date.now() / 1000), success: true, reason: 'manual', errors: [] };
 		return { errno: 0, stdout: JSON.stringify(mockLastRepair), stderr: '' };
@@ -70,8 +91,13 @@ function mockExec(cmd) {
 		].map(([key, expected, actual]) => ({ key, expected, actual, state: 'match', repairable: key !== 'interface_mode' }));
 		return { errno: 0, stdout: JSON.stringify({
 			build: { version: '3.0.0', git_sha: 'preview', build_epoch: 0 },
-			active_iface: 'wlan0', module_active: true, algorithm: 'bbr', default_qdisc: 'fq_codel',
-			available_algorithms: ['bbr', 'bbr2', 'cubic', 'westwood', 'reno', 'htcp', 'vegas', 'yeah', 'illinois', 'dctcp', 'cdg', 'bic', 'highspeed', 'hybla', 'nv', 'scalable', 'lp'],
+			active_iface: 'wlan0', module_active: true, algorithm: 'bbr3', default_qdisc: 'fq',
+			native_algorithms: ['bbr', 'cubic', 'reno', 'westwood'],
+			available_algorithms: ['bbr', 'bbr2', 'bbr3', 'cubic', 'westwood', 'reno', 'htcp', 'vegas', 'yeah', 'illinois', 'dctcp', 'cdg', 'bic', 'highspeed', 'hybla', 'nv', 'scalable', 'lp'],
+			bundled_algorithms: ['bbr2', 'bbr3', 'htcp', 'vegas'],
+			bundled_qdiscs: ['fq', 'fq_codel', 'codel', 'pie'],
+			kernel_bundle: { kernel_release: '6.6.139-4k-gce3170e88ddc', kmi: null, arch: 'aarch64', manifest_present: true, matching_mode: 'exact_release', matched_modules: 8, bundled_algorithms: ['bbr2', 'bbr3', 'htcp', 'vegas'], bundled_qdiscs: ['fq', 'fq_codel', 'codel', 'pie'] },
+			auto_tuning_enabled: true, qdisc_policy: 'per_algorithm',
 			proxy: 'Mihomo · TPROXY', hosts: 'none', init_windows: [32, 32],
 			tcp: { retrans: 1234, in_segs: 15234567, out_segs: 12345678 },
 			iface: { rx_bytes: 1234567890, tx_bytes: 987654321 },
@@ -80,6 +106,18 @@ function mockExec(cmd) {
 			dns: [{ iface: 'wlan0', ip: '1.1.1.1' }, { iface: 'system', ip: '8.8.8.8' }],
 			conn_info: { avg_rtt_ms: 43.14, max_rtt_ms: 72.8, avg_cwnd: 18, max_cwnd: 32, samples: 7 },
 			verification: { summary: { matched: checks.length, total: checks.length, drifted: 0, unavailable: 0 }, checks, errors: [], last_repair: mockLastRepair },
+		}), stderr: '' };
+	}
+	if (cmd.includes('network-auto-profile')) {
+		return { errno: 0, stdout: JSON.stringify({
+			schema: 1, generated_epoch: Math.floor(Date.now() / 1000), auto_tuning_enabled: true,
+			kernel_release: '6.6.139-4k-gce3170e88ddc', kmi: null, arch: 'aarch64',
+			memory_kib: 12582912, active_iface: 'wlan0', iface_mode: 'Wi-Fi', iface_mtu: 1500,
+			proxy: { family: 'mihomo', label: 'Mihomo', mode: 'tproxy', transparent: true, tproxy: true, virtual_iface: null },
+			available_algorithms: ['bbr', 'bbr2', 'bbr3', 'cubic', 'reno'],
+			bundled_algorithms: ['bbr2', 'bbr3'], bundled_qdiscs: ['fq', 'fq_codel'],
+			wifi_algorithm: 'bbr3', cellular_algorithm: 'bbr2', qdisc_policy: 'per_algorithm',
+			recommendations: { socket_buffer_floor: 33554432, somaxconn: 4096, netdev_max_backlog: 8192, nf_conntrack_max: 262144, tcp_mtu_probing: 1, tcp_sack: 1, tcp_dsack: 1, tcp_no_metrics_save: 0, tcp_autocorking: 1 }
 		}), stderr: '' };
 	}
 	if (cmd.includes('tcp_available_congestion_control'))

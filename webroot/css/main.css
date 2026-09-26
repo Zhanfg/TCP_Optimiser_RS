@@ -1779,6 +1779,69 @@ a, button, .nav-item, .algo-chip, .preset-chip, .link-chip {
   border-color: var(--md-sys-color-primary);
 }
 
+/* ===== Core feature closure ===== */
+.probe-result {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.probe-result[hidden] { display: none; }
+.probe-result > div {
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 12px;
+  background: var(--md-sys-color-surface-container-low);
+}
+.probe-result span,
+.core-diagnostic-row span {
+  display: block;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.66rem;
+  margin-bottom: 3px;
+}
+.probe-result strong,
+.core-diagnostic-row strong {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 0.78rem;
+}
+.probe-result > p {
+  grid-column: 1 / -1;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+.core-diagnostics {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+  margin: 4px 0 8px;
+}
+.core-diagnostic-row {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 11px;
+  background: var(--md-sys-color-surface-container-low);
+}
+.expert-toggle-title {
+  display: block;
+  color: var(--md-sys-color-on-surface);
+  font-size: 0.86rem;
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+.expert-toggle-desc {
+  display: block;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+@media (max-width: 420px) {
+  .probe-result { grid-template-columns: 1fr; }
+  .probe-result > p { grid-column: auto; }
+}
+
 /* ===== Warning Modal ===== */
 #adv-warning-overlay {
   position: fixed;
@@ -2771,7 +2834,7 @@ body {
   flex-direction: row;
   gap: 0;
   border-radius: 18px;
-  transition: flex-grow 0.28s ease, max-width 0.28s ease, color 0.2s ease, background-color 0.2s ease;
+  transition: color 0.16s ease, background-color 0.16s ease;
 }
 
 .nav-item .nav-icon {
@@ -2788,7 +2851,7 @@ body {
   font-size: 0.78rem;
   white-space: nowrap;
   transform: translateX(-5px);
-  transition: max-width 0.28s ease, margin-left 0.28s ease, opacity 0.18s ease, transform 0.28s ease;
+  transition: opacity 0.16s ease, transform 0.16s ease;
 }
 
 .nav-item.active {
@@ -3099,9 +3162,66 @@ body {
   transform: rotate(180deg);
 }
 
+/* ===== Runtime-engine information architecture ===== */
+.kernel-bundle-panel[data-state="exact_release"] .capability-count,
+.kernel-bundle-panel[data-state="kmi"] .capability-count,
+.kernel-bundle-panel[data-state="mixed"] .capability-count { color: var(--md-sys-color-primary); }
+.kernel-bundle-panel[data-state="none"] .capability-count,
+.kernel-bundle-panel[data-state="invalid"] .capability-count { color: var(--md-sys-color-error); }
+
+.kernel-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+.profile-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+.profile-fact {
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--md-sys-color-surface-container-low);
+  border: 1px solid var(--panel-border);
+}
+.profile-fact > span { display:block; color:var(--md-sys-color-on-surface-variant); font-size:0.68rem; margin-bottom:4px; }
+.profile-fact > strong { display:block; font-size:0.82rem; overflow-wrap:anywhere; }
+.profile-fact--wide { grid-column:1 / -1; }
+
+.capability-legend .is-bundled {
+  width:9px; height:9px; border-radius:50%; display:inline-block;
+  border:2px dashed var(--md-sys-color-primary); background:transparent;
+}
+.algo-chip.capability-bundled {
+  border-style:dashed;
+  border-color:color-mix(in srgb, var(--md-sys-color-primary) 68%, var(--md-sys-color-outline));
+}
+.path-health-grid { margin-bottom:6px; }
+
+@media (max-width: 420px) {
+  .kernel-facts, .profile-facts { grid-template-columns:1fr; }
+  .profile-fact--wide { grid-column:auto; }
+}
+
+/* ===== WebView performance containment ===== */
+@supports (content-visibility: auto) {
+  .settings-group,
+  .capability-panel,
+  .stats-disclosure,
+  .chart-card,
+  .log-card {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 180px;
+  }
+}
+
+#pages > section[hidden] {
+  content-visibility: hidden;
+}
+
 /* ===== Product Motion & Haptics Feedback ===== */
-.motion-ready #pages > section:not([hidden]) > * {
-  animation: content-reveal 0.18s ease-out both;
+.motion-ready #pages > section:not([hidden]) > .page-intro {
+  animation: content-reveal 0.16s ease-out both;
 }
 
 .value-updated {

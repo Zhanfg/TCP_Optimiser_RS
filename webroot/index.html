@@ -20,10 +20,7 @@
   </script>
 
   <link rel="stylesheet" href="css/main.css">
-  <script type="module" src="js/kernelsu.js"></script>
-  <script type="module" src="js/i18n.js"></script>
   <script type="module" src="js/debug.js"></script>
-  <script type="module" src="js/common.js"></script>
   <script type="module" src="js/router.js"></script>
 </head>
 <body>
@@ -121,6 +118,31 @@
             </div>
           </div>
 
+          <details class="capability-panel collapsible-panel kernel-bundle-panel" id="kernel-bundle-panel" open>
+            <summary class="panel-heading capability-heading collapsible-summary">
+              <div>
+                <p class="panel-kicker" data-i18n="kernel_bundle_eyebrow">Kernel integration</p>
+                <h3 data-i18n="kernel_bundle_title">Runtime kernel bundle</h3>
+              </div>
+              <span class="collapsible-summary__actions">
+                <span id="kernel-match-badge" class="capability-count" data-i18n="label_loading">Loading...</span>
+                <span class="collapsible-chevron ui-icon icon-chevron-down" aria-hidden="true"></span>
+              </span>
+            </summary>
+            <div class="collapsible-panel__body">
+              <div class="runtime-policy__grid kernel-facts">
+                <div class="runtime-value"><span class="runtime-value__label" data-i18n="kernel_bundle_release">Kernel release</span><strong id="kernel-release-value">—</strong></div>
+                <div class="runtime-value"><span class="runtime-value__label" data-i18n="kernel_bundle_kmi">KMI / matching</span><strong id="kernel-kmi-value">—</strong></div>
+                <div class="runtime-value"><span class="runtime-value__label" data-i18n="kernel_bundle_modules">Matched KOs</span><strong id="kernel-module-count">—</strong></div>
+                <div class="runtime-value"><span class="runtime-value__label" data-i18n="kernel_bundle_algorithms">Loadable CC</span><strong id="kernel-bundle-algos">—</strong></div>
+                <div class="runtime-value"><span class="runtime-value__label" data-i18n="kernel_bundle_qdiscs">Loadable qdisc</span><strong id="kernel-bundle-qdiscs">—</strong></div>
+                <div class="runtime-value"><span class="runtime-value__label" data-i18n="policy_managed_tuning">Managed tuning</span><strong id="policy-managed-value">—</strong></div>
+                <div class="runtime-value"><span class="runtime-value__label" data-i18n="policy_qdisc_mode">Qdisc policy</span><strong id="policy-qdisc-mode">—</strong></div>
+              </div>
+              <p id="kernel-bundle-note" class="capability-help" data-i18n="kernel_bundle_unknown_desc">Checking the packaged kernel-module bundle.</p>
+            </div>
+          </details>
+
           <details class="capability-panel collapsible-panel" id="adaptive-observer-panel">
             <summary class="panel-heading capability-heading collapsible-summary">
               <div>
@@ -200,9 +222,9 @@
             </summary>
             <div class="collapsible-panel__body">
               <div class="capability-legend" aria-label="Capability legend" data-i18n-aria-label="capability_legend">
-                <span><i class="is-supported"></i><span data-i18n="capability_supported">Supported</span></span>
-                <span><i class="is-unsupported">×</i><span data-i18n="capability_unsupported">Unsupported</span></span>
-                <span><i class="is-unknown">?</i><span data-i18n="capability_unknown">Unverified</span></span>
+                <span><i class="is-supported"></i><span data-i18n="capability_runtime">Runtime</span></span>
+                <span><i class="is-bundled"></i><span data-i18n="capability_bundled">Bundled / on demand</span></span>
+                <span><i class="is-unsupported">×</i><span data-i18n="capability_unsupported">Unavailable</span></span>
               </div>
               <p class="capability-help" data-i18n="home_capability_hint">Congestion-control algorithms available on the running kernel.</p>
               <div id="home-algo-chips" class="algo-chips capability-grid">
@@ -248,13 +270,22 @@
                 </label>
               </div>
               <p id="auto-profile-summary" class="selection-description" aria-live="polite" data-i18n="label_loading">Loading...</p>
+              <div class="profile-facts">
+                <div class="profile-fact"><span data-i18n="settings_profile_kernel">Kernel</span><strong id="profile-kernel-value">—</strong></div>
+                <div class="profile-fact"><span data-i18n="settings_profile_kmi">KMI / exact match</span><strong id="profile-kmi-value">—</strong></div>
+                <div class="profile-fact"><span data-i18n="settings_profile_memory">Memory</span><strong id="profile-memory-value">—</strong></div>
+                <div class="profile-fact"><span data-i18n="settings_profile_link">Active link</span><strong id="profile-link-value">—</strong></div>
+                <div class="profile-fact"><span data-i18n="settings_profile_proxy">Proxy path</span><strong id="profile-proxy-value">—</strong></div>
+                <div class="profile-fact"><span data-i18n="settings_profile_bundle">Bundled capability</span><strong id="profile-bundle-value">—</strong></div>
+                <div class="profile-fact profile-fact--wide"><span data-i18n="settings_profile_recommendation">Managed recommendation</span><strong id="profile-recommendation-value">—</strong></div>
+              </div>
               <div class="settings-action-row">
                 <button id="auto-profile-refresh-btn" class="btn-tonal" data-i18n="settings_auto_profile_refresh">Re-detect network</button>
               </div>
             </div>
           </details>
 
-          <details class="settings-group settings-group--wide" id="network-policy-group" open>
+          <details class="settings-group settings-group--wide" id="network-policy-group">
             <summary class="settings-group__summary">
               <span class="settings-group__icon" aria-hidden="true"><span class="ui-icon icon-sliders"></span></span>
               <span class="settings-group__title">
@@ -473,6 +504,36 @@
         <!-- ===== STATS PAGE ===== -->
         <section id="stats-page" hidden>
 
+          <div class="page-intro compact">
+            <p class="page-eyebrow" data-i18n="stats_telemetry_eyebrow">Runtime telemetry</p>
+            <h2 data-i18n="stats_telemetry_title">Path telemetry</h2>
+            <p data-i18n="stats_telemetry_desc">Live transport data interpreted against the daemon's learned path baseline.</p>
+          </div>
+          <div class="info-grid path-health-grid">
+            <div class="info-card"><span class="info-card__icon ui-icon icon-activity" aria-hidden="true"></span><span class="info-card__label" data-i18n="stats_path_state">Path state</span><span class="info-card__value" id="stats-path-state">—</span></div>
+            <div class="info-card"><span class="info-card__icon ui-icon icon-gauge" aria-hidden="true"></span><span class="info-card__label" data-i18n="stats_rtt_inflation">RTT / baseline</span><span class="info-card__value" id="stats-rtt-inflation">—</span></div>
+            <div class="info-card"><span class="info-card__icon ui-icon icon-list-filter" aria-hidden="true"></span><span class="info-card__label" data-i18n="stats_queue_pressure">Queue backlog</span><span class="info-card__value" id="stats-queue-pressure">—</span></div>
+            <div class="info-card"><span class="info-card__icon ui-icon icon-route" aria-hidden="true"></span><span class="info-card__label" data-i18n="stats_proxy_path">Path mode</span><span class="info-card__value" id="stats-proxy-path">—</span></div>
+          </div>
+
+          <details class="stats-disclosure" id="adaptive-probe-panel">
+            <summary class="stats-disclosure__summary">
+              <span class="section-pill" data-i18n="adaptive_probe_title">Active path sample</span>
+              <span id="adaptive-probe-status" class="stats-disclosure__meta" data-i18n="adaptive_probe_ready">Ready</span>
+              <span class="collapsible-chevron ui-icon icon-chevron-down" aria-hidden="true"></span>
+            </summary>
+            <div class="stats-disclosure__body">
+              <p class="field-hint" data-i18n="adaptive_probe_desc">Runs the Rust adaptive sampler for a short passive observation window. It does not change network settings.</p>
+              <button type="button" id="adaptive-probe-btn" class="btn-tonal" data-i18n="adaptive_probe_run">Sample now</button>
+              <div id="adaptive-probe-result" class="probe-result" hidden>
+                <div><span data-i18n="stats_path_state">Path state</span><strong id="adaptive-probe-state">—</strong></div>
+                <div><span data-i18n="adaptive_probe_baseline">Baseline RTT</span><strong id="adaptive-probe-baseline">—</strong></div>
+                <div><span data-i18n="adaptive_confidence">Confidence</span><strong id="adaptive-probe-confidence">—</strong></div>
+                <p id="adaptive-probe-reason"></p>
+              </div>
+            </div>
+          </details>
+
           <p class="section-pill" data-i18n="stats_throughput">Throughput</p>
           <div class="throughput-grid">
             <div class="chart-row">
@@ -565,6 +626,20 @@
           <div class="warning-banner">
             <span class="ui-icon icon-triangle-alert" aria-hidden="true"></span>
             <span data-i18n="adv_warning_banner">Direct kernel parameter modification. Incorrect values may cause instability or data loss.</span>
+          </div>
+
+          <p class="section-pill" data-i18n="proxy_safety_title">Proxy connection safety</p>
+          <div class="settings-card">
+            <div class="toggle-container">
+              <div>
+                <span class="expert-toggle-title" data-i18n="proxy_kill_override">Allow connection kill under transparent proxy</span>
+                <span class="expert-toggle-desc" data-i18n="proxy_kill_override_desc">Normally the engine preserves existing TCP sessions when TUN/TPROXY is active. Enable only when you explicitly want policy changes to terminate those sessions.</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="proxy-kill-override-toggle">
+                <span class="slider"></span>
+              </label>
+            </div>
           </div>
 
           <p class="section-pill" data-i18n="debug_title">Debug Mode</p>
@@ -668,6 +743,14 @@
         <p class="about-dialog-version" id="about-version-text"></p>
         <p class="about-live-desc" id="about-live-desc"></p>
         <p class="about-dialog-desc" data-i18n="home_about_desc"></p>
+        <div class="core-diagnostics">
+          <div class="core-diagnostic-row"><span data-i18n="build_info_version">Core version</span><strong id="about-build-version">—</strong></div>
+          <div class="core-diagnostic-row"><span data-i18n="build_info_channel">Build channel</span><strong id="about-build-channel">—</strong></div>
+          <div class="core-diagnostic-row"><span data-i18n="build_info_source">Source</span><strong id="about-build-source">—</strong></div>
+          <div class="core-diagnostic-row"><span data-i18n="build_info_revision">Revision</span><strong id="about-build-revision">—</strong></div>
+          <button type="button" id="about-integrity-btn" class="btn-outline" data-i18n="integrity_check">Verify installed module</button>
+          <p id="about-integrity-status" class="field-hint" data-i18n="integrity_check_idle">Signed payload can be checked again at any time.</p>
+        </div>
         <div class="about-dialog-links">
           <button class="link-chip" data-url="https://github.com/Zhanfg/TCP_Optimiser">
             <span class="ui-icon icon-link" aria-hidden="true"></span> <span data-i18n="home_github">GitHub</span>

@@ -1,8 +1,15 @@
 import { exec, toast, moduleInfo, shellQuote, isBridgeAvailable } from './kernelsu.js';
 import I18N from './i18n.js';
 import router_state from './router.js';
-import { addLog } from './logs.js';
 import { ALL_QDISCS } from './capabilities.js';
+
+function addDiagnosticLog(message) {
+	console.warn(message);
+	if (!router_state.moduleInformation) return;
+	void import('./logs.js')
+		.then(module => module.addLog(message))
+		.catch(() => {});
+}
 
 async function readModuleProp() {
 	try {
@@ -85,7 +92,7 @@ printf '%s\\n' "$iface"`);
 		return active_iface.trim() || 'unknown';
 	} catch (error) {
 		console.error('Error fetching active interface:', error);
-		addLog('Error fetching active interface.');
+		addDiagnosticLog('Error fetching active interface.');
 		return "error";
 	}
 }
@@ -96,7 +103,7 @@ export async function get_active_algorithm() {
 		return active_algo.trim();
 	} catch (error) {
 		console.error('Error fetching active algorithm:', error);
-		addLog('Error fetching active algorithm.');
+		addDiagnosticLog('Error fetching active algorithm.');
 		return "error";
 	}
 }
@@ -220,6 +227,39 @@ export async function repairRuntimePolicy() {
 	runtimeSnapshotCache.clear();
 	runtimeSnapshotCheckedAt.clear();
 	return record;
+}
+
+let buildInfoCache = null;
+
+export async function getBuildInfo(force = false) {
+	if (!force && buildInfoCache) return buildInfoCache;
+	const { stdout } = await exec(rustBinaryCommand('runtime-build-info', 'build-info'));
+	const info = JSON.parse(stdout.trim());
+	if (!info || typeof info !== 'object' || !info.version || !info.revision) {
+		throw new Error('Invalid build-info payload');
+	}
+	buildInfoCache = info;
+	return info;
+}
+
+export async function runAdaptiveProbe(sampleMs = 600, samples = 4) {
+	const interval = Math.max(250, Math.min(10000, Math.round(Number(sampleMs) || 600)));
+	const count = Math.max(1, Math.min(12, Math.round(Number(samples) || 4)));
+	const { stdout } = await exec(rustBinaryCommand(
+		'adaptive-active-probe',
+		`adaptive --sample-ms ${interval} --samples ${count}`,
+	));
+	const report = JSON.parse(stdout.trim());
+	if (!report || typeof report !== 'object' || !Array.isArray(report.observations)) {
+		throw new Error('Invalid adaptive probe payload');
+	}
+	return report;
+}
+
+export async function verifyInstalledModule() {
+	const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
+	await exec(rustBinaryCommand('module-integrity-check', `verify-module ${shellQuote(dir)}`));
+	return true;
 }
 
 let proxyFastStatusCache = null;
@@ -469,14 +509,14 @@ current=$(cat /proc/sys/net/core/default_qdisc 2>/dev/null); for q in ${names}; 
 			.map(line => line.trim().split(':', 2))
 			.filter(([name, state]) => ALL_QDISCS.includes(name) && ['supported', 'unsupported'].includes(state)));
 		const bundled = new Set(router_state.runtimeSnapshot?.bundled_qdiscs || []);
-		qdiscCapabilityCache = ALL_QDISCS.map(name => ({
-			name,
-			state: bundled.has(name)
-				? 'supported'
-				: (['supported', 'unsupported'].includes(byName.get(name)) ? byName.get(name) : 'unknown'),
-		}));
+		qdiscCapabilityCache = ALL_QDISCS.map(name => {
+			const runtimeState = ['supported', 'unsupported'].includes(byName.get(name)) ? byName.get(name) : 'unknown';
+			const source = runtimeState === 'supported' ? 'runtime'
+				: bundled.has(name) ? 'bundle' : runtimeState === 'unsupported' ? 'unavailable' : 'unknown';
+			return { name, state: bundled.has(name) ? 'supported' : runtimeState, source };
+		});
 	} catch (error) {
-		qdiscCapabilityCache = ALL_QDISCS.map(name => ({ name, state: 'unknown' }));
+		qdiscCapabilityCache = ALL_QDISCS.map(name => ({ name, state: 'unknown', source: 'unknown' }));
 	}
 	qdiscCapabilityCheckedAt = now;
 	return qdiscCapabilityCache;

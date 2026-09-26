@@ -9,6 +9,8 @@ let _lastAlgoSet = '';
 let _lastActiveAlgo = '';
 let _lastEnabled = false;
 let _detailRefreshPromise = null;
+let _lastAdaptiveRender = '';
+let _lastVerificationRender = '';
 
 async function refreshHomeDetails(force = false) {
 	if (_detailRefreshPromise) return _detailRefreshPromise;
@@ -56,6 +58,12 @@ export async function updateModuleStatus(force = false) {
 				: router_state.homePageParams.active_InitcwndInitrwndValue;
 			defaultQdisc = snapshot.default_qdisc;
 			router_state.available_algorithms = snapshot.available_algorithms || [];
+			router_state.native_algorithms = snapshot.native_algorithms || snapshot.available_algorithms || [];
+			router_state.bundled_algorithms = snapshot.bundled_algorithms || [];
+			router_state.bundled_qdiscs = snapshot.bundled_qdiscs || [];
+			router_state.kernelBundle = snapshot.kernel_bundle || null;
+			router_state.autoTuningEnabled = snapshot.auto_tuning_enabled ?? null;
+			router_state.qdiscPolicy = snapshot.qdisc_policy || 'unknown';
 			router_state.runtimeSnapshot = snapshot;
 			if (snapshot.verification) router_state.verification = snapshot.verification;
 		} else {
@@ -103,6 +111,10 @@ function renderAdaptiveObserver() {
 	const queue = document.getElementById('adaptive-queue');
 	const reason = document.getElementById('adaptive-observer-reason');
 	if (!panel || !badge || !latestState || !confidence || !rtt || !retransmission || !queue || !reason) return;
+
+	const renderKey = JSON.stringify([I18N.currentLang, adaptive || null]);
+	if (renderKey === _lastAdaptiveRender) return;
+	_lastAdaptiveRender = renderKey;
 
 	const latest = adaptive?.latest;
 	const sample = latest?.sample;
@@ -173,6 +185,16 @@ function renderVerification() {
 	const repairButton = document.getElementById('verification-repair-btn');
 	if (!list || !count || !panel || !lastRepair) return;
 
+	const renderKey = JSON.stringify([
+		I18N.currentLang,
+		router_state.homePageParams.module_status === 'Enabled',
+		snapshot?.summary || null,
+		snapshot?.checks || null,
+		snapshot?.last_repair || null,
+	]);
+	if (renderKey === _lastVerificationRender) return;
+	_lastVerificationRender = renderKey;
+
 	list.replaceChildren();
 	if (!snapshot?.summary || !Array.isArray(snapshot.checks)) {
 		if (repairButton) repairButton.disabled = true;
@@ -228,6 +250,51 @@ function classifyInterface(ifaceName) {
 	return 'Unknown';
 }
 
+function renderKernelBundle() {
+	const bundle = router_state.kernelBundle;
+	const panel = document.getElementById('kernel-bundle-panel');
+	const badge = document.getElementById('kernel-match-badge');
+	if (!panel || !badge) return;
+	const release = document.getElementById('kernel-release-value');
+	const kmi = document.getElementById('kernel-kmi-value');
+	const modules = document.getElementById('kernel-module-count');
+	const algorithms = document.getElementById('kernel-bundle-algos');
+	const qdiscs = document.getElementById('kernel-bundle-qdiscs');
+	const managed = document.getElementById('policy-managed-value');
+	const qdiscMode = document.getElementById('policy-qdisc-mode');
+	const note = document.getElementById('kernel-bundle-note');
+
+	if (!bundle) {
+		badge.textContent = I18N.t('kernel_bundle_unknown');
+		panel.dataset.state = 'unknown';
+		for (const el of [release, kmi, modules, algorithms, qdiscs, managed, qdiscMode]) if (el) el.textContent = '—';
+		if (note) note.textContent = I18N.t('kernel_bundle_unknown_desc');
+		return;
+	}
+	const modeKey = ['exact_release', 'kmi', 'mixed'].includes(bundle.matching_mode)
+		? bundle.matching_mode : bundle.matching_mode === 'invalid' ? 'invalid' : 'none';
+	const matchLabelKey = {
+		exact_release: 'kernel_bundle_match_exact_release',
+		kmi: 'kernel_bundle_match_kmi',
+		mixed: 'kernel_bundle_match_mixed',
+		none: 'kernel_bundle_match_none',
+		invalid: 'kernel_bundle_match_invalid',
+	}[modeKey] || 'kernel_bundle_unknown';
+	badge.textContent = I18N.t(matchLabelKey);
+	panel.dataset.state = modeKey;
+	if (release) release.textContent = bundle.kernel_release || '—';
+	if (kmi) kmi.textContent = bundle.kmi || I18N.t('kernel_bundle_exact_only');
+	if (modules) modules.textContent = String(bundle.matched_modules ?? 0);
+	if (algorithms) algorithms.textContent = String(router_state.bundled_algorithms.length);
+	if (qdiscs) qdiscs.textContent = String(router_state.bundled_qdiscs.length);
+	if (managed) managed.textContent = router_state.autoTuningEnabled == null ? '—'
+		: I18N.t(router_state.autoTuningEnabled ? 'policy_managed_on' : 'policy_managed_off');
+	if (qdiscMode) qdiscMode.textContent = I18N.t(router_state.qdiscPolicy === 'manual'
+		? 'policy_qdisc_manual' : 'policy_qdisc_per_algorithm');
+	if (note) note.textContent = bundle.matched_modules > 0
+		? I18N.t('kernel_bundle_match_desc') : I18N.t('kernel_bundle_no_match_desc');
+}
+
 function updateAlgoChips() {
 	const container = document.getElementById('home-algo-chips');
 	if (!container) return;
@@ -240,7 +307,7 @@ function updateAlgoChips() {
 		total: ALL_ALGOS.length,
 	}) : I18N.t('home_status_unknown'));
 
-	const curSet = [...(avail || [])].sort().join(',');
+	const curSet = `${I18N.currentLang}|${[...(avail || [])].sort().join(',')}`;
 	if (curSet === _lastAlgoSet && active === _lastActiveAlgo && enabled === _lastEnabled) return;
 	_lastAlgoSet = curSet;
 	_lastActiveAlgo = active;
@@ -252,15 +319,20 @@ function updateAlgoChips() {
 		return;
 	}
 	const supported = new Set(avail || []);
+	const runtime = new Set(router_state.native_algorithms || []);
+	const bundled = new Set(router_state.bundled_algorithms || []);
 	ALL_ALGOS.forEach(algo => {
 		const chip = document.createElement('button');
 		chip.className = 'algo-chip';
+		chip.dataset.source = runtime.has(algo) ? 'runtime' : bundled.has(algo) ? 'bundle' : 'unavailable';
 		chip.dataset.algo = algo;
-		chip.title = getAlgorithmDescription(algo, I18N.currentLang);
+		const sourceKey = runtime.has(algo) ? 'capability_runtime'
+			: bundled.has(algo) ? 'capability_bundled' : 'capability_unsupported';
+		chip.title = `${getAlgorithmDescription(algo, I18N.currentLang)} · ${I18N.t(sourceKey)}`;
 		const label = document.createElement('span');
 		label.textContent = algo;
 		chip.appendChild(label);
-		chip.setAttribute('aria-label', `${algo}: ${I18N.t(supported.has(algo) ? 'capability_supported' : 'capability_unsupported')}`);
+		chip.setAttribute('aria-label', `${algo}: ${I18N.t(sourceKey)}`);
 		if (!supported.has(algo)) {
 			chip.classList.add('unsupported');
 			chip.disabled = true;
@@ -270,8 +342,8 @@ function updateAlgoChips() {
 			mark.textContent = '×';
 			mark.setAttribute('aria-hidden', 'true');
 			chip.appendChild(mark);
-		} else {
-			chip.title = I18N.t('capability_supported');
+		} else if (bundled.has(algo) && !runtime.has(algo)) {
+			chip.classList.add('capability-bundled');
 		}
 		if (enabled && algo === active) chip.classList.add('selected');
 		chip.addEventListener('click', () => {
@@ -461,6 +533,7 @@ export function updateHomeUI() {
 		}
 	}
 
+	renderKernelBundle();
 	updateAlgoChips();
 	renderAdaptiveObserver();
 	renderVerification();
