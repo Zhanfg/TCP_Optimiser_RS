@@ -168,21 +168,6 @@ pub fn bundled_qdiscs() -> Vec<String> {
         .collect()
 }
 
-pub fn mark_qdisc_unavailable(qdisc: &str) -> io::Result<()> {
-    if !crate::config::is_known_qdisc(qdisc) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("unknown qdisc: {qdisc}"),
-        ));
-    }
-    let path = crate::config::module_dir().join("unavailable_qdiscs");
-    let mut blocked = unavailable_qdiscs();
-    blocked.insert(qdisc.to_string());
-    let mut values = blocked.into_iter().collect::<Vec<_>>();
-    values.sort();
-    fs::write(path, format!("{}\n", values.join(" ")))
-}
-
 pub fn clear_qdisc_unavailable(qdisc: &str) -> io::Result<()> {
     let path = crate::config::module_dir().join("unavailable_qdiscs");
     let mut blocked = unavailable_qdiscs();
