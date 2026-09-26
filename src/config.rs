@@ -79,14 +79,7 @@ pub const ALL_ALGOS: &[&str] = &["bbr", "bbr3", "cubic", "reno"];
 
 /// Queue disciplines intentionally exposed by the PJZ110 build.
 /// Each is either native on the target kernel or provided by this package.
-pub const KNOWN_QDISCS: &[&str] = &[
-    "fq",
-    "fq_codel",
-    "codel",
-    "cake",
-    "pie",
-    "fq_pie",
-];
+pub const KNOWN_QDISCS: &[&str] = &["fq", "fq_codel", "codel", "cake", "pie", "fq_pie"];
 
 /// Default description for module.prop
 pub const DEFAULT_DESC: &str = "TCP Optimisations & update tcp_cong_algo based on interface";
