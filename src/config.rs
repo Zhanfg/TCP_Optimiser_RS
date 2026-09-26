@@ -248,8 +248,14 @@ mod tests {
                 config.qdisc
             );
             assert!(config.pacing_ca > 0, "{algorithm} has zero CA pacing");
-            assert!(config.pacing_ss > 0, "{algorithm} has zero slow-start pacing");
-            assert!(!config.desc.trim().is_empty(), "{algorithm} has no description");
+            assert!(
+                config.pacing_ss > 0,
+                "{algorithm} has zero slow-start pacing"
+            );
+            assert!(
+                !config.desc.trim().is_empty(),
+                "{algorithm} has no description"
+            );
         }
     }
 }

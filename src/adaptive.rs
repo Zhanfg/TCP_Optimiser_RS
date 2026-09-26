@@ -708,7 +708,10 @@ mod tests {
                 assert_eq!(after, before, "state flipped before hysteresis completed");
             }
             if minute_in_phase >= 2 {
-                assert_eq!(after, expected, "state failed to converge within three samples");
+                assert_eq!(
+                    after, expected,
+                    "state failed to converge within three samples"
+                );
             }
         }
 
@@ -742,6 +745,10 @@ mod tests {
         }
 
         assert_eq!(estimator.rtt_ms, Some(25.0));
-        assert_eq!(estimator.samples, u8::MAX, "sample counter must saturate, not wrap");
+        assert_eq!(
+            estimator.samples,
+            u8::MAX,
+            "sample counter must saturate, not wrap"
+        );
     }
 }

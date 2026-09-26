@@ -542,7 +542,12 @@ mod tests {
             kernel_release: None,
             ..exact.clone()
         };
-        assert!(entry_matches_kernel(&kmi_only, release, Some(kmi), "aarch64"));
+        assert!(entry_matches_kernel(
+            &kmi_only,
+            release,
+            Some(kmi),
+            "aarch64"
+        ));
         assert!(!entry_matches_kernel(
             &kmi_only,
             release,

@@ -61,8 +61,13 @@ def source_audit(root: Path):
     }
     # Cross-file check for forbidden force-load text.
     forced = []
+    detector = Path(__file__).resolve()
     for path in root.rglob("*"):
-        if path.is_file() and path.suffix in {".rs", ".sh", ".py", ".yml", ".yaml"}:
+        if (
+            path.is_file()
+            and path.resolve() != detector
+            and path.suffix in {".rs", ".sh", ".py", ".yml", ".yaml"}
+        ):
             try:
                 if "insmod -f" in path.read_text(errors="ignore"):
                     forced.append(str(path.relative_to(root)))
