@@ -3,7 +3,7 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::adaptive;
 use crate::config;
@@ -22,6 +22,8 @@ const SLEEP_NORMAL: u64 = 30;
 const QDISC_CHECK_WIFI: u64 = 60;
 const QDISC_CHECK_CELLULAR: u64 = 120;
 const ADAPTIVE_STATE_PERSIST: u64 = 30;
+const WEBUI_FAST_SLEEP: u64 = 2;
+const WEBUI_ACTIVE_WINDOW: u64 = 12;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedPolicy {
@@ -43,6 +45,28 @@ pub fn run() -> io::Result<()> {
     }
     for error in sysctl::apply_base_sysctls() {
         logging::log_print(&format!("[WARN] startup sysctl apply failed: {error}"));
+    }
+
+    // BBRv1 is already built in on the PJZ110 target. Warm-register BBRv3 at
+    // daemon startup when the verified bundle contains it. Loading the module
+    // only registers the algorithm; it does not switch existing sockets.
+    if crate::kernel_module::bundled_algorithms()
+        .iter()
+        .any(|algorithm| algorithm == "bbr3")
+        && !sysctl::algo_available("bbr3").unwrap_or(false)
+    {
+        match crate::kernel_module::ensure_algorithm("bbr3") {
+            Ok(true) if sysctl::algo_available("bbr3").unwrap_or(false) => {
+                let _ = crate::kernel_module::clear_algorithm_unavailable("bbr3");
+                logging::log_print("[INFO] BBRv3 module registered and ready");
+            }
+            Ok(_) => logging::log_print(
+                "[WARN] BBRv3 module was present but did not register as a TCP congestion control",
+            ),
+            Err(error) => logging::log_print(&format!(
+                "[WARN] BBRv3 warm registration failed: {error}"
+            )),
+        }
     }
 
     let mut last_mode = IfaceMode::Unknown;
@@ -248,7 +272,9 @@ pub fn run() -> io::Result<()> {
 
         // Adaptive polling
         let wifi_waiting = current_wifi_transition && !wifi_applied;
-        let sleep_secs = if wifi_waiting {
+        let _ = persist_runtime_snapshot(&iface);
+
+        let mut sleep_secs = if wifi_waiting {
             SLEEP_FAST
         } else if mode_changed {
             adaptive_count = ADAPTIVE_FAST_CYCLES;
@@ -259,6 +285,9 @@ pub fn run() -> io::Result<()> {
         } else {
             SLEEP_NORMAL
         };
+        if webui_is_active() {
+            sleep_secs = sleep_secs.min(WEBUI_FAST_SLEEP);
+        }
 
         let wait = Duration::from_secs(sleep_secs);
         if let Some(monitor) = route_monitor.as_mut() {
@@ -273,6 +302,25 @@ pub fn run() -> io::Result<()> {
             thread::sleep(wait);
         }
     }
+}
+
+fn persist_runtime_snapshot(iface: &str) -> io::Result<()> {
+    let snapshot = crate::stats::network_snapshot(iface, true, false, false)?;
+    let module_dir = config::module_dir();
+    let path = module_dir.join("runtime_snapshot.json");
+    let temporary = module_dir.join("runtime_snapshot.json.tmp");
+    let payload = serde_json::to_vec(&snapshot).map_err(io::Error::other)?;
+    fs::write(&temporary, payload)?;
+    fs::rename(temporary, path)?;
+    Ok(())
+}
+
+fn webui_is_active() -> bool {
+    fs::metadata(config::module_dir().join("webui.active"))
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|elapsed| elapsed.as_secs() <= WEBUI_ACTIVE_WINDOW)
 }
 
 struct DaemonGuard {
@@ -404,10 +452,12 @@ fn apply_interface_settings_inner(
                 ));
             }
             Ok(false) => {
-                let _ = crate::kernel_module::mark_algorithm_unavailable(&policy.algorithm);
+                logging::log_print(&format!(
+                    "[WARN] No bundled kernel module matched congestion control {}",
+                    policy.algorithm
+                ));
             }
             Err(error) => {
-                let _ = crate::kernel_module::mark_algorithm_unavailable(&policy.algorithm);
                 logging::log_print(&format!(
                     "[WARN] Kernel module load for {} failed: {error}",
                     policy.algorithm
