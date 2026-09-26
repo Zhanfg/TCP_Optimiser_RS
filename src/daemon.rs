@@ -285,9 +285,7 @@ pub fn run() -> io::Result<()> {
                 .unwrap_or(true)
         {
             if let Err(error) = persist_runtime_details(&iface) {
-                logging::log_print(&format!(
-                    "[WARN] WebUI detail snapshot failed: {error}"
-                ));
+                logging::log_print(&format!("[WARN] WebUI detail snapshot failed: {error}"));
             } else {
                 last_webui_details_persist = Some(Instant::now());
             }
