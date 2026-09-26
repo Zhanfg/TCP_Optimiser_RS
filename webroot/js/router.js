@@ -1,6 +1,6 @@
 import { exec, toast } from './kernelsu.js';
 import I18N from './i18n.js';
-import { getBuildInfo, updateModuleInformation, verifyInstalledModule } from './common.js';
+import { getBuildInfo, signalWebUiActive, updateModuleInformation, verifyInstalledModule } from './common.js';
 import { updateModuleStatus, initHome, updateHomeUI } from './home.js';
 import { initDynamicColorTheme } from './theme.js';
 import { initMotion } from './motion.js';
@@ -184,6 +184,7 @@ const runRealtimeUpdate = async () => {
 	}
 	realtimeBusy = true;
 	try {
+		void signalWebUiActive();
 		const page = router_state.current_active_page;
 		const now = Date.now();
 		if (page === 'home' || now - lastStatusUpdate >= 30000) {
@@ -250,8 +251,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 	await I18N.init();
 	syncAdvancedNavVisibilityFast();
 	initMotion();
-	await initDynamicColorTheme();
+	void initDynamicColorTheme();
 	await updateModuleInformation();
+	void signalWebUiActive(true);
 
 	document.querySelectorAll('.link-chip').forEach(chip => {
 		chip.addEventListener('click', async (e) => {
@@ -273,17 +275,25 @@ document.addEventListener('DOMContentLoaded', async () => {
 	window._debug?.init();
 	await initHome();
 	router_state.isInitializing = false;
-	if (router_state.moduleInformation) {
-		await updateModuleStatus();
-		lastStatusUpdate = Date.now();
-	} else {
+	if (!router_state.moduleInformation) {
 		router_state.homePageParams.module_status = 'NotInstalled';
 	}
 
+	// Paint the shell immediately. Runtime data arrives from the daemon's
+	// persisted snapshot in the background instead of blocking first paint.
 	showPage('home', false);
 	history.replaceState({ page: 'home' }, '', '#home');
-	await updateUI();
-	startRealtimeUpdater();
+	updateHomeUI();
+	void signalWebUiActive(true);
+	void updateUI();
+	startRealtimeUpdater(750);
+
+	if (router_state.moduleInformation) {
+		void updateModuleStatus().then(() => {
+			lastStatusUpdate = Date.now();
+			updateHomeUI();
+		});
+	}
 
 	const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 1800));
 	idle(() => {
