@@ -10,8 +10,8 @@ export const ALL_QDISCS = [
 ];
 
 export const ALGO_DESC = {
-	bbr: 'BBRv1 (bbr) — stable model-based congestion control',
-	bbr3: 'BBRv3 (bbr3) — latest model-based generation',
+	bbr: 'BBRv1 · kernel',
+	bbr3: 'BBRv3 · bundled kernel module',
 	cubic: 'Default Linux — stable and reliable',
 	westwood: 'Bandwidth estimation — good for wireless',
 	westwood_plus: 'Westwood+ — improved wireless variant',
@@ -31,8 +31,8 @@ export const ALGO_DESC = {
 };
 
 const ALGO_DESC_ZH = {
-	bbr: 'BBRv1（bbr）— 稳定的模型型拥塞控制',
-	bbr3: 'BBRv3（bbr3）— 最新一代模型型拥塞控制',
+	bbr: 'BBRv1 · 内核原生',
+	bbr3: 'BBRv3 · 随模块提供',
 	cubic: 'Linux 默认算法 — 稳定且兼容性好',
 	westwood: '带宽估算算法 — 适合无线网络',
 	westwood_plus: 'Westwood+ — 改进的无线网络版本',
