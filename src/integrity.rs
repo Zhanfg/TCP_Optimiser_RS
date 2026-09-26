@@ -19,10 +19,18 @@ const REQUIRED_FILES: &[&str] = &[
     "post-fs-data.sh",
     "uninstall.sh",
     "webroot/index.html",
-    "bin/arm64-v8a/tcp_optimiser",
-    "bin/armeabi-v7a/tcp_optimiser",
-    "bin/x86_64/tcp_optimiser",
 ];
+
+fn current_runtime_path() -> io::Result<&'static str> {
+    match std::env::consts::ARCH {
+        "aarch64" => Ok("bin/arm64-v8a/tcp_optimiser"),
+        "arm" => Ok("bin/armeabi-v7a/tcp_optimiser"),
+        "x86_64" => Ok("bin/x86_64/tcp_optimiser"),
+        arch => Err(invalid_data(format!(
+            "unsupported runtime architecture for integrity verification: {arch}"
+        ))),
+    }
+}
 
 struct ManifestEntry {
     relative_path: PathBuf,
@@ -48,8 +56,12 @@ pub fn verify_module(root: &Path) -> io::Result<()> {
         .iter()
         .map(|entry| entry.relative_path.to_string_lossy().replace('\\', "/"))
         .collect::<HashSet<_>>();
-    for required in REQUIRED_FILES {
-        if !protected.contains(*required) {
+    for required in REQUIRED_FILES
+        .iter()
+        .copied()
+        .chain(std::iter::once(current_runtime_path()?))
+    {
+        if !protected.contains(required) {
             return Err(invalid_data(format!(
                 "checksum manifest is missing required file {required}"
             )));
@@ -182,6 +194,19 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn runtime_integrity_requirement_matches_build_arch() {
+        let path = current_runtime_path().unwrap();
+        assert!(path.starts_with("bin/"));
+        assert!(path.ends_with("/tcp_optimiser"));
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(path, "bin/arm64-v8a/tcp_optimiser");
+        #[cfg(target_arch = "arm")]
+        assert_eq!(path, "bin/armeabi-v7a/tcp_optimiser");
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(path, "bin/x86_64/tcp_optimiser");
     }
 
     #[test]
