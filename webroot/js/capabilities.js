@@ -1,5 +1,5 @@
 export const ALL_ALGOS = [
-	'bbr', 'bbr2', 'bbr3', 'cubic', 'westwood', 'westwood_plus', 'reno',
+	'bbr', 'bbr3', 'cubic', 'westwood', 'westwood_plus', 'reno',
 	'htcp', 'vegas', 'yeah', 'illinois', 'dctcp', 'cdg', 'bic', 'highspeed',
 	'hybla', 'nv', 'scalable', 'lp',
 ];
@@ -10,9 +10,8 @@ export const ALL_QDISCS = [
 ];
 
 export const ALGO_DESC = {
-	bbr: 'Google BBR — high throughput, low latency',
-	bbr2: 'BBR v2 — improved fairness',
-	bbr3: 'BBR v3 — experimental',
+	bbr: 'BBRv1 (bbr) — stable model-based congestion control',
+	bbr3: 'BBRv3 (bbr3) — latest model-based generation',
 	cubic: 'Default Linux — stable and reliable',
 	westwood: 'Bandwidth estimation — good for wireless',
 	westwood_plus: 'Westwood+ — improved wireless variant',
@@ -32,9 +31,8 @@ export const ALGO_DESC = {
 };
 
 const ALGO_DESC_ZH = {
-	bbr: 'Google BBR — 高吞吐、低延迟，适合多数高速网络',
-	bbr2: 'BBR v2 — 改善多连接公平性',
-	bbr3: 'BBR v3 — 实验性新版本',
+	bbr: 'BBRv1（bbr）— 稳定的模型型拥塞控制',
+	bbr3: 'BBRv3（bbr3）— 最新一代模型型拥塞控制',
 	cubic: 'Linux 默认算法 — 稳定且兼容性好',
 	westwood: '带宽估算算法 — 适合无线网络',
 	westwood_plus: 'Westwood+ — 改进的无线网络版本',
