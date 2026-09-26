@@ -290,16 +290,16 @@ function renderAdaptiveProbeResult(report) {
 	const reason = document.getElementById('adaptive-probe-reason');
 	if (!panel || !state || !baseline || !confidence || !reason) return;
 
-	const latest = report?.observations?.at(-1);
+	const observations = Array.isArray(report?.observations) ? report.observations : [];
+	const latest = observations.length ? observations[observations.length - 1] : null;
 	const key = report?.stable_state || latest?.state || 'unknown';
 	state.textContent = I18N.t(`adaptive_state_${key}`);
 	baseline.textContent = Number.isFinite(report?.baseline_rtt_ms)
 		? `${report.baseline_rtt_ms.toFixed(1)} ms`
 		: '—';
 	confidence.textContent = Number.isFinite(latest?.confidence) ? `${latest.confidence}%` : '—';
-	reason.textContent = Array.isArray(latest?.reasons) && latest.reasons.length
-		? latest.reasons.join(' · ')
-		: I18N.t('adaptive_probe_no_reason');
+	const localizedKey = `adaptive_state_desc_${key}`;
+	reason.textContent = I18N.t(localizedKey) || I18N.t('adaptive_probe_no_reason');
 	panel.hidden = false;
 }
 
