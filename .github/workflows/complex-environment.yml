@@ -1,0 +1,131 @@
+name: Complex environment simulation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'scripts/complex-env-host-smoke.py'
+      - '.github/workflows/complex-environment.yml'
+      - 'customize.sh'
+      - 'post-fs-data.sh'
+      - 'service.sh'
+  push:
+    branches:
+      - 'test/complex-environment-ci'
+
+concurrency:
+  group: complex-env-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+jobs:
+  compressed-state-machine:
+    name: 7-day compressed state machine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+          key: ${{ runner.os }}-complex-cargo-${{ hashFiles('Cargo.lock') }}
+      - name: Validate source formatting
+        run: cargo fmt --all -- --check
+      - name: Simulate seven days of adaptive transitions
+        run: cargo test --locked adaptive::tests::compressed_week_ -- --nocapture
+      - name: Exercise kernel identity and tamper matrix
+        run: cargo test --locked kernel_module::tests::complex_kernel_identity_matrix_never_weakens_exact_release_matching kernel_module::tests::kernel_module_hash_verification_rejects_tampering -- --nocapture
+      - name: Validate every algorithm policy mapping
+        run: cargo test --locked config::tests::every_algorithm_resolves_to_a_supported_policy_shape -- --nocapture
+
+  host-runtime-stress:
+    name: Host runtime + fault injection
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+          key: ${{ runner.os }}-complex-cargo-${{ hashFiles('Cargo.lock') }}
+      - name: Build host core
+        run: cargo build --locked
+      - name: Run complex host simulation
+        shell: bash
+        run: |
+          set -euo pipefail
+          ulimit -n 128
+          timeout 90s python3 scripts/complex-env-host-smoke.py \
+            --binary target/debug/tcp_optimiser \
+            --source-root . \
+            --iterations 240 \
+            --report complex-env-report.json
+      - name: Publish test summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -s complex-env-report.json ]; then
+            python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          data = json.load(open('complex-env-report.json'))
+          print('# Complex environment simulation')
+          print()
+          print(f"- Result: **{'PASS' if data.get('passed') else 'FAIL'}**")
+          for key, value in data.get('metrics', {}).items():
+              print(f'- {key}: `{value}`')
+          print()
+          print('## Checks')
+          for key in data.get('checks', {}):
+              print(f'- ✅ {key}')
+          if data.get('error'):
+              print(f"- ❌ error: `{data['error']}`")
+          PY
+          else
+            echo '# Complex environment simulation' >> "$GITHUB_STEP_SUMMARY"
+            echo '- ❌ report was not generated' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: complex-environment-report
+          path: complex-env-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  full-regression:
+    name: Full core regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+          key: ${{ runner.os }}-complex-cargo-${{ hashFiles('Cargo.lock') }}
+      - name: Run all Rust tests
+        run: cargo test --all-targets --locked
+      - name: Deny warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Revalidate WebUI/core coverage
+        run: node scripts/validate-webui.mjs

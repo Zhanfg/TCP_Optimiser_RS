@@ -669,4 +669,79 @@ mod tests {
         assert!(unknown.confidence < 60);
         assert_eq!(classifier.update(&unknown), PathState::Stable);
     }
+
+    #[test]
+    fn compressed_week_survives_repeated_path_transitions_without_flapping() {
+        // One loop iteration represents one minute: 10,080 virtual minutes = 7 days.
+        // Every two hours the environment changes. Hysteresis must require exactly
+        // three confident observations before following the new path state.
+        let states = [
+            PathState::Stable,
+            PathState::Bufferbloat,
+            PathState::LossyWireless,
+            PathState::HighBdp,
+            PathState::ProxyConstrained,
+            PathState::Congested,
+        ];
+        let mut classifier = HysteresisClassifier::default();
+        let mut committed_transitions = 0usize;
+        let mut previous = classifier.current();
+
+        for virtual_minute in 0..10_080usize {
+            let phase = virtual_minute / 120;
+            let expected = states[phase % states.len()];
+            let observation = Classification {
+                state: expected,
+                confidence: 90,
+                reasons: vec!["compressed-week scenario".to_string()],
+                sample: sample(),
+            };
+            let before = classifier.current();
+            let after = classifier.update(&observation);
+            if after != previous {
+                committed_transitions += 1;
+                previous = after;
+            }
+
+            let minute_in_phase = virtual_minute % 120;
+            if minute_in_phase < 2 && before != expected {
+                assert_eq!(after, before, "state flipped before hysteresis completed");
+            }
+            if minute_in_phase >= 2 {
+                assert_eq!(after, expected, "state failed to converge within three samples");
+            }
+        }
+
+        assert!(committed_transitions >= 80);
+        assert!(committed_transitions <= 84);
+    }
+
+    #[test]
+    fn compressed_week_baseline_is_bounded_under_long_mixed_load() {
+        let mut estimator = BaselineEstimator::default();
+
+        for virtual_minute in 0..10_080usize {
+            let mut input = sample();
+            if virtual_minute % 10 == 0 {
+                // Periodic heavy traffic must not poison the quiet RTT baseline.
+                input.avg_rtt_ms = Some(280.0);
+                input.rx_mbps = Some(120.0);
+                input.tx_mbps = Some(18.0);
+                input.retrans_ratio = Some(0.025);
+                input.qdisc_backlog_bytes = Some(96_000);
+                input.qdisc_drop_delta = Some(6);
+            } else {
+                input.avg_rtt_ms = Some(25.0 + (virtual_minute % 7) as f64);
+                input.rx_mbps = Some(1.5);
+                input.tx_mbps = Some(0.2);
+                input.retrans_ratio = Some(0.001);
+                input.qdisc_backlog_bytes = Some(0);
+                input.qdisc_drop_delta = Some(0);
+            }
+            estimator.apply(&mut input);
+        }
+
+        assert_eq!(estimator.rtt_ms, Some(25.0));
+        assert_eq!(estimator.samples, u8::MAX, "sample counter must saturate, not wrap");
+    }
 }

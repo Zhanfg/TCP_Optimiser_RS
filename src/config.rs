@@ -237,4 +237,19 @@ mod tests {
         assert!(is_known_qdisc("fq_codel"));
         assert!(!is_known_qdisc("fq;reboot"));
     }
+
+    #[test]
+    fn every_algorithm_resolves_to_a_supported_policy_shape() {
+        for algorithm in ALL_ALGOS {
+            let config = get_algo_config(algorithm);
+            assert!(
+                is_known_qdisc(config.qdisc),
+                "{algorithm} maps to unknown qdisc {}",
+                config.qdisc
+            );
+            assert!(config.pacing_ca > 0, "{algorithm} has zero CA pacing");
+            assert!(config.pacing_ss > 0, "{algorithm} has zero slow-start pacing");
+            assert!(!config.desc.trim().is_empty(), "{algorithm} has no description");
+        }
+    }
 }

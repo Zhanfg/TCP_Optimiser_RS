@@ -515,4 +515,56 @@ mod tests {
         assert!(safe_relative_path("/data/local/tmp/tcp_bbr3.ko").is_err());
         assert!(safe_relative_path("android15-6.6/aarch64/tcp_bbr3.ko").is_ok());
     }
+
+    #[test]
+    fn complex_kernel_identity_matrix_never_weakens_exact_release_matching() {
+        let release = "6.6.30-android15-8-g123456789abc-ab12345678";
+        let kmi = "6.6-android15-8";
+
+        let exact = ModuleEntry {
+            name: "tcp_bbr3".to_string(),
+            kmi: kmi.to_string(),
+            arch: "aarch64".to_string(),
+            file: "android15-6.6/aarch64/tcp_bbr3.ko".to_string(),
+            sha256: "0".repeat(64),
+            kernel_release: Some(release.to_string()),
+        };
+        assert!(entry_matches_kernel(&exact, release, Some(kmi), "aarch64"));
+        assert!(!entry_matches_kernel(
+            &exact,
+            "6.6.31-android15-8-gdifferent-ab99999999",
+            Some(kmi),
+            "aarch64"
+        ));
+        assert!(!entry_matches_kernel(&exact, release, Some(kmi), "x86_64"));
+
+        let kmi_only = ModuleEntry {
+            kernel_release: None,
+            ..exact.clone()
+        };
+        assert!(entry_matches_kernel(&kmi_only, release, Some(kmi), "aarch64"));
+        assert!(!entry_matches_kernel(
+            &kmi_only,
+            release,
+            Some("6.6-android15-9"),
+            "aarch64"
+        ));
+        assert!(!entry_matches_kernel(&kmi_only, release, None, "aarch64"));
+    }
+
+    #[test]
+    fn kernel_module_hash_verification_rejects_tampering() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("tcp-optimiser-ko-{unique}.ko"));
+        fs::write(&path, b"known module bytes").unwrap();
+        let expected = format!("{:x}", Sha256::digest(b"known module bytes"));
+        assert!(verify_sha256(&path, &expected).is_ok());
+
+        fs::write(&path, b"tampered module bytes").unwrap();
+        assert!(verify_sha256(&path, &expected).is_err());
+        let _ = fs::remove_file(path);
+    }
 }
