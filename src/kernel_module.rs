@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::{self, Read};
+use std::os::fd::AsRawFd;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -385,10 +387,6 @@ fn parse_kallsyms_address(content: &str, symbol: &str) -> io::Result<u64> {
     ))
 }
 
-fn kallsyms_address(symbol: &str) -> io::Result<u64> {
-    parse_kallsyms_address(&fs::read_to_string("/proc/kallsyms")?, symbol)
-}
-
 fn bbr3_runtime_params() -> io::Result<[String; 2]> {
     const KPTR_RESTRICT: &str = "/proc/sys/kernel/kptr_restrict";
 
@@ -410,8 +408,14 @@ fn bbr3_runtime_params() -> io::Result<[String; 2]> {
     }
 
     let resolved = (|| {
-        let register = kallsyms_address("tcp_register_congestion_control")?;
-        let unregister = kallsyms_address("tcp_unregister_congestion_control")?;
+        // Open /proc/kallsyms only once. OnePlus' kernel snapshots symbol
+        // visibility at open time; two independent reads can observe
+        // different kptr_restrict states during a concurrent load attempt.
+        let kallsyms = fs::read_to_string("/proc/kallsyms")?;
+        let register =
+            parse_kallsyms_address(&kallsyms, "tcp_register_congestion_control")?;
+        let unregister =
+            parse_kallsyms_address(&kallsyms, "tcp_unregister_congestion_control")?;
         Ok([
             format!("bbr3_register_addr=0x{register:x}"),
             format!("bbr3_unregister_addr=0x{unregister:x}"),
@@ -432,7 +436,34 @@ fn bbr3_runtime_params() -> io::Result<[String; 2]> {
     resolved
 }
 
+fn bbr3_load_lock() -> io::Result<fs::File> {
+    let path = crate::config::module_dir().join(".bbr3_load.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(file)
+}
+
 fn try_load(module_name: &str) -> io::Result<bool> {
+    if module_present(module_name) {
+        return Ok(true);
+    }
+
+    // Serialize BBR3 loads across post-fs-data, daemon and WebUI processes.
+    // Dropping the file descriptor releases flock automatically.
+    let _bbr3_lock = if module_name == "tcp_bbr3" {
+        Some(bbr3_load_lock()?)
+    } else {
+        None
+    };
+
+    // Another process may have loaded the module while this process waited.
     if module_present(module_name) {
         return Ok(true);
     }
