@@ -390,12 +390,46 @@ fn kallsyms_address(symbol: &str) -> io::Result<u64> {
 }
 
 fn bbr3_runtime_params() -> io::Result<[String; 2]> {
-    let register = kallsyms_address("tcp_register_congestion_control")?;
-    let unregister = kallsyms_address("tcp_unregister_congestion_control")?;
-    Ok([
-        format!("bbr3_register_addr=0x{register:x}"),
-        format!("bbr3_unregister_addr=0x{unregister:x}"),
-    ])
+    const KPTR_RESTRICT: &str = "/proc/sys/kernel/kptr_restrict";
+
+    let original = fs::read_to_string(KPTR_RESTRICT)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let temporarily_relaxed = original == "2";
+
+    if temporarily_relaxed {
+        fs::write(KPTR_RESTRICT, "1\n").map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "cannot temporarily relax kernel.kptr_restrict from 2 to 1 for BBR3 symbol resolution: {error}"
+                ),
+            )
+        })?;
+    }
+
+    let resolved = (|| {
+        let register = kallsyms_address("tcp_register_congestion_control")?;
+        let unregister = kallsyms_address("tcp_unregister_congestion_control")?;
+        Ok([
+            format!("bbr3_register_addr=0x{register:x}"),
+            format!("bbr3_unregister_addr=0x{unregister:x}"),
+        ])
+    })();
+
+    if temporarily_relaxed {
+        if let Err(error) = fs::write(KPTR_RESTRICT, "2\n") {
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to restore kernel.kptr_restrict=2 after BBR3 symbol resolution: {error}"
+                ),
+            ));
+        }
+    }
+
+    resolved
 }
 
 fn try_load(module_name: &str) -> io::Result<bool> {
@@ -569,6 +603,14 @@ mod tests {
             Some("5.15-android13-8".to_string())
         );
         assert_eq!(derive_kmi("6.6.30-custom"), None);
+    }
+
+    #[test]
+    fn rejects_zero_kallsyms_address_when_kptr_is_hidden() {
+        let data = "0000000000000000 T tcp_register_congestion_control\n";
+        let error =
+            parse_kallsyms_address(data, "tcp_register_congestion_control").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 
     #[test]
