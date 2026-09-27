@@ -32,6 +32,29 @@ MODULE_PARM_DESC(bbr3_unregister_addr,
 typedef int (*bbr3_register_fn_t)(struct tcp_congestion_ops *);
 typedef void (*bbr3_unregister_fn_t)(struct tcp_congestion_ops *);
 
+static inline void
+bbr3_o13_plb_update_state(const struct sock *sk, struct tcp_plb_state *plb,
+			  const int cong_ratio)
+{
+	(void)sk;
+	(void)plb;
+	(void)cong_ratio;
+}
+
+static inline void
+bbr3_o13_plb_check_rehash(struct sock *sk, struct tcp_plb_state *plb)
+{
+	(void)sk;
+	(void)plb;
+}
+
+static inline void
+bbr3_o13_plb_update_state_upon_rto(struct sock *sk, struct tcp_plb_state *plb)
+{
+	(void)sk;
+	(void)plb;
+}
+
 static inline int
 bbr3_register_congestion_control(struct tcp_congestion_ops *ops)
 {
