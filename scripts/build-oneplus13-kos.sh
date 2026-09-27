@@ -129,6 +129,18 @@ if old not in text:
     raise SystemExit("BBR3 register call not found")
 text=text.replace(old,new,1)
 
+for old, new in (
+    ('tcp_plb_update_state(sk, &bbr->plb, ce_ratio);',
+     'bbr3_o13_plb_update_state(sk, &bbr->plb, ce_ratio);'),
+    ('tcp_plb_check_rehash(sk, &bbr->plb);',
+     'bbr3_o13_plb_check_rehash(sk, &bbr->plb);'),
+    ('tcp_plb_update_state_upon_rto(sk, &bbr->plb);',
+     'bbr3_o13_plb_update_state_upon_rto(sk, &bbr->plb);'),
+):
+    if old not in text:
+        raise SystemExit(f"BBR3 PLB call not found: {old}")
+    text=text.replace(old,new)
+
 old='tcp_unregister_congestion_control(&tcp_bbr_cong_ops);'
 new='bbr3_unregister_congestion_control(&tcp_bbr_cong_ops);'
 if old not in text:
@@ -182,16 +194,22 @@ cat > "$BBR/kernel_config.h" <<'EOF'
 #define HAVE_TCP_SND_CWND_SET 1
 #define HAVE_TCP_STAMP_US_DELTA 1
 #define HAVE_TCP_MIN_RTT 1
-/* Deliberately do not define HAVE___TCP_SEND_ACK or the PLB helper macros.
- * On stock PJZ110 GKI these functions exist in vmlinux but are trimmed from
- * the module export table. bbr_compat.h therefore uses its safe fallback
- * paths instead of creating unresolvable module imports.
+/* Deliberately do not define HAVE___TCP_SEND_ACK. The helper is present in
+ * vmlinux but trimmed from the stock PJZ110 module export table, and the
+ * upstream compatibility layer already has a safe ACK fallback.
+ *
+ * Keep PLB declarations enabled so bbr_compat.h does not redeclare functions
+ * that are present in OnePlus headers. The call sites are rewritten to local
+ * PJZ110 no-op wrappers above, so no PLB function becomes a module import.
  */
 
 #define HAVE_GET_RANDOM_U32_BELOW 1
 
 #define HAVE_TCP_PLB_STATE 1
 #define HAVE_TCP_PLB_SCALE 1
+#define HAVE_TCP_PLB_UPDATE_STATE 1
+#define HAVE_TCP_PLB_CHECK_REHASH 1
+#define HAVE_TCP_PLB_UPDATE_STATE_UPON_RTO 1
 
 #define HAVE_ICSK_CA_PRIV 1
 EOF
@@ -209,10 +227,12 @@ make -C "$BBR" \
 # The PJZ110 build must not retain static imports for them. Registration is
 # handled by the low-frequency runtime-address bridge; optional PLB/ACK helpers
 # use bbr_compat.h fallbacks.
+NM_BIN=$(command -v llvm-nm-18 || command -v llvm-nm)
+test -n "$NM_BIN"
 for sym in tcp_register_congestion_control tcp_unregister_congestion_control \
            __tcp_send_ack tcp_plb_update_state tcp_plb_check_rehash \
            tcp_plb_update_state_upon_rto; do
-  if llvm-nm -u "$BBR/tcp_bbr3.ko" | awk '{print $NF}' | grep -qx "$sym"; then
+  if "$NM_BIN" -u "$BBR/tcp_bbr3.ko" | awk '{print $NF}' | grep -qx "$sym"; then
     echo "forbidden trimmed symbol import remains: $sym" >&2
     exit 4
   fi
