@@ -15,6 +15,7 @@ on:
       - 'scripts/package-module.sh'
       - 'scripts/validate-package.sh'
       - 'scripts/build-oneplus13-kos.sh'
+      - 'scripts/bbr3-o13-runtime.h'
       - 'scripts/verify-device-symvers.py'
       - 'scripts/device-profiles/oneplus13-pjz110.json'
       - 'scripts/device-profiles/oneplus13-pjz110.env'
