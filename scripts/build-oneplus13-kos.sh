@@ -10,6 +10,7 @@ BBR_REPO=https://github.com/hrimfaxi/tcp_bbr_modules.git
 BBR_REV=c5c557584175b5fed8939bf91ec249aed158597d
 JOBS=${TCP_OPTIMISER_BUILD_JOBS:-$(nproc)}
 SYMVERS_CACHE=${TCP_OPTIMISER_SYMVERS_CACHE:-}
+SOURCE_CACHE=${TCP_OPTIMISER_KERNEL_SOURCE_CACHE:-}
 
 WORK=$(mktemp -d)
 cleanup() { rm -rf "$WORK"; }
@@ -19,10 +20,17 @@ KERNEL="$WORK/kernel"
 BBR="$WORK/tcp_bbr_modules"
 OUT="$WORK/out"
 
-git init "$KERNEL"
-git -C "$KERNEL" remote add origin "$SOURCE_REPO"
-git -C "$KERNEL" fetch --depth=1 origin "$SOURCE_REV"
-git -C "$KERNEL" checkout --detach FETCH_HEAD
+if [[ -n "$SOURCE_CACHE" && -d "$SOURCE_CACHE/.git" ]] &&
+   [[ "$(git -C "$SOURCE_CACHE" rev-parse HEAD 2>/dev/null || true)" == "$SOURCE_REV" ]]; then
+  echo "Using cached OnePlus OSS source: $SOURCE_CACHE"
+  git clone --shared --no-checkout "$SOURCE_CACHE" "$KERNEL"
+  git -C "$KERNEL" checkout --detach "$SOURCE_REV"
+else
+  git init "$KERNEL"
+  git -C "$KERNEL" remote add origin "$SOURCE_REPO"
+  git -C "$KERNEL" fetch --depth=1 origin "$SOURCE_REV"
+  git -C "$KERNEL" checkout --detach FETCH_HEAD
+fi
 
 KBUILD=(ARCH=arm64 LLVM=-18 LLVM_IAS=1)
 if command -v ccache >/dev/null 2>&1; then
