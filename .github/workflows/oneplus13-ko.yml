@@ -39,7 +39,80 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - id: kernel_cache_key
+        name: Resolve PJZ110 kernel cache key
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          profile = json.loads(Path("scripts/device-profiles/oneplus13-pjz110.json").read_text())
+          stable = {
+              "source_revision": profile["source_revision"],
+              "target_kmi": profile["target_kmi"],
+              "page_size": profile["page_size"],
+              "reference_crcs": profile["reference_crcs"],
+          }
+          abi = hashlib.sha256(
+              json.dumps(stable, sort_keys=True, separators=(",", ":")).encode()
+          ).hexdigest()[:24]
+
+          ko = hashlib.sha256()
+          ko.update(abi.encode())
+          for name in (
+              "scripts/build-oneplus13-kos.sh",
+              "scripts/bbr3-o13-runtime.h",
+              "scripts/verify-device-symvers.py",
+          ):
+              ko.update(Path(name).read_bytes())
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              print(f"abi_key={abi}", file=out)
+              print(f"ko_key={ko.hexdigest()[:24]}", file=out)
+              print(f"source_rev={profile['source_revision']}", file=out)
+          PY
+
+      - id: ko_cache
+        name: Restore verified PJZ110 KO bundle
+        uses: actions/cache/restore@v6
+        with:
+          path: oneplus13_kernel_modules
+          key: oneplus13-pjz110-kos-v1-${{ steps.kernel_cache_key.outputs.ko_key }}
+
+      - id: source_cache
+        name: Restore pinned OnePlus OSS source
+        if: steps.ko_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: .oneplus13-source-cache
+          key: oneplus13-pjz110-source-v1-${{ steps.kernel_cache_key.outputs.source_rev }}
+
+      - name: Populate pinned OnePlus OSS source cache
+        if: steps.ko_cache.outputs.cache-hit != 'true' && steps.source_cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          SOURCE_REV: ${{ steps.kernel_cache_key.outputs.source_rev }}
+        run: |
+          rm -rf .oneplus13-source-cache
+          git init .oneplus13-source-cache
+          git -C .oneplus13-source-cache remote add origin \
+            https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8750.git
+          git -C .oneplus13-source-cache fetch --depth=1 origin "$SOURCE_REV"
+          git -C .oneplus13-source-cache checkout --detach FETCH_HEAD
+          test "$(git -C .oneplus13-source-cache rev-parse HEAD)" = "$SOURCE_REV"
+
+      - name: Save pinned OnePlus OSS source cache
+        if: steps.ko_cache.outputs.cache-hit != 'true' && steps.source_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .oneplus13-source-cache
+          key: oneplus13-pjz110-source-v1-${{ steps.kernel_cache_key.outputs.source_rev }}
+
       - name: Install kernel build dependencies
+        if: steps.ko_cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -48,12 +121,14 @@ jobs:
 
       - id: symvers_cache
         name: Restore verified PJZ110 symvers
+        if: steps.ko_cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v6
         with:
           path: .oneplus13-symvers-cache
-          key: oneplus13-pjz110-symvers-v2-e1b346b6-${{ hashFiles('scripts/device-profiles/oneplus13-pjz110.json') }}
+          key: oneplus13-pjz110-symvers-v3-${{ steps.kernel_cache_key.outputs.source_rev }}-${{ steps.kernel_cache_key.outputs.abi_key }}
 
       - name: Restore compiler cache
+        if: steps.ko_cache.outputs.cache-hit != 'true'
         uses: actions/cache@v6
         with:
           path: ~/.cache/ccache-oneplus13
@@ -62,6 +137,7 @@ jobs:
             oneplus13-pjz110-ccache-v1-
 
       - name: Configure ccache
+        if: steps.ko_cache.outputs.cache-hit != 'true'
         run: |
           ccache --set-config=cache_dir="$HOME/.cache/ccache-oneplus13"
           ccache --set-config=max_size=2G
@@ -69,23 +145,32 @@ jobs:
           ccache --zero-stats
 
       - name: Build and verify against live-device CRC fingerprint
+        if: steps.ko_cache.outputs.cache-hit != 'true'
         env:
           TCP_OPTIMISER_SYMVERS_CACHE: ${{ github.workspace }}/.oneplus13-symvers-cache
+          TCP_OPTIMISER_KERNEL_SOURCE_CACHE: ${{ github.workspace }}/.oneplus13-source-cache
         run: |
           set -o pipefail
           bash scripts/build-oneplus13-kos.sh oneplus13_kernel_modules \
             2>&1 | tee oneplus13-ko-build.log
 
       - name: Save verified PJZ110 symvers
-        if: ${{ always() && steps.symvers_cache.outputs.cache-hit != 'true' }}
+        if: ${{ steps.ko_cache.outputs.cache-hit != 'true' && always() && steps.symvers_cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6
         with:
           path: .oneplus13-symvers-cache
-          key: oneplus13-pjz110-symvers-v2-e1b346b6-${{ hashFiles('scripts/device-profiles/oneplus13-pjz110.json') }}
+          key: oneplus13-pjz110-symvers-v3-${{ steps.kernel_cache_key.outputs.source_rev }}-${{ steps.kernel_cache_key.outputs.abi_key }}
 
       - name: Show compiler cache stats
-        if: always()
+        if: steps.ko_cache.outputs.cache-hit != 'true' && always()
         run: ccache --show-stats || true
+
+      - name: Save verified PJZ110 KO bundle
+        if: steps.ko_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: oneplus13_kernel_modules
+          key: oneplus13-pjz110-kos-v1-${{ steps.kernel_cache_key.outputs.ko_key }}
 
       - name: Verify output
         run: |
@@ -134,6 +219,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            target/debug
             target/aarch64-linux-android
           key: ${{ runner.os }}-pjz110-rust-arm64-${{ hashFiles('Cargo.lock') }}
 
