@@ -102,16 +102,39 @@ done
 
 git clone --filter=blob:none "$BBR_REPO" "$BBR"
 git -C "$BBR" checkout --detach "$BBR_REV"
-python3 - "$BBR/Makefile" <<'PY'
+install -m 0644 "$REPO_ROOT/scripts/bbr3-o13-runtime.h" "$BBR/bbr3_o13_runtime.h"
+python3 - "$BBR/Makefile" "$BBR/tcp_bbr3.c" <<'PY'
 from pathlib import Path
 import sys
-p=Path(sys.argv[1])
-text=p.read_text()
+
+makefile=Path(sys.argv[1])
+source=Path(sys.argv[2])
+
+text=makefile.read_text()
 for line in text.splitlines():
     if line.startswith("obj-m"):
         text=text.replace(line,"obj-m          := tcp_bbr3.o",1)
         break
-p.write_text(text)
+makefile.write_text(text)
+
+text=source.read_text()
+needle='#include "bbr_compat.h"'
+if needle not in text:
+    raise SystemExit("BBR3 compatibility include not found")
+text=text.replace(needle, needle + '\n#include "bbr3_o13_runtime.h"', 1)
+
+old='return tcp_register_congestion_control(&tcp_bbr_cong_ops);'
+new='return bbr3_register_congestion_control(&tcp_bbr_cong_ops);'
+if old not in text:
+    raise SystemExit("BBR3 register call not found")
+text=text.replace(old,new,1)
+
+old='tcp_unregister_congestion_control(&tcp_bbr_cong_ops);'
+new='bbr3_unregister_congestion_control(&tcp_bbr_cong_ops);'
+if old not in text:
+    raise SystemExit("BBR3 unregister call not found")
+text=text.replace(old,new,1)
+source.write_text(text)
 PY
 
 BBR_CC_ARGS=()
@@ -159,16 +182,16 @@ cat > "$BBR/kernel_config.h" <<'EOF'
 #define HAVE_TCP_SND_CWND_SET 1
 #define HAVE_TCP_STAMP_US_DELTA 1
 #define HAVE_TCP_MIN_RTT 1
-#define HAVE___TCP_SEND_ACK 1
+/* Deliberately do not define HAVE___TCP_SEND_ACK or the PLB helper macros.
+ * On stock PJZ110 GKI these functions exist in vmlinux but are trimmed from
+ * the module export table. bbr_compat.h therefore uses its safe fallback
+ * paths instead of creating unresolvable module imports.
+ */
 
 #define HAVE_GET_RANDOM_U32_BELOW 1
 
 #define HAVE_TCP_PLB_STATE 1
 #define HAVE_TCP_PLB_SCALE 1
-#define HAVE_TCP_PLB_UPDATE_STATE 1
-#define HAVE_TCP_PLB_CHECK_REHASH 1
-#define HAVE_TCP_PLB_UPDATE_STATE_UPON_RTO 1
-#define HAVE_SYSCTL_TCP_PLB_ENABLED 1
 
 #define HAVE_ICSK_CA_PRIV 1
 EOF
@@ -176,11 +199,24 @@ EOF
 # Ensure the generated header is newer than the upstream probe inputs so make
 # cannot regenerate it through the broken Android probe path.
 touch "$BBR/kernel_config.h"
-echo "Using pinned PJZ110 BBR3 API map; skipping 47 throwaway probe builds"
+echo "Using pinned PJZ110 BBR3 API map with trimmed-symbol fallbacks"
 
 make -C "$BBR" \
   KDIR="$KERNEL" ARCH=arm64 LLVM=-18 LLVM_IAS=1 \
   "${BBR_CC_ARGS[@]}" CC_PROBE=clang-18 PROBE_J="$JOBS"
+
+# Stock GKI intentionally trims these TCP helpers from the module export table.
+# The PJZ110 build must not retain static imports for them. Registration is
+# handled by the low-frequency runtime-address bridge; optional PLB/ACK helpers
+# use bbr_compat.h fallbacks.
+for sym in tcp_register_congestion_control tcp_unregister_congestion_control \
+           __tcp_send_ack tcp_plb_update_state tcp_plb_check_rehash \
+           tcp_plb_update_state_upon_rto; do
+  if llvm-nm -u "$BBR/tcp_bbr3.ko" | awk '{print $NF}' | grep -qx "$sym"; then
+    echo "forbidden trimmed symbol import remains: $sym" >&2
+    exit 4
+  fi
+done
 
 rm -rf "$DEST"
 mkdir -p "$DEST/6.6-android15-8/aarch64" "$DEST/device_profile"
