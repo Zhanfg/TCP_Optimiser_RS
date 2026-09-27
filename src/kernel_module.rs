@@ -350,6 +350,54 @@ fn matching_module_names() -> io::Result<HashSet<String>> {
         .unwrap_or_default())
 }
 
+fn parse_kallsyms_address(content: &str, symbol: &str) -> io::Result<u64> {
+    for line in content.lines() {
+        let mut fields = line.split_whitespace();
+        let Some(address) = fields.next() else {
+            continue;
+        };
+        let _kind = fields.next();
+        let Some(name) = fields.next() else {
+            continue;
+        };
+        if name != symbol {
+            continue;
+        }
+        let value = u64::from_str_radix(address, 16).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid kallsyms address for {symbol}: {error}"),
+            )
+        })?;
+        if value == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "kallsyms hides the live address for {symbol}; root/CAP_SYSLOG access is required"
+                ),
+            ));
+        }
+        return Ok(value);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("kernel symbol not found: {symbol}"),
+    ))
+}
+
+fn kallsyms_address(symbol: &str) -> io::Result<u64> {
+    parse_kallsyms_address(&fs::read_to_string("/proc/kallsyms")?, symbol)
+}
+
+fn bbr3_runtime_params() -> io::Result<[String; 2]> {
+    let register = kallsyms_address("tcp_register_congestion_control")?;
+    let unregister = kallsyms_address("tcp_unregister_congestion_control")?;
+    Ok([
+        format!("bbr3_register_addr=0x{register:x}"),
+        format!("bbr3_unregister_addr=0x{unregister:x}"),
+    ])
+}
+
 fn try_load(module_name: &str) -> io::Result<bool> {
     if module_present(module_name) {
         return Ok(true);
@@ -372,7 +420,14 @@ fn try_load(module_name: &str) -> io::Result<bool> {
     }
     verify_sha256(&path, &entry.sha256)?;
 
-    let output = Command::new("insmod").arg(&path).output()?;
+    let mut command = Command::new("insmod");
+    command.arg(&path);
+    if module_name == "tcp_bbr3" {
+        for parameter in bbr3_runtime_params()? {
+            command.arg(parameter);
+        }
+    }
+    let output = command.output()?;
     if output.status.success() || module_present(module_name) {
         let _ = fs::remove_file(crate::config::module_dir().join("kernel_module_last_error"));
         return Ok(true);
@@ -514,6 +569,23 @@ mod tests {
             Some("5.15-android13-8".to_string())
         );
         assert_eq!(derive_kmi("6.6.30-custom"), None);
+    }
+
+    #[test]
+    fn parses_nonzero_kallsyms_symbol_address() {
+        let data = "ffffffc080123400 T tcp_register_congestion_control\n";
+        assert_eq!(
+            parse_kallsyms_address(data, "tcp_register_congestion_control").unwrap(),
+            0xffffffc080123400
+        );
+    }
+
+    #[test]
+    fn rejects_hidden_kallsyms_symbol_address() {
+        let data = "0000000000000000 T tcp_register_congestion_control\n";
+        let error =
+            parse_kallsyms_address(data, "tcp_register_congestion_control").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 
     #[test]
