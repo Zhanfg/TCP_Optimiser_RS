@@ -134,8 +134,9 @@ function buildAlgoChips(containerId, selectedAlgo, onClick) {
 					addLog(`Loaded bundled congestion control: ${algo}`);
 				} catch (error) {
 					console.error(`Failed to load bundled algorithm ${algo}:`, error);
-					addLog(`Kernel module load failed for ${algo}: ${error.message || error}`);
-					toast(I18N.t('toast_error'));
+					const detail = error?.message || String(error);
+					addLog(`Kernel module load failed for ${algo}: ${detail}`);
+					toast(`${getAlgorithmDisplayName(algo)}: ${detail}`);
 					return;
 				} finally {
 					chip.disabled = false;
