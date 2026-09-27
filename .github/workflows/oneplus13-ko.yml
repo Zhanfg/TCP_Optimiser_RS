@@ -165,13 +165,6 @@ jobs:
         if: steps.ko_cache.outputs.cache-hit != 'true' && always()
         run: ccache --show-stats || true
 
-      - name: Save verified PJZ110 KO bundle
-        if: steps.ko_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: oneplus13_kernel_modules
-          key: oneplus13-pjz110-kos-v1-${{ steps.kernel_cache_key.outputs.ko_key }}
-
       - name: Verify output
         run: |
           test -s oneplus13_kernel_modules/manifest.json
@@ -193,6 +186,13 @@ jobs:
           print("PJZ110 ABI gate: 65/65 matched")
           print("modules:", ", ".join(sorted(actual)))
           PY
+
+      - name: Save verified PJZ110 KO bundle
+        if: steps.ko_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: oneplus13_kernel_modules
+          key: oneplus13-pjz110-kos-v1-${{ steps.kernel_cache_key.outputs.ko_key }}
 
       - uses: actions/upload-artifact@v7
         if: always()
