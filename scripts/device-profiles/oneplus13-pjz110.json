@@ -6,10 +6,11 @@
   "source_repository": "https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8750",
   "source_revision": "e1b346b6b4f4096eb342ae3684838a942fd6f6c4",
   "source_firmware": "PJZ110_16.0.9.401(CN01)",
+  "observed_firmware": "PJZ110_16.0.10.501(CN01)",
   "source_qcom_tag": "android15-6.6-2026-01_r22",
   "target_kmi": "6.6-android15-8",
   "page_size": "4k",
-  "observed_uname_release": "6.6.147-android15-9-g26084504",
+  "observed_uname_release": "6.6.147-android15-9-g20447428",
   "observed_proc_release": "6.6.147-android15-8-g8c34ba09bf7f-abogki500782043-4k",
   "observed_vendor_module_count": 390,
   "observed_vendor_vermagic_counts": {
