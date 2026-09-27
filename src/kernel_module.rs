@@ -412,10 +412,8 @@ fn bbr3_runtime_params() -> io::Result<[String; 2]> {
         // visibility at open time; two independent reads can observe
         // different kptr_restrict states during a concurrent load attempt.
         let kallsyms = fs::read_to_string("/proc/kallsyms")?;
-        let register =
-            parse_kallsyms_address(&kallsyms, "tcp_register_congestion_control")?;
-        let unregister =
-            parse_kallsyms_address(&kallsyms, "tcp_unregister_congestion_control")?;
+        let register = parse_kallsyms_address(&kallsyms, "tcp_register_congestion_control")?;
+        let unregister = parse_kallsyms_address(&kallsyms, "tcp_unregister_congestion_control")?;
         Ok([
             format!("bbr3_register_addr=0x{register:x}"),
             format!("bbr3_unregister_addr=0x{unregister:x}"),
