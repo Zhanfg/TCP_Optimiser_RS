@@ -583,8 +583,7 @@ mod tests {
     #[test]
     fn rejects_hidden_kallsyms_symbol_address() {
         let data = "0000000000000000 T tcp_register_congestion_control\n";
-        let error =
-            parse_kallsyms_address(data, "tcp_register_congestion_control").unwrap_err();
+        let error = parse_kallsyms_address(data, "tcp_register_congestion_control").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 
