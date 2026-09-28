@@ -199,6 +199,31 @@ const ADVANCED_SYSCTLS: &[(&str, &str, u32, u32)] = &[
     ),
 ];
 
+/// Sysctl nodes TCP Optimiser may modify during normal or advanced operation.
+/// Used by recovery to capture an allowlisted pre-tuning baseline.
+pub(crate) fn managed_sysctl_paths() -> Vec<&'static str> {
+    let mut paths = vec![
+        "/proc/sys/net/ipv4/tcp_congestion_control",
+        "/proc/sys/net/core/default_qdisc",
+        "/proc/sys/net/ipv4/tcp_ecn",
+        "/proc/sys/net/ipv4/tcp_pacing_ca_ratio",
+        "/proc/sys/net/ipv4/tcp_pacing_ss_ratio",
+        "/proc/sys/net/ipv4/tcp_window_scaling",
+        "/proc/sys/net/ipv4/tcp_max_syn_backlog",
+        "/proc/sys/net/ipv4/tcp_mtu_probing",
+        "/proc/sys/net/ipv4/tcp_fastopen",
+        "/proc/sys/net/ipv4/tcp_tw_reuse",
+        "/proc/sys/net/ipv4/tcp_rmem",
+        "/proc/sys/net/ipv4/tcp_wmem",
+        "/proc/sys/net/core/rmem_max",
+        "/proc/sys/net/core/wmem_max",
+    ];
+    paths.extend(ADVANCED_SYSCTLS.iter().map(|(_, path, _, _)| *path));
+    paths.sort_unstable();
+    paths.dedup();
+    paths
+}
+
 /// Read a sysctl value from /proc/sys
 pub fn read_sysctl(path: impl AsRef<Path>) -> io::Result<String> {
     fs::read_to_string(path).map(|s| s.trim().to_string())
