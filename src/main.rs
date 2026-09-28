@@ -10,6 +10,7 @@ mod logging;
 mod network;
 mod policy;
 mod proxy;
+mod recovery;
 mod stats;
 mod sysctl;
 
@@ -44,6 +45,10 @@ enum Command {
         #[arg(long)]
         iface: Option<String>,
     },
+    /// Capture the pre-tuning kernel state once for uninstall recovery
+    CaptureBaseline,
+    /// Restore the kernel state captured before TCP Optimiser applied tuning
+    RestoreBaseline,
     /// Print build provenance embedded in this binary
     BuildInfo,
     /// Verify the signed module payload before installation
@@ -65,6 +70,8 @@ fn main() {
             runtime_only,
         } => print_status(iface, runtime_only),
         Command::Repair { iface } => repair_policy(iface),
+        Command::CaptureBaseline => recovery::capture_baseline(),
+        Command::RestoreBaseline => recovery::restore_baseline(),
         Command::BuildInfo => print_build_info(),
         Command::VerifyModule { path } => integrity::verify_module(&path),
     };
