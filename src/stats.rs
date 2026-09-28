@@ -245,6 +245,40 @@ fn dns_servers() -> Vec<DnsServer> {
             }
         }
     }
+
+    if servers.is_empty() {
+        if let Ok(content) = fs::read_to_string("/etc/resolv.conf") {
+            servers.extend(parse_resolv_conf(&content));
+        }
+    }
+    servers
+}
+
+fn parse_resolv_conf(content: &str) -> Vec<DnsServer> {
+    let mut servers = Vec::new();
+    for line in content.lines() {
+        let mut fields = line.split_whitespace();
+        if fields.next() != Some("nameserver") {
+            continue;
+        }
+        let Some(raw) = fields.next() else {
+            continue;
+        };
+        let Ok(address) = raw.parse::<IpAddr>() else {
+            continue;
+        };
+        if address.is_unspecified() {
+            continue;
+        }
+        let ip = address.to_string();
+        if servers.iter().any(|server: &DnsServer| server.ip == ip) {
+            continue;
+        }
+        servers.push(DnsServer {
+            iface: "system".to_string(),
+            ip,
+        });
+    }
     servers
 }
 
@@ -359,6 +393,17 @@ mod tests {
             ),
             (8, 2, 3, 10, 4)
         );
+    }
+
+    #[test]
+    fn resolv_conf_fallback_accepts_only_valid_nameservers() {
+        let servers = parse_resolv_conf(
+            "search example.test\nnameserver 8.8.8.8\nnameserver ::\nnameserver 2001:4860:4860::8888\nnameserver 8.8.8.8\n",
+        );
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0].ip, "8.8.8.8");
+        assert_eq!(servers[1].ip, "2001:4860:4860::8888");
+        assert!(servers.iter().all(|server| server.iface == "system"));
     }
 
     #[test]
