@@ -13,4 +13,7 @@ RUST_BIN="$MODDIR/bin/$RUST_ABI/tcp_optimiser"
 
 export TCP_OPTIMISER_MODULE_DIR="$MODDIR"
 export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:$PATH"
+if ! "$RUST_BIN" capture-baseline >/dev/null 2>&1; then
+    printf '%s - [WARN] Failed to capture pre-tuning sysctl baseline\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> "$MODDIR/service.log"
+fi
 "$RUST_BIN" once
