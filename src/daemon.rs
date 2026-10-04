@@ -583,7 +583,7 @@ fn apply_interface_settings_inner(
     let requested_algorithm = policy.algorithm.clone();
     let mut failures = Vec::new();
 
-    if !sysctl::algo_available(&policy.algorithm).unwrap_or(false) {
+    if !sysctl::algo_available(&policy.algorithm).unwrap_or(false) && full_apply {
         match crate::kernel_module::ensure_algorithm(&policy.algorithm) {
             Ok(true) => {
                 let _ = crate::kernel_module::clear_algorithm_unavailable(&policy.algorithm);
@@ -605,8 +605,6 @@ fn apply_interface_settings_inner(
                 ));
             }
         }
-    } else {
-        let _ = crate::kernel_module::clear_algorithm_unavailable(&policy.algorithm);
     }
 
     if !sysctl::algo_available(&policy.algorithm).unwrap_or(false) {
@@ -638,12 +636,9 @@ fn apply_interface_settings_inner(
     }
 
     if !policy.qdisc.is_empty() {
-        if let Err(error) = ensure_qdisc_for_policy(&policy.qdisc) {
-            logging::log_print(&format!(
-                "[WARN] Kernel module load for qdisc {} failed: {error}",
-                policy.qdisc
-            ));
-        }
+        // Do not pre-load qdisc modules in the hot path. reconcile_qdisc()
+        // first checks the current root qdisc and only reaches tc/module
+        // loading when an actual change is required.
         if let Err(error) = sysctl::set_default_qdisc(&policy.qdisc) {
             failures.push(format!("Default qdisc {} failed: {error}", policy.qdisc));
         }
@@ -695,24 +690,31 @@ fn apply_interface_settings_inner(
     }
 
     let algorithm_applied = match sysctl::algo_available(&policy.algorithm) {
-        Ok(true) => match sysctl::set_congestion_control(&policy.algorithm) {
-            Ok(()) => {
-                logging::log_print(&format!(
-                    "Applied congestion control: {} ({})",
-                    policy.algorithm,
-                    mode.as_str()
-                ));
-                update_description(mode, &policy.algorithm);
-                true
+        Ok(true) => {
+            let changed = sysctl::current_algorithm()
+                .map(|current| current != policy.algorithm)
+                .unwrap_or(true);
+            match sysctl::set_congestion_control(&policy.algorithm) {
+                Ok(()) => {
+                    if changed {
+                        logging::log_print(&format!(
+                            "Applied congestion control: {} ({})",
+                            policy.algorithm,
+                            mode.as_str()
+                        ));
+                        update_description(mode, &policy.algorithm);
+                    }
+                    true
+                }
+                Err(error) => {
+                    failures.push(format!(
+                        "Congestion control {} failed: {error}",
+                        policy.algorithm
+                    ));
+                    false
+                }
             }
-            Err(error) => {
-                failures.push(format!(
-                    "Congestion control {} failed: {error}",
-                    policy.algorithm
-                ));
-                false
-            }
-        },
+        }
         Ok(false) => {
             failures.push(format!(
                 "Congestion control {} is unavailable",
