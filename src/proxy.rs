@@ -342,5 +342,4 @@ mod tests {
         assert_eq!(classify_proxy_mode(&ProxyType::Mihomo, true, true), "mixed");
         assert_eq!(classify_proxy_mode(&ProxyType::None, false, false), "none");
     }
-
 }
