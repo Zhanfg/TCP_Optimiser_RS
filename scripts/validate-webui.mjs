@@ -25,6 +25,11 @@ function quotedValues(source, declaration) {
 	return [...block[1].matchAll(/["']([a-z0-9_]+)["']/g)].map(match => match[1]);
 }
 
+const html = read('webroot/index.html');
+const jsFiles = walk(path.join(root, 'webroot/js'))
+	.filter(file => file.endsWith('.js'))
+	.map(file => path.relative(root, file));
+
 const ids = new Map();
 for (const match of html.matchAll(/\sid="([^"]+)"/g)) {
 	const id = match[1];
