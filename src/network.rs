@@ -3,7 +3,6 @@ use std::io;
 use std::os::fd::RawFd;
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
 
 /// Network interface mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,42 +126,6 @@ impl RouteMonitor {
         Ok(())
     }
 
-    /// Wait until a relevant network event arrives or the timeout expires.
-    /// Kept for compatibility with one-shot callers; the main v4 daemon polls
-    /// this descriptor together with the runtime-control socket.
-    pub fn wait(&mut self, timeout: Duration) -> io::Result<bool> {
-        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as libc::c_int;
-        let mut poll_fd = libc::pollfd {
-            fd: self.fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-
-        let rc = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
-        if rc < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                return Ok(false);
-            }
-            return Err(error);
-        }
-        if rc == 0 {
-            return Ok(false);
-        }
-
-        if poll_fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
-            return Err(io::Error::other(format!(
-                "rtnetlink poll failed with revents=0x{:x}",
-                poll_fd.revents
-            )));
-        }
-        if poll_fd.revents & libc::POLLIN == 0 {
-            return Ok(false);
-        }
-
-        self.drain_ready()?;
-        Ok(true)
-    }
 }
 
 impl Drop for RouteMonitor {
