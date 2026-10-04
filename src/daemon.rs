@@ -249,7 +249,9 @@ pub fn run() -> io::Result<()> {
         )?;
 
         if wake.route_broken {
-            logging::log_print("[WARN] rtnetlink listener failed; reverting to timeout route checks");
+            logging::log_print(
+                "[WARN] rtnetlink listener failed; reverting to timeout route checks",
+            );
             route_monitor = None;
             network_dirty = true;
         }
@@ -913,13 +915,11 @@ fn pacing_override() -> Option<(u32, u32)> {
     Some((read("pacing_ca")?, read("pacing_ss")?))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::{adjusted_pacing, qdisc_check_interval};
     use crate::network::IfaceMode;
     use std::time::Duration;
-
 
     #[test]
     fn qdisc_watchdog_uses_interface_specific_intervals() {
