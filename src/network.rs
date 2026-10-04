@@ -237,6 +237,44 @@ pub fn iface_mode(iface: &str) -> IfaceMode {
     }
 }
 
+fn wifi_freq_cache_path() -> PathBuf {
+    crate::config::module_dir().join("runtime").join("wifi_freq")
+}
+
+pub fn cached_wifi_freq(iface: &str) -> Option<u32> {
+    let value = fs::read_to_string(wifi_freq_cache_path()).ok()?;
+    let mut fields = value.split_whitespace();
+    let cached_iface = fields.next()?;
+    let frequency = fields.next()?.parse::<u32>().ok()?;
+    (cached_iface == iface && (2000..=8000).contains(&frequency)).then_some(frequency)
+}
+
+fn cache_wifi_freq(iface: &str, frequency: u32) {
+    if !(2000..=8000).contains(&frequency) {
+        return;
+    }
+    let path = wifi_freq_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, format!("{iface} {frequency}\n"));
+}
+
+/// Read the cached Wi-Fi frequency on hot switches and probe `iw` only on
+/// full/network-transition applies. This removes a subprocess from the manual
+/// algorithm-switch critical path.
+pub fn policy_wifi_freq(iface: &str, allow_probe: bool) -> Option<u32> {
+    if let Some(frequency) = cached_wifi_freq(iface) {
+        return Some(frequency);
+    }
+    if !allow_probe {
+        return None;
+    }
+    let frequency = wifi_freq(iface)?;
+    cache_wifi_freq(iface, frequency);
+    Some(frequency)
+}
+
 /// Get Wi-Fi frequency in MHz (returns None if not Wi-Fi or iw unavailable)
 pub fn wifi_freq(iface: &str) -> Option<u32> {
     let output = Command::new("iw")
