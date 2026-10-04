@@ -48,7 +48,15 @@ export function homeTemplate() {
 	    <div class="row"><span>${t('匹配模块','Matched KOs')}</span><strong id="home-kos">—</strong></div>
 	    <div class="row"><span>${t('自动调优','Managed tuning')}</span><strong id="home-auto">—</strong></div>
 	    <div class="row"><span>${t('Qdisc 策略','Qdisc policy')}</span><strong id="home-qpolicy">—</strong></div>
+	    <div class="row"><span>${t('路径健康','Path health')}</span><strong id="home-adaptive">—</strong></div>
 	  </article>
+
+	  <div class="inline-actions">
+	    <button class="secondary" data-action="home-details">${t('详细信息','Details')}</button>
+	    <button class="secondary" data-action="home-verify">${t('实际状态校验','Verify live state')}</button>
+	  </div>
+	  <article id="home-details-panel" class="panel compact" hidden></article>
+	  <article id="home-verify-panel" class="panel compact" hidden></article>
 	</section>`;
 }
 
@@ -67,12 +75,58 @@ export function renderHome(snapshot = state.runtime) {
 	if ($('#home-kos')) $('#home-kos').textContent = String(snapshot.kernel_bundle?.matched_modules ?? 0);
 	if ($('#home-auto')) $('#home-auto').textContent = snapshot.auto_tuning_enabled === false ? t('关闭','Off') : t('开启','On');
 	if ($('#home-qpolicy')) $('#home-qpolicy').textContent = snapshot.qdisc_policy || '—';
+	const adaptive = snapshot.adaptive;
+	const adaptiveState = adaptive?.stable_state || adaptive?.latest?.state || 'unknown';
+	if ($('#home-adaptive')) $('#home-adaptive').textContent = adaptiveState === 'unknown'
+		? t('学习中','Learning')
+		: adaptiveState.replaceAll('_', ' ');
 	const chips = $('#home-algos');
 	if (chips) {
 		const current = snapshot.algorithm;
 		const available = snapshot.available_algorithms || [];
 		chips.innerHTML = available.map(name => `<span class="chip ${name === current ? 'selected' : ''}">${esc(name)}</span>`).join('');
 	}
+}
+
+export function renderHomeDetails(snapshot) {
+	const panel = $('#home-details-panel');
+	if (!panel) return;
+	const proxy = snapshot?.proxy_state || snapshot?.proxy || null;
+	const proxyText = typeof proxy === 'object'
+		? [proxy.label || proxy.family, proxy.mode].filter(Boolean).join(' · ')
+		: (proxy && proxy !== 'deferred' ? String(proxy) : '—');
+	const dns = Array.isArray(snapshot?.dns) ? snapshot.dns.map(item => item.ip).filter(Boolean) : [];
+	const conn = snapshot?.conn_info;
+	panel.innerHTML = `
+	  <div class="row"><span>${t('代理 / VPN','Proxy / VPN')}</span><strong>${esc(proxyText)}</strong></div>
+	  <div class="row"><span>DNS</span><strong>${esc(dns.length ? dns.join(', ') : '—')}</strong></div>
+	  <div class="row"><span>${t('平均 RTT','Average RTT')}</span><strong>${esc(Number.isFinite(conn?.avg_rtt_ms) ? conn.avg_rtt_ms.toFixed(1) + ' ms' : '—')}</strong></div>
+	  <div class="row"><span>CWND</span><strong>${esc(Number.isFinite(conn?.avg_cwnd) ? conn.avg_cwnd.toFixed(1) : '—')}</strong></div>`;
+	panel.hidden = false;
+}
+
+export function renderHomeVerification(snapshot) {
+	const panel = $('#home-verify-panel');
+	if (!panel) return;
+	const verification = snapshot?.verification;
+	const checks = Array.isArray(verification?.checks) ? verification.checks : [];
+	const summary = verification?.summary;
+	if (!summary || !checks.length) {
+		panel.innerHTML = `<span class="hint">${t('当前没有可用的校验结果。','Verification is unavailable.')}</span>`;
+		panel.hidden = false;
+		return;
+	}
+	panel.innerHTML = `
+	  <div class="row"><span>${t('匹配','Matched')}</span><strong>${summary.matched ?? 0} / ${summary.total ?? checks.length}</strong></div>
+	  <div class="row"><span>${t('漂移','Drift')}</span><strong>${summary.drifted ?? 0}</strong></div>
+	  <div class="row"><span>${t('不可用','Unavailable')}</span><strong>${summary.unavailable ?? 0}</strong></div>
+	  <details class="verification-details">
+	    <summary>${t('查看检查项','Show checks')}</summary>
+	    <div class="verification-list">${checks.map(check => `
+	      <div class="verify-row" data-state="${esc(check.state)}"><span>${esc(check.key)}</span><strong>${esc(check.actual ?? '—')}</strong></div>`
+	    ).join('')}</div>
+	  </details>`;
+	panel.hidden = false;
 }
 
 function algoButtons(name, selected, available) {
