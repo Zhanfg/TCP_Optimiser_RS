@@ -19,7 +19,9 @@ fi
 
 for REQUIRED in \
   module.prop customize.sh service.sh post-fs-data.sh uninstall.sh LICENSE checksums.sha256 checksums.sig \
-  webroot/index.html webroot/js/common.js webroot/js/settings.js; do
+  webroot/index.html webroot/css/v41.css webroot/js/kernelsu.js \
+  webroot/js/v41/app.js webroot/js/v41/api.js webroot/js/v41/views.js \
+  webroot/js/v41/store.js webroot/js/v41/locale.js webroot/js/v41/catalog.js; do
   if ! printf '%s\n' "$ENTRIES" | grep -Fxq "$REQUIRED"; then
     printf 'missing package entry: %s\n' "$REQUIRED" >&2
     exit 1
@@ -107,8 +109,21 @@ PY
 fi
 
 cmp "$EXTRACTED/webroot/index.html" webroot/index.html
-cmp "$EXTRACTED/webroot/js/common.js" webroot/js/common.js
-cmp "$EXTRACTED/webroot/js/settings.js" webroot/js/settings.js
+for FILE in \
+  css/v41.css js/kernelsu.js \
+  js/v41/app.js js/v41/api.js js/v41/views.js \
+  js/v41/store.js js/v41/locale.js js/v41/catalog.js; do
+  cmp "$EXTRACTED/webroot/$FILE" "webroot/$FILE"
+done
+
+for LEGACY in \
+  js/common.js js/router.js js/home.js js/settings.js js/stats.js js/logs.js \
+  js/motion.js js/theme.js js/debug.js js/i18n.js js/capabilities.js css/main.css; do
+  if printf '%s\n' "$ENTRIES" | grep -Fxq "webroot/$LEGACY"; then
+    printf 'legacy WebUI entry unexpectedly packaged: webroot/%s\n' "$LEGACY" >&2
+    exit 1
+  fi
+done
 
 check_machine() {
   local binary=$1
