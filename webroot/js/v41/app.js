@@ -12,6 +12,7 @@ const outlet = () => document.getElementById('app-outlet');
 let timer = null;
 let pageToken = 0;
 let advancedModule = null;
+let interactionUntil = 0;
 
 function navLabel(page) {
 	const zh = I18N.currentLang === 'zh';
@@ -81,10 +82,22 @@ async function mount(page) {
 	}
 }
 
+function inputPending() {
+	try {
+		return navigator.scheduling?.isInputPending?.({ includeContinuous: true }) === true;
+	} catch (_) {
+		return false;
+	}
+}
+
 function schedule(ms, token, fn) {
 	clearTimeout(timer);
 	timer = setTimeout(async () => {
 		if (token !== pageToken || document.hidden) return;
+		if (performance.now() < interactionUntil || inputPending()) {
+			schedule(450, token, fn);
+			return;
+		}
 		try { await fn(); } catch (_) {}
 		if (token === pageToken && !document.hidden) schedule(ms, token, fn);
 	}, ms);
@@ -221,6 +234,14 @@ document.addEventListener('click', async event => {
 		setStatus(error?.message || 'Error', false);
 	}
 });
+
+function markInteraction() {
+	interactionUntil = performance.now() + 420;
+}
+
+window.addEventListener('scroll', markInteraction, { passive: true });
+window.addEventListener('touchstart', markInteraction, { passive: true });
+window.addEventListener('touchmove', markInteraction, { passive: true });
 
 window.addEventListener('popstate', () => void mount(routeFromHash()));
 document.addEventListener('visibilitychange', () => {
