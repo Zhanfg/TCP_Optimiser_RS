@@ -69,6 +69,17 @@ pub fn run() -> io::Result<()> {
         }
     }
 
+    // Run the expensive BTF/KO fingerprint audit once during daemon startup,
+    // never while the user is waiting for an algorithm switch.
+    if sysctl::algo_available("bbr3").unwrap_or(false) {
+        match crate::kernel_module::verify_bbr3_runtime_abi() {
+            Ok(()) => logging::log_print("[INFO] BBRv3 ColorOS 17 ABI gate verified"),
+            Err(error) => logging::log_print(&format!(
+                "[WARN] BBRv3 remains blocked by runtime ABI gate: {error}"
+            )),
+        }
+    }
+
     let control_server = ControlServer::bind()?;
     logging::log_print("[INFO] v4 event-driven control plane ready");
 
