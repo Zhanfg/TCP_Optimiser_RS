@@ -83,8 +83,9 @@ printf 'cell='; ${markerRead('rmnet_data')}; printf '\n'
 printf 'qdisc='; cat "$moddir/qdisc" 2>/dev/null; printf '\n'
 [ -f "$moddir/kill_connections" ] && k=1 || k=0; printf 'kill=%s\n' "$k"
 [ -f "$moddir/initcwnd_initrwnd" ] && i=1 || i=0; printf 'init=%s\n' "$i"
+[ -f "$moddir/kill_connections_proxy" ] && p=1 || p=0; printf 'proxykill=%s\n' "$p"
 [ -f "$moddir/disable_auto_tuning" ] && a=0 || a=1; printf 'auto=%s\n' "$a"`, { timeoutMs: 1400 });
-		const result = { wifi: 'bbr', cell: 'bbr', qdisc: '', kill: false, init: false, auto: true };
+		const result = { wifi: 'bbr', cell: 'bbr', qdisc: '', kill: false, init: false, proxyKill: false, auto: true };
 		for (const line of stdout.split(/\r?\n/)) {
 			const at = line.indexOf('=');
 			if (at < 1) continue;
@@ -95,6 +96,7 @@ printf 'qdisc='; cat "$moddir/qdisc" 2>/dev/null; printf '\n'
 			else if (key === 'qdisc') result.qdisc = value;
 			else if (key === 'kill') result.kill = value === '1';
 			else if (key === 'init') result.init = value === '1';
+			else if (key === 'proxykill') result.proxyKill = value === '1';
 			else if (key === 'auto') result.auto = value === '1';
 		}
 		return result;
@@ -116,6 +118,7 @@ export async function applySettings(next, full = false) {
 		: `rm -f ${shellQuote(`${MOD}/qdisc`)}`;
 	const killWrite = next.kill ? `touch ${shellQuote(`${MOD}/kill_connections`)}` : `rm -f ${shellQuote(`${MOD}/kill_connections`)}`;
 	const initWrite = next.init ? `touch ${shellQuote(`${MOD}/initcwnd_initrwnd`)}` : `rm -f ${shellQuote(`${MOD}/initcwnd_initrwnd`)}`;
+	const proxyKillWrite = next.proxyKill ? `touch ${shellQuote(`${MOD}/kill_connections_proxy`)}` : `rm -f ${shellQuote(`${MOD}/kill_connections_proxy`)}`;
 	const autoWrite = next.auto ? `rm -f ${shellQuote(`${MOD}/disable_auto_tuning`)}` : `touch ${shellQuote(`${MOD}/disable_auto_tuning`)}`;
 	const mode = full ? 'apply-now --full' : 'apply-now';
 
@@ -125,6 +128,7 @@ ${markerWrite('rmnet_data', cell)}
 ${qdiscWrite}
 ${killWrite}
 ${initWrite}
+${proxyKillWrite}
 ${autoWrite}
 ${rust(mode)}`, { timeoutMs: full ? 5200 : 2400 });
 
@@ -133,6 +137,13 @@ ${rust(mode)}`, { timeoutMs: full ? 5200 : 2400 });
 	catch (_) { result = { ok: true, mode: full ? 'full' : 'fast', elapsed_ms: null }; }
 	if (result.ok === false) throw new Error(result.error || 'Apply failed');
 	return result;
+}
+
+export async function refreshProfile() {
+	const { stdout } = await exec(`# v41-profile-refresh
+${rust('profile --refresh')} >/dev/null
+${rust('apply-now --full')}`, { timeoutMs: 6500 });
+	return parseJson(stdout);
 }
 
 export async function probeQdiscs() {
