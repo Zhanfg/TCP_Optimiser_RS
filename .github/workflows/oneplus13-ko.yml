@@ -28,6 +28,7 @@ on:
     branches:
       - 'device/oneplus13-pjz110-ko'
       - 'rewrite/v4-fast-switch-coloros17'
+      - 'rewrite/v4.1-webui-core'
     paths:
       - 'src/**'
       - 'webroot/**'
@@ -174,9 +175,7 @@ jobs:
         run: |
           cargo test --all-targets --locked
           cargo fmt --all -- --check
-          for js in webroot/js/*.js; do
-            node --check "$js"
-          done
+          find webroot/js -name '*.js' -print0 | xargs -0 -n1 node --check
 
       - name: Build PJZ110 arm64 runtime
         env:
