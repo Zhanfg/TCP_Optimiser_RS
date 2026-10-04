@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - 'device/oneplus13-pjz110-ko'
+      - 'rewrite/v4-fast-switch-coloros17'
     paths:
       - 'src/**'
       - 'webroot/**'
