@@ -642,7 +642,7 @@ fn apply_interface_settings_inner(
         if let Err(error) = sysctl::set_default_qdisc(&policy.qdisc) {
             failures.push(format!("Default qdisc {} failed: {error}", policy.qdisc));
         }
-        match network::reconcile_qdisc(iface, &policy.qdisc) {
+        match network::reconcile_qdisc_cached(iface, &policy.qdisc, !full_apply) {
             Ok(changed) => {
                 let _ = crate::kernel_module::clear_qdisc_unavailable(&policy.qdisc);
                 if changed {
