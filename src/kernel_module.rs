@@ -311,8 +311,7 @@ static BBR3_RUNTIME_VERIFIED: OnceLock<()> = OnceLock::new();
  * Never silently widen this allow-list. A firmware/kernel update must be
  * re-audited from the live BTF before BBRv3 may be selected again.
  */
-const PJZ110_COS17_OSRELEASE: &str =
-    "6.6.147-android15-8-gd4c13fc2e857-abogki500782043-4k";
+const PJZ110_COS17_OSRELEASE: &str = "6.6.147-android15-8-gd4c13fc2e857-abogki500782043-4k";
 const PJZ110_COS17_BTF_SHA256: &str =
     "6129a25e3908557498bc5fab2ced419f9a3751837b858efbaca5ff12263bf2a2";
 const PJZ110_BBR3_KO_SHA256: &str =
