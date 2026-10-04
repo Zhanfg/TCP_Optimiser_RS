@@ -9,23 +9,6 @@ const fail = message => {
 	process.exitCode = 1;
 };
 
-function parseFlatLanguageFile(relative) {
-	const source = read(relative);
-	const seen = new Map();
-	for (const match of source.matchAll(/^\s*"((?:\\.|[^"])*)"\s*:/gm)) {
-		const key = JSON.parse(`"${match[1]}"`);
-		const line = source.slice(0, match.index).split(/\r?\n/).length;
-		if (seen.has(key)) fail(`${relative}:${line} duplicates ${key} (first at ${seen.get(key)})`);
-		else seen.set(key, line);
-	}
-	try {
-		return JSON.parse(source);
-	} catch (error) {
-		fail(`${relative} is invalid JSON: ${error.message}`);
-		return {};
-	}
-}
-
 function walk(dir) {
 	return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
 		const full = path.join(dir, entry.name);
@@ -41,22 +24,6 @@ function quotedValues(source, declaration) {
 	}
 	return [...block[1].matchAll(/["']([a-z0-9_]+)["']/g)].map(match => match[1]);
 }
-
-const english = parseFlatLanguageFile('webroot/lang/source/string.json');
-const chinese = parseFlatLanguageFile('webroot/lang/zh.json');
-for (const key of Object.keys(english)) if (!(key in chinese)) fail(`zh.json is missing ${key}`);
-for (const key of Object.keys(chinese)) if (!(key in english)) fail(`zh.json has unknown key ${key}`);
-
-const html = read('webroot/index.html');
-const jsFiles = walk(path.join(root, 'webroot/js'))
-	.filter(file => file.endsWith('.js'))
-	.map(file => path.relative(root, file));
-const javascript = jsFiles.map(read).join('\n');
-const referencedKeys = new Set([
-	...[...html.matchAll(/data-i18n(?:-placeholder|-aria-label)?="([^"]+)"/g)].map(match => match[1]),
-	...[...javascript.matchAll(/I18N\.t\(\s*['"]([A-Za-z0-9_]+)['"]\s*(?:[,\)])/g)].map(match => match[1]),
-]);
-for (const key of referencedKeys) if (!(key in english)) fail(`translation key ${key} is referenced but undefined`);
 
 const ids = new Map();
 for (const match of html.matchAll(/\sid="([^"]+)"/g)) {
@@ -83,13 +50,21 @@ for (const file of jsFiles) {
 }
 
 const rust = read('src/config.rs');
-const capabilities = read('webroot/js/capabilities.js');
+const catalog = read('webroot/js/v41/catalog.js');
 const rustAlgorithms = quotedValues(rust, 'pub const ALL_ALGOS');
-const uiAlgorithms = quotedValues(capabilities, 'export const ALL_ALGOS');
-if (JSON.stringify(rustAlgorithms) !== JSON.stringify(uiAlgorithms)) fail('Rust and WebUI algorithm lists differ');
 const rustQdiscs = quotedValues(rust, 'pub const KNOWN_QDISCS');
-const uiQdiscs = quotedValues(capabilities, 'export const ALL_QDISCS');
-if (JSON.stringify(rustQdiscs) !== JSON.stringify(uiQdiscs)) fail('Rust and WebUI qdisc lists differ');
+const catalogArray = name => {
+	const match = catalog.match(new RegExp(`${name}\\s*=\\s*Object\\.freeze\\(\\[([^\\]]*)\\]\\)`));
+	if (!match) {
+		fail(`cannot find v4.1 catalog ${name}`);
+		return [];
+	}
+	return [...match[1].matchAll(/['"]([a-z0-9_]+)['"]/g)].map(item => item[1]);
+};
+const uiAlgorithms = catalogArray('ALGORITHMS');
+const uiQdiscs = catalogArray('QDISCS');
+if (JSON.stringify(rustAlgorithms) !== JSON.stringify(uiAlgorithms)) fail('Rust and v4.1 algorithm lists differ');
+if (JSON.stringify(rustQdiscs) !== JSON.stringify(uiQdiscs)) fail('Rust and v4.1 qdisc lists differ');
 
 const index = read('webroot/index.html');
 const app = read('webroot/js/v41/app.js');
@@ -125,10 +100,14 @@ const architectureChecks = {
 	no_backdrop_filter: !css.includes('backdrop-filter'),
 	preview_mock_split: !ksuBridge.includes('function mockExec') && ksuBridge.includes("import('./mock-ksu.js')"),
 	production_bridge_small: Buffer.byteLength(ksuBridge, 'utf8') <= 6144,
+	no_translation_dictionary_boot: !app.includes('../i18n.js') && !views.includes('../i18n.js'),
+	lightweight_locale: fs.existsSync(path.join(root, 'webroot/js/v41/locale.js')),
 	no_legacy_frontend_files: [
 		'webroot/js/common.js','webroot/js/router.js','webroot/js/home.js',
 		'webroot/js/settings.js','webroot/js/stats.js','webroot/js/logs.js',
 		'webroot/js/motion.js','webroot/js/theme.js','webroot/js/debug.js',
+		'webroot/js/i18n.js','webroot/js/capabilities.js',
+		'webroot/lang/source/string.json','webroot/lang/zh.json',
 		'webroot/css/main.css',
 	].every(file => !fs.existsSync(path.join(root, file))),
 };
