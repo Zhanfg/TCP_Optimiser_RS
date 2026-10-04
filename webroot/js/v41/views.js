@@ -138,7 +138,7 @@ function algoButtons(name, selected, available) {
 
 export function settingsTemplate() {
 	const snap = state.runtime || {};
-	const cfg = state.settings || { wifi:'bbr', cell:'bbr', qdisc:'', kill:false, init:false, auto:true };
+	const cfg = state.settings || { wifi:'bbr', cell:'bbr', qdisc:'', kill:false, init:false, proxyKill:false, auto:true };
 	const available = snap.available_algorithms || ['bbr','cubic','reno'];
 	const qdiscLabel = cfg.qdisc || t('自动','Auto');
 	return `
@@ -162,6 +162,7 @@ export function settingsTemplate() {
 	  <article class="panel compact">
 	    <label class="switch-row"><span><strong>${t('自动调优','Managed tuning')}</strong><small>${t('自动应用安全网络参数','Apply safe network defaults automatically')}</small></span><input type="checkbox" data-toggle="auto" ${cfg.auto ? 'checked' : ''}></label>
 	    <label class="switch-row"><span><strong>${t('切换时断开连接','Reset TCP sessions')}</strong><small>${t('仅完整应用时执行','Only on full apply')}</small></span><input type="checkbox" data-toggle="kill" ${cfg.kill ? 'checked' : ''}></label>
+	    <label class="switch-row"><span><strong>${t('代理环境也强制断开','Force reset behind proxy')}</strong><small>${t('仅在你明确需要时开启','Enable only when explicitly needed')}</small></span><input type="checkbox" data-toggle="proxyKill" ${cfg.proxyKill ? 'checked' : ''}></label>
 	    <label class="switch-row"><span><strong>initcwnd / initrwnd</strong><small>${t('仅完整应用时执行','Only on full apply')}</small></span><input type="checkbox" data-toggle="init" ${cfg.init ? 'checked' : ''}></label>
 	  </article>
 
@@ -172,6 +173,7 @@ export function settingsTemplate() {
 
 	  <article class="panel compact">
 	    <div class="row"><span>${t('界面模式','Theme')}</span><div class="mini-actions"><button class="text-btn" data-theme="auto">${t('跟随系统','Auto')}</button><button class="text-btn" data-theme="dark">${t('深色','Dark')}</button><button class="text-btn" data-theme="light">${t('浅色','Light')}</button></div></div>
+	    <div class="row"><span>${t('自动配置','Auto profile')}</span><button class="text-btn" data-action="refresh-profile">${t('重新检测','Re-detect')}</button></div>
 	    <div class="row"><span>${t('安装完整性','Integrity')}</span><button class="text-btn" data-action="verify">${t('检查','Check')}</button></div>
 	    <div class="row"><span>${t('高级参数','Advanced controls')}</span><button class="text-btn" data-action="open-advanced">${t('打开','Open')}</button></div>
 	  </article>
@@ -189,6 +191,7 @@ function readDraft() {
 		auto: $('[data-toggle="auto"]')?.checked ?? current.auto ?? true,
 		kill: $('[data-toggle="kill"]')?.checked ?? current.kill ?? false,
 		init: $('[data-toggle="init"]')?.checked ?? current.init ?? false,
+		proxyKill: $('[data-toggle="proxyKill"]')?.checked ?? current.proxyKill ?? false,
 	};
 }
 
@@ -217,7 +220,8 @@ export async function handleSettingsAction(action) {
 		buttons.forEach(btn => btn.disabled = true);
 		try {
 			const draft = readDraft();
-			const result = await api.applySettings(draft, full);
+			const needsFull = full || draft.auto !== (state.settings?.auto ?? true);
+			const result = await api.applySettings(draft, needsFull);
 			patch({ settings: draft });
 			const latency = $('#settings-latency');
 			if (latency) latency.textContent = Number.isFinite(result.elapsed_ms) ? `${result.elapsed_ms} ms` : t('完成','Done');
@@ -225,6 +229,22 @@ export async function handleSettingsAction(action) {
 			patch({ runtime });
 		} finally {
 			buttons.forEach(btn => btn.disabled = false);
+		}
+		return;
+	}
+
+	if (action === 'refresh-profile') {
+		const btn = $('[data-action="refresh-profile"]');
+		if (btn) btn.disabled = true;
+		try {
+			const result = await api.refreshProfile();
+			const latency = $('#settings-latency');
+			if (latency) latency.textContent = Number.isFinite(result.elapsed_ms) ? `${result.elapsed_ms} ms` : t('完成','Done');
+			const runtime = await api.runtime(true);
+			const settings = await api.readSettings();
+			patch({ runtime, settings });
+		} finally {
+			if (btn) btn.disabled = false;
 		}
 		return;
 	}
