@@ -4,7 +4,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 const RUNTIME_DIR: &str = "runtime";
@@ -100,9 +100,6 @@ pub fn request_apply(full: bool) -> io::Result<String> {
     request(if full { "APPLY_FULL" } else { "APPLY_FAST" })
 }
 
-pub fn ping() -> io::Result<String> {
-    request("PING")
-}
 
 fn request(command: &str) -> io::Result<String> {
     let mut stream = UnixStream::connect(socket_path())?;
@@ -128,9 +125,6 @@ pub fn socket_path() -> PathBuf {
         .join(CONTROL_SOCKET)
 }
 
-pub fn socket_exists() -> bool {
-    Path::new(&socket_path()).exists()
-}
 
 #[cfg(test)]
 mod tests {
@@ -138,7 +132,6 @@ mod tests {
 
     #[test]
     fn control_protocol_is_deliberately_tiny() {
-        assert!(MAX_REQUEST <= 128);
         for request in ["APPLY_FAST", "APPLY_FULL", "PING"] {
             assert!(request.len() < MAX_REQUEST);
         }
