@@ -544,12 +544,20 @@ fn apply_interface_settings(iface: &str, mode: IfaceMode) {
 }
 
 pub(crate) fn resolve_policy(iface: &str, mode: IfaceMode) -> io::Result<ResolvedPolicy> {
+    resolve_policy_with_probe(iface, mode, true)
+}
+
+fn resolve_policy_with_probe(
+    iface: &str,
+    mode: IfaceMode,
+    allow_wifi_probe: bool,
+) -> io::Result<ResolvedPolicy> {
     let available = crate::kernel_module::augment_algorithms(sysctl::available_algorithms()?);
     let algorithm = select_algorithm(mode.prefix(), &available).to_string();
     let cfg = config::get_algo_config(&algorithm);
     let (base_ca, base_ss) = pacing_override().unwrap_or((cfg.pacing_ca, cfg.pacing_ss));
     let wifi_frequency_mhz = (mode == IfaceMode::WiFi)
-        .then(|| network::wifi_freq(iface))
+        .then(|| network::policy_wifi_freq(iface, allow_wifi_probe))
         .flatten();
     let (pacing_ca, pacing_ss) = adjusted_pacing(base_ca, base_ss, wifi_frequency_mhz);
     let requested_qdisc = qdisc_override().unwrap_or(cfg.qdisc);
@@ -569,9 +577,9 @@ pub(crate) fn repair_interface_settings(iface: &str, mode: IfaceMode) -> io::Res
 fn apply_interface_settings_inner(
     iface: &str,
     mode: IfaceMode,
-    allow_connection_kill: bool,
+    full_apply: bool,
 ) -> io::Result<Vec<String>> {
-    let mut policy = resolve_policy(iface, mode)?;
+    let mut policy = resolve_policy_with_probe(iface, mode, full_apply)?;
     let requested_algorithm = policy.algorithm.clone();
     let mut failures = Vec::new();
 
@@ -719,7 +727,7 @@ fn apply_interface_settings_inner(
     };
 
     if algorithm_applied
-        && allow_connection_kill
+        && full_apply
         && config::module_dir().join("kill_connections").exists()
     {
         let proxy_state = proxy::detect_proxy_snapshot();
@@ -737,7 +745,7 @@ fn apply_interface_settings_inner(
         }
     }
 
-    if config::module_dir().join("initcwnd_initrwnd").exists() {
+    if full_apply && config::module_dir().join("initcwnd_initrwnd").exists() {
         if let Err(error) = network::set_max_initcwnd_initrwnd(iface) {
             failures.push(format!("initcwnd/initrwnd apply failed: {error}"));
         }
