@@ -119,7 +119,10 @@ export function settingsTemplate() {
 	  <article class="panel compact">
 	    <div class="row"><span>${t('界面模式','Theme')}</span><div class="mini-actions"><button class="text-btn" data-theme="auto">${t('跟随系统','Auto')}</button><button class="text-btn" data-theme="dark">${t('深色','Dark')}</button><button class="text-btn" data-theme="light">${t('浅色','Light')}</button></div></div>
 	    <div class="row"><span>${t('安装完整性','Integrity')}</span><button class="text-btn" data-action="verify">${t('检查','Check')}</button></div>
+	    <div class="row"><span>${t('高级参数','Advanced controls')}</span><button class="text-btn" data-action="open-advanced">${t('打开','Open')}</button></div>
 	  </article>
+
+	  <article id="advanced-host" class="panel" hidden></article>
 	</section>`;
 }
 
