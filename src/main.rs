@@ -4,6 +4,7 @@ use std::process;
 mod adaptive;
 mod build_info;
 mod config;
+mod control;
 mod daemon;
 mod install;
 mod integrity;
@@ -92,6 +93,12 @@ enum Command {
         /// Kernel congestion-control name, e.g. bbr3
         algorithm: String,
     },
+    /// Apply the persisted runtime policy immediately through the daemon
+    ApplyNow {
+        /// Re-run the slower base/profile refresh before applying
+        #[arg(long)]
+        full: bool,
+    },
     /// Verify the signed module payload before installation
     VerifyModule {
         /// Extracted module staging directory
@@ -123,6 +130,7 @@ fn main() {
         Command::Profile { refresh, auto } => print_profile(refresh, auto),
         Command::BuildInfo => print_build_info(),
         Command::LoadAlgorithm { algorithm } => load_algorithm(&algorithm),
+        Command::ApplyNow { full } => apply_now(full),
         Command::VerifyModule { path } => integrity::verify_module(&path),
     };
 
@@ -245,5 +253,11 @@ fn print_status(
         "{}",
         serde_json::to_string(&snapshot).map_err(std::io::Error::other)?
     );
+    Ok(())
+}
+
+fn apply_now(full: bool) -> std::io::Result<()> {
+    let response = control::request_apply(full)?;
+    print!("{response}");
     Ok(())
 }

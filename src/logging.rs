@@ -1,17 +1,16 @@
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config;
 
-const MAX_LOG_LINES: usize = 200;
+const MAX_LOG_BYTES: u64 = 128 * 1024;
+const KEEP_LOG_BYTES: u64 = 64 * 1024;
 const FLAG_FILE: &str = "/dev/.tcp_module_log_cleared";
 
 static LOG_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-
-/// Guard to ensure one-time log clearing per boot
 static CLEARED_ONCE: Mutex<bool> = Mutex::new(false);
 static LOG_LOCK: Mutex<()> = Mutex::new(());
 
@@ -19,7 +18,6 @@ fn log_path() -> &'static PathBuf {
     LOG_PATH.get_or_init(|| config::module_dir().join("service.log"))
 }
 
-/// Ensure log is cleared on first run after boot
 fn ensure_boot_cleared() {
     let Ok(mut cleared) = CLEARED_ONCE.lock() else {
         return;
@@ -37,34 +35,52 @@ fn ensure_boot_cleared() {
     }
 }
 
-/// Rotate log if it exceeds MAX_LOG_LINES
-fn rotate_if_needed() {
-    let Ok(content) = fs::read_to_string(log_path()) else {
+/// Rotate only after the file crosses a byte threshold.
+///
+/// v3 read and split the entire log after *every* write. Policy switching emits
+/// several lines in a burst, so that turned harmless logging into synchronous
+/// storage churn on the hot path. v4 pays the read/copy cost only at rotation.
+fn rotate_if_oversize() {
+    let Ok(metadata) = fs::metadata(log_path()) else {
         return;
     };
-    let line_count = content.lines().count();
-    if line_count > MAX_LOG_LINES {
-        // Keep the latter half
-        let lines: Vec<&str> = content.lines().collect();
-        let keep = &lines[lines.len() - (MAX_LOG_LINES / 2)..];
-        let _ = fs::write(log_path(), keep.join("\n") + "\n");
+    if metadata.len() <= MAX_LOG_BYTES {
+        return;
     }
+
+    let Ok(mut file) = fs::File::open(log_path()) else {
+        return;
+    };
+    let keep = metadata.len().min(KEEP_LOG_BYTES);
+    if file.seek(SeekFrom::End(-(keep as i64))).is_err() {
+        return;
+    }
+
+    let mut tail = Vec::with_capacity(keep as usize);
+    if file.read_to_end(&mut tail).is_err() {
+        return;
+    }
+
+    // Avoid beginning the rotated log in the middle of a UTF-8/log line.
+    let start = tail
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let _ = fs::write(log_path(), &tail[start..]);
 }
 
-/// Format current timestamp for logging
 fn timestamp() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     let secs = now.as_secs();
-    // Simple UTC timestamp: YYYY-MM-DD HH:MM:SS
     let days = secs / 86400;
     let time_secs = secs % 86400;
     let hours = time_secs / 3600;
     let mins = (time_secs % 3600) / 60;
     let secs_remain = time_secs % 60;
 
-    // Calculate date from days since epoch (approximate but sufficient)
     let mut y = 1970u64;
     let mut d = days;
     loop {
@@ -106,7 +122,6 @@ fn is_leap(y: u64) -> bool {
     (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
-/// Log a message with timestamp
 pub fn log_print(message: &str) {
     ensure_boot_cleared();
 
@@ -114,18 +129,17 @@ pub fn log_print(message: &str) {
         return;
     };
 
-    let entry = format!("{} - {}\n", timestamp(), message);
+    // Rotation is a rare threshold event now, never a per-line full-file read.
+    rotate_if_oversize();
 
-    let mut file = match fs::OpenOptions::new()
+    let entry = format!("{} - {}\n", timestamp(), message);
+    if let Ok(mut file) = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(log_path())
     {
-        Ok(f) => f,
-        Err(_) => return,
-    };
-
-    let _ = file.write_all(entry.as_bytes());
+        let _ = file.write_all(entry.as_bytes());
+    }
 
     if config::module_dir().join("debug_mode").exists() {
         let debug_path = config::module_dir().join("debug.log");
@@ -139,11 +153,8 @@ pub fn log_print(message: &str) {
             );
         }
     }
-
-    rotate_if_needed();
 }
 
-/// Ensure boot-cleared flag is set (called by daemon on start)
 pub fn ensure_flag() {
     ensure_boot_cleared();
 }

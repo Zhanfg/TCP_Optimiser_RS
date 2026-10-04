@@ -1,9 +1,8 @@
 use std::fs;
 use std::io;
 use std::os::fd::RawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 /// Network interface mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,42 +92,13 @@ impl RouteMonitor {
         Ok(Self { fd })
     }
 
-    /// Wait until a relevant network event arrives or the timeout expires.
-    /// Returns true when an event was received, false for a normal timeout.
-    ///
-    /// A single route change often arrives as several netlink datagrams. Drain
-    /// the entire ready queue here so the daemon coalesces the burst into one
-    /// policy pass instead of spinning once per datagram.
-    pub fn wait(&mut self, timeout: Duration) -> io::Result<bool> {
-        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as libc::c_int;
-        let mut poll_fd = libc::pollfd {
-            fd: self.fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
+    pub fn raw_fd(&self) -> RawFd {
+        self.fd
+    }
 
-        let rc = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
-        if rc < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                return Ok(false);
-            }
-            return Err(error);
-        }
-        if rc == 0 {
-            return Ok(false);
-        }
-
-        if poll_fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
-            return Err(io::Error::other(format!(
-                "rtnetlink poll failed with revents=0x{:x}",
-                poll_fd.revents
-            )));
-        }
-        if poll_fd.revents & libc::POLLIN == 0 {
-            return Ok(false);
-        }
-
+    /// Drain a ready rtnetlink socket. This is split from poll() so the v4
+    /// daemon can wait on route and control-plane descriptors in one syscall.
+    pub fn drain_ready(&mut self) -> io::Result<()> {
         let mut buffer = [0u8; 8192];
         loop {
             let received = unsafe {
@@ -153,7 +123,7 @@ impl RouteMonitor {
                 _ => return Err(error),
             }
         }
-        Ok(true)
+        Ok(())
     }
 }
 
@@ -265,6 +235,46 @@ pub fn iface_mode(iface: &str) -> IfaceMode {
     } else {
         IfaceMode::Unknown
     }
+}
+
+fn wifi_freq_cache_path() -> PathBuf {
+    crate::config::module_dir()
+        .join("runtime")
+        .join("wifi_freq")
+}
+
+pub fn cached_wifi_freq(iface: &str) -> Option<u32> {
+    let value = fs::read_to_string(wifi_freq_cache_path()).ok()?;
+    let mut fields = value.split_whitespace();
+    let cached_iface = fields.next()?;
+    let frequency = fields.next()?.parse::<u32>().ok()?;
+    (cached_iface == iface && (2000..=8000).contains(&frequency)).then_some(frequency)
+}
+
+fn cache_wifi_freq(iface: &str, frequency: u32) {
+    if !(2000..=8000).contains(&frequency) {
+        return;
+    }
+    let path = wifi_freq_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, format!("{iface} {frequency}\n"));
+}
+
+/// Read the cached Wi-Fi frequency on hot switches and probe `iw` only on
+/// full/network-transition applies. This removes a subprocess from the manual
+/// algorithm-switch critical path.
+pub fn policy_wifi_freq(iface: &str, allow_probe: bool) -> Option<u32> {
+    if let Some(frequency) = cached_wifi_freq(iface) {
+        return Some(frequency);
+    }
+    if !allow_probe {
+        return None;
+    }
+    let frequency = wifi_freq(iface)?;
+    cache_wifi_freq(iface, frequency);
+    Some(frequency)
 }
 
 /// Get Wi-Fi frequency in MHz (returns None if not Wi-Fi or iw unavailable)
@@ -497,13 +507,61 @@ fn parse_tc_size(value: &str) -> Option<u64> {
     Some((amount * multiplier) as u64)
 }
 
+fn valid_iface_component(iface: &str) -> bool {
+    !iface.is_empty()
+        && iface.len() <= 32
+        && iface
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
+}
+
+fn qdisc_cache_path(iface: &str) -> Option<PathBuf> {
+    valid_iface_component(iface).then(|| {
+        crate::config::module_dir()
+            .join("runtime")
+            .join(format!("qdisc-{iface}"))
+    })
+}
+
+fn cached_qdisc(iface: &str) -> Option<String> {
+    let path = qdisc_cache_path(iface)?;
+    let value = fs::read_to_string(path).ok()?;
+    let value = value.trim();
+    crate::config::is_known_qdisc(value).then(|| value.to_string())
+}
+
+fn cache_qdisc(iface: &str, qdisc: &str) {
+    let Some(path) = qdisc_cache_path(iface) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, format!("{qdisc}\n"));
+}
+
 /// Restore the requested root qdisc only when the kernel has reset it.
-pub fn reconcile_qdisc(iface: &str, qdisc: &str) -> io::Result<bool> {
-    if root_qdisc(iface)?.as_deref() == Some(qdisc) {
+///
+/// `trust_cache` is used only for an immediate user-requested fast apply.
+/// Network transitions and the periodic watchdog always pass false and verify
+/// the kernel with `tc qdisc show`, so this cache cannot mask drift forever.
+pub fn reconcile_qdisc_cached(iface: &str, qdisc: &str, trust_cache: bool) -> io::Result<bool> {
+    if trust_cache && cached_qdisc(iface).as_deref() == Some(qdisc) {
         return Ok(false);
     }
+
+    if root_qdisc(iface)?.as_deref() == Some(qdisc) {
+        cache_qdisc(iface, qdisc);
+        return Ok(false);
+    }
+
     set_qdisc(iface, qdisc)?;
+    cache_qdisc(iface, qdisc);
     Ok(true)
+}
+
+pub fn reconcile_qdisc(iface: &str, qdisc: &str) -> io::Result<bool> {
+    reconcile_qdisc_cached(iface, qdisc, false)
 }
 
 fn parse_root_qdisc(output: &str) -> Option<&str> {

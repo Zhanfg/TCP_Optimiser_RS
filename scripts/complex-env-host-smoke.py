@@ -50,10 +50,33 @@ def source_audit(root: Path):
     daemon = (root / "src/daemon.rs").read_text()
     install = (root / "src/install.rs").read_text()
     kernel = (root / "src/kernel_module.rs").read_text()
+    sysctl_source = (root / "src/sysctl.rs").read_text()
     adaptive = (root / "src/adaptive.rs").read_text()
     assertions = {
-        "qdisc_on_demand": daemon.count("ensure_qdisc_for_policy(&policy.qdisc)") >= 2,
+        "qdisc_lazy_hot_path": "reconcile_qdisc_cached(iface, &policy.qdisc, !full_apply)" in daemon,
+        "qdisc_watchdog_verifies_kernel": (
+            daemon.count("ensure_qdisc_for_policy(&policy.qdisc)") == 1
+            and "network::reconcile_qdisc(iface, &policy.qdisc)" in daemon
+        ),
+        "event_driven_control_plane": (
+            "ControlServer::bind()" in daemon
+            and "wait_for_wake(" in daemon
+            and "Request::ApplyFast" in daemon
+        ),
+        "legacy_10s_debounce_removed": (
+            "DEBOUNCE_TIME" not in daemon
+            and "VOWIFI_CONNECT_TIME" not in daemon
+        ),
+        "route_settle_is_nonblocking": (
+            "network_settle_until" in daemon
+            and "thread::sleep(Duration::from_millis(NETWORK_SETTLE_MS))" not in daemon
+        ),
+        "fast_apply_skips_destructive_side_effects": (
+            "algorithm_applied && full_apply" in daemon
+            and 'if full_apply && config::module_dir().join("initcwnd_initrwnd").exists()' in daemon
+        ),
         "no_eager_qdisc_preflight": "preflight_bundled_qdiscs" not in install,
+        "delta_only_hot_sysctls": "write_sysctl_if_changed" in sysctl_source,
         "proxy_connection_protection": "proxy_state.transparent && !force_proxy_kill" in daemon,
         "exact_release_is_strict": "Some(expected) => expected == release" in kernel,
         "adaptive_state_has_staleness_bound": "RUNTIME_STATE_MAX_AGE_SECONDS: u64 = 120" in adaptive,

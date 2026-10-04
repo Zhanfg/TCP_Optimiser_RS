@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "tcp_optimiser"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "clap",
  "ed25519-dalek",

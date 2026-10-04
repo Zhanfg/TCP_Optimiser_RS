@@ -297,6 +297,7 @@ struct ModuleIndex {
 }
 
 static MODULE_INDEX: OnceLock<Result<Option<ModuleIndex>, String>> = OnceLock::new();
+static BBR3_RUNTIME_VERIFIED: OnceLock<()> = OnceLock::new();
 
 /*
  * ColorOS 17 / PJZ110 BBRv3 safety gate.
@@ -307,15 +308,19 @@ static MODULE_INDEX: OnceLock<Result<Option<ModuleIndex>, String>> = OnceLock::n
  * were checked against the running kernel's vmlinux BTF for every structure
  * used by the BBRv3 data path.
  *
- * Never silently widen this allow-list. A firmware/kernel update must be
- * re-audited from the live BTF before BBRv3 may be selected again.
+ * The packaged v4 KO was also compared byte-for-byte at the load-bearing ELF
+ * section level against the live-tested KO: .text, .init.text, .exit.text,
+ * .rodata, __versions, .modinfo and relocation sections are identical. Its
+ * full-file hash differs only because debug/build metadata was regenerated.
+ *
+ * Never silently widen this allow-list. A firmware/kernel update or executable
+ * KO section change must be re-audited from live BTF before BBRv3 is selected.
  */
-const PJZ110_COS17_OSRELEASE: &str =
-    "6.6.147-android15-8-gd4c13fc2e857-abogki500782043-4k";
+const PJZ110_COS17_OSRELEASE: &str = "6.6.147-android15-8-gd4c13fc2e857-abogki500782043-4k";
 const PJZ110_COS17_BTF_SHA256: &str =
     "6129a25e3908557498bc5fab2ced419f9a3751837b858efbaca5ff12263bf2a2";
 const PJZ110_BBR3_KO_SHA256: &str =
-    "2d46336c0e2957b145f670a9b9ebe394660fb3cf735210cd9abc42364563b27e";
+    "4f78333eb6c297cb79a9bba676216840364c1f7c04974132a0f2864e39968405";
 const PJZ110_BBR3_SRCVERSION: &str = "42AD107FAC3095653297A61";
 const PJZ110_BBR3_VERSION: &str = "3";
 
@@ -323,6 +328,13 @@ const PJZ110_BBR3_VERSION: &str = "3";
 /// exact pair that has been audited. This is intentionally strict: a mismatch
 /// blocks selecting bbr3 instead of gambling with kernel-internal ABI.
 pub fn verify_bbr3_runtime_abi() -> io::Result<()> {
+    // Hashing the live BTF is intentionally expensive and belongs off the
+    // hot-switch path. Cache only a successful verification for this daemon
+    // process; failures remain retryable during early boot/module registration.
+    if BBR3_RUNTIME_VERIFIED.get().is_some() {
+        return Ok(());
+    }
+
     let release = kernel_release()?;
     if release != PJZ110_COS17_OSRELEASE {
         return Err(io::Error::new(
@@ -414,6 +426,7 @@ pub fn verify_bbr3_runtime_abi() -> io::Result<()> {
         )
     })?;
 
+    let _ = BBR3_RUNTIME_VERIFIED.set(());
     Ok(())
 }
 
@@ -579,6 +592,7 @@ fn bbr3_load_lock() -> io::Result<fs::File> {
         .create(true)
         .read(true)
         .write(true)
+        .truncate(false)
         .open(path)?;
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
     if rc != 0 {

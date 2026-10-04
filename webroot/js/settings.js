@@ -3,7 +3,7 @@ import { haptic } from './motion.js';
 import I18N from './i18n.js';
 import router_state from './router.js';
 import { addLog } from './logs.js';
-import { fetchIsConfigFile, getDefaultQdisc, getNetworkProfile, getQdiscCapabilities, getRuntimeSnapshot, loadBundledAlgorithm, setDefaultQdisc } from './common.js';
+import { applyRuntimePolicyNow, fetchIsConfigFile, getDefaultQdisc, getNetworkProfile, getQdiscCapabilities, getRuntimeSnapshot, loadBundledAlgorithm, setDefaultQdisc } from './common.js';
 import { ALL_ALGOS, ALL_QDISCS, getAlgorithmDescription, getAlgorithmDisplayName, getQdiscDescription } from './capabilities.js';
 import { setDynamicColorEnabled, setThemeMode } from './theme.js';
 
@@ -249,8 +249,7 @@ async function initAutoProfile() {
 		const profile = await load(true, enabled);
 		if (!profile) toggle.checked = !enabled;
 		else {
-			const dir = router_state.moduleInformation.moduleDir;
-			await exec(`touch ${shellQuote(`${dir}/force_apply`)}`).catch(() => {});
+			await applyRuntimePolicyNow(true);
 			toast(I18N.t(enabled ? 'toast_auto_profile_on' : 'toast_auto_profile_off'));
 			haptic('selection');
 		}
@@ -261,8 +260,7 @@ async function initAutoProfile() {
 		refreshBtn.disabled = true;
 		try {
 			await load(true);
-			const dir = router_state.moduleInformation.moduleDir;
-			await exec(`touch ${shellQuote(`${dir}/force_apply`)}`).catch(() => {});
+			await applyRuntimePolicyNow(true);
 			toast(I18N.t('toast_auto_profile_refreshed'));
 			haptic('success');
 		} finally {
@@ -355,7 +353,7 @@ export async function initSettings() {
 		router_state.settingsPageParams.rmnetAlgo = algo;
 	});
 
-	async function applySettings() {
+	async function applySettings(fullApply = false) {
 		const dir = router_state.moduleInformation.moduleDir;
 		const wifiAlgorithm = router_state.settingsPageParams.wlanAlgo || 'cubic';
 		const cellAlgorithm = router_state.settingsPageParams.rmnetAlgo || 'cubic';
@@ -391,7 +389,8 @@ export async function initSettings() {
 
 			router_state.settingsPageParams.killConnections = settings.killOnChange;
 			router_state.settingsPageParams.initcwndInitrwnd = settings.setInitcwndInitrwndOnChange;
-			await addLog(`Settings: WiFi=${settings.wifiAlgorithm}, Cellular=${settings.cellularAlgorithm}`);
+			const applied = await applyRuntimePolicyNow(fullApply);
+			void addLog(`Settings: WiFi=${settings.wifiAlgorithm}, Cellular=${settings.cellularAlgorithm}, apply=${applied.mode}, ${applied.elapsed_ms}ms`);
 			toast(I18N.t('toast_settings_applied'));
 			haptic('success');
 			return true;
@@ -407,19 +406,11 @@ export async function initSettings() {
 	}
 
 	applyBtn.addEventListener('click', async () => {
-		if (await applySettings()) toast(I18N.t('toast_toggle_connection'));
+		await applySettings(false);
 	});
 
 	forceApplyBtn.addEventListener('click', async () => {
-		if (!await applySettings()) return;
-		const dir = router_state.moduleInformation.moduleDir;
-		try {
-			await exec(`touch ${shellQuote(`${dir}/force_apply`)} && chmod 644 ${shellQuote(`${dir}/force_apply`)}`);
-			toast(I18N.t('toast_wait_5s'));
-		} catch (error) {
-			console.error('Error forcing settings apply:', error);
-			toast(I18N.t('toast_error'));
-		}
+		await applySettings(true);
 	});
 
 	// Qdisc selector
@@ -445,7 +436,8 @@ export async function initSettings() {
 		autoChip.addEventListener('click', async () => {
 			if (autoChip.classList.contains('selected')) return;
 			try {
-				await exec(`rm -f ${shellQuote(`${dir}/qdisc`)} && touch ${shellQuote(`${dir}/force_apply`)}`);
+				await exec(`rm -f ${shellQuote(`${dir}/qdisc`)}`);
+				await applyRuntimePolicyNow(false);
 				qdiscContainer.querySelectorAll('.algo-chip.selected').forEach(chip => chip.classList.remove('selected'));
 				autoChip.classList.add('selected');
 				const description = document.getElementById('qdisc-description');
@@ -798,7 +790,7 @@ async function applyAdvancedSettings() {
 		const configPath = shellQuote(`${dir}/advanced.conf`);
 		const { stdout } = await exec(`# advanced-sysctl-apply
 ${writes}
-{ ${config}; } > ${configPath}.tmp && mv ${configPath}.tmp ${configPath}${dedicatedWrites ? ` && ${dedicatedWrites}` : ''} && touch ${shellQuote(`${dir}/force_apply`)}`);
+{ ${config}; } > ${configPath}.tmp && mv ${configPath}.tmp ${configPath}${dedicatedWrites ? ` && ${dedicatedWrites}` : ''}`);
 		const verified = parseKeyValueOutput(stdout);
 		for (const { item, input, value } of values) {
 			if (verified.get(item.key) !== String(value)) throw new Error(`Readback failed for ${item.key}`);
@@ -1249,13 +1241,18 @@ async function applyPreset(preset) {
 			` && printf '%s\n' ${preset.pacing_ss} > ${shellQuote(`${dir}/pacing_ss`)}`;
 
 	try {
+		if (!ALL_QDISCS.includes(preset.qdisc)) throw new Error('qdisc rejected');
 		await exec(
 			algorithmMarkerCommand(dir, 'wlan', preset.wlanAlgo) +
 			` && ${algorithmMarkerCommand(dir, 'rmnet_data', preset.cellAlgo)}` +
-			killFiles + initcwndFiles + pacingFiles
+			killFiles + initcwndFiles + pacingFiles +
+			` && printf '%s\\n' ${shellQuote(preset.qdisc)} > ${shellQuote(`${dir}/qdisc`)}` +
+			` && printf '%s\\n' ${preset.tcp_fastopen} > /proc/sys/net/ipv4/tcp_fastopen` +
+			` && printf '%s\\n' ${preset.tcp_ecn} > /proc/sys/net/ipv4/tcp_ecn` +
+			` && printf '%s\\n' ${preset.tcp_fastopen} > ${shellQuote(`${dir}/tcp_fastopen`)}` +
+			` && printf '%s\\n' ${preset.tcp_ecn} > ${shellQuote(`${dir}/tcp_ecn`)}`
 		);
-		if (!await setDefaultQdisc(preset.qdisc)) throw new Error('qdisc rejected');
-		await exec(`printf '%s\n' ${preset.tcp_fastopen} > /proc/sys/net/ipv4/tcp_fastopen && printf '%s\n' ${preset.tcp_ecn} > /proc/sys/net/ipv4/tcp_ecn && printf '%s\n' ${preset.tcp_fastopen} > ${shellQuote(`${dir}/tcp_fastopen`)} && printf '%s\n' ${preset.tcp_ecn} > ${shellQuote(`${dir}/tcp_ecn`)} && touch ${shellQuote(`${dir}/force_apply`)}`);
+		await applyRuntimePolicyNow(false);
 	} catch (error) {
 		console.error('Failed to apply preset:', error);
 		toast(I18N.t('toast_error'));

@@ -279,6 +279,24 @@ export async function loadBundledAlgorithm(algorithm) {
 	return result;
 }
 
+export async function applyRuntimePolicyNow(full = false) {
+	const args = full ? 'apply-now --full' : 'apply-now';
+	const { stdout } = await exec(
+		rustBinaryCommand('runtime-policy-apply-now', args),
+		{ timeoutMs: full ? 5000 : 2200 },
+	);
+	const result = JSON.parse(stdout.trim());
+	if (!result || typeof result.ok !== 'boolean') {
+		throw new Error('Invalid runtime apply response');
+	}
+	runtimeSnapshotCache.clear();
+	runtimeSnapshotCheckedAt.clear();
+	if (!result.ok) {
+		throw new Error(result.error || 'Runtime policy apply failed');
+	}
+	return result;
+}
+
 export async function repairRuntimePolicy() {
 	const { stdout } = await exec(rustBinaryCommand('runtime-policy-repair', 'repair'));
 	const record = JSON.parse(stdout.trim());
@@ -601,7 +619,8 @@ export async function setDefaultQdisc(qdisc) {
 		const dir = router_state.moduleInformation?.moduleDir || '/data/adb/modules/tcp_optimiser';
 		// Persist first. The Rust daemon will load a compatible sch_*.ko when
 		// required, then update both the kernel default and the live interface.
-		await exec(`printf '%s\n' ${shellQuote(qdisc)} > ${shellQuote(`${dir}/qdisc`)} && touch ${shellQuote(`${dir}/force_apply`)}`);
+		await exec(`printf '%s\n' ${shellQuote(qdisc)} > ${shellQuote(`${dir}/qdisc`)}`);
+		await applyRuntimePolicyNow(false);
 		return true;
 	} catch (error) {
 		console.error('Error setting default_qdisc:', error);

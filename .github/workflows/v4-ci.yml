@@ -1,0 +1,33 @@
+name: v4 rewrite CI
+
+on:
+  push:
+    branches:
+      - rewrite/v4-fast-switch-coloros17
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v4-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Rust
+        run: |
+          cargo fmt --all -- --check
+          cargo test --all-targets --locked
+          cargo clippy --all-targets --locked -- -D warnings
+      - name: WebUI syntax
+        run: |
+          find webroot/js -name '*.js' -print0 | xargs -0 -n1 node --check
+          node scripts/validate-webui.mjs
