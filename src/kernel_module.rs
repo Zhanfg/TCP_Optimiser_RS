@@ -297,6 +297,7 @@ struct ModuleIndex {
 }
 
 static MODULE_INDEX: OnceLock<Result<Option<ModuleIndex>, String>> = OnceLock::new();
+static BBR3_RUNTIME_VERIFIED: OnceLock<()> = OnceLock::new();
 
 /*
  * ColorOS 17 / PJZ110 BBRv3 safety gate.
@@ -323,6 +324,13 @@ const PJZ110_BBR3_VERSION: &str = "3";
 /// exact pair that has been audited. This is intentionally strict: a mismatch
 /// blocks selecting bbr3 instead of gambling with kernel-internal ABI.
 pub fn verify_bbr3_runtime_abi() -> io::Result<()> {
+    // Hashing the live BTF is intentionally expensive and belongs off the
+    // hot-switch path. Cache only a successful verification for this daemon
+    // process; failures remain retryable during early boot/module registration.
+    if BBR3_RUNTIME_VERIFIED.get().is_some() {
+        return Ok(());
+    }
+
     let release = kernel_release()?;
     if release != PJZ110_COS17_OSRELEASE {
         return Err(io::Error::new(
@@ -414,6 +422,7 @@ pub fn verify_bbr3_runtime_abi() -> io::Result<()> {
         )
     })?;
 
+    let _ = BBR3_RUNTIME_VERIFIED.set(());
     Ok(())
 }
 
