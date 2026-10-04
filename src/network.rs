@@ -506,13 +506,48 @@ fn parse_tc_size(value: &str) -> Option<u64> {
     Some((amount * multiplier) as u64)
 }
 
+fn qdisc_cache_path(iface: &str) -> PathBuf {
+    crate::config::module_dir()
+        .join("runtime")
+        .join(format!("qdisc-{iface}"))
+}
+
+fn cached_qdisc(iface: &str) -> Option<String> {
+    let value = fs::read_to_string(qdisc_cache_path(iface)).ok()?;
+    let value = value.trim();
+    crate::config::is_known_qdisc(value).then(|| value.to_string())
+}
+
+fn cache_qdisc(iface: &str, qdisc: &str) {
+    let path = qdisc_cache_path(iface);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, format!("{qdisc}\n"));
+}
+
 /// Restore the requested root qdisc only when the kernel has reset it.
-pub fn reconcile_qdisc(iface: &str, qdisc: &str) -> io::Result<bool> {
-    if root_qdisc(iface)?.as_deref() == Some(qdisc) {
+///
+/// `trust_cache` is used only for an immediate user-requested fast apply.
+/// Network transitions and the periodic watchdog always pass false and verify
+/// the kernel with `tc qdisc show`, so this cache cannot mask drift forever.
+pub fn reconcile_qdisc_cached(iface: &str, qdisc: &str, trust_cache: bool) -> io::Result<bool> {
+    if trust_cache && cached_qdisc(iface).as_deref() == Some(qdisc) {
         return Ok(false);
     }
+
+    if root_qdisc(iface)?.as_deref() == Some(qdisc) {
+        cache_qdisc(iface, qdisc);
+        return Ok(false);
+    }
+
     set_qdisc(iface, qdisc)?;
+    cache_qdisc(iface, qdisc);
     Ok(true)
+}
+
+pub fn reconcile_qdisc(iface: &str, qdisc: &str) -> io::Result<bool> {
+    reconcile_qdisc_cached(iface, qdisc, false)
 }
 
 fn parse_root_qdisc(output: &str) -> Option<&str> {
