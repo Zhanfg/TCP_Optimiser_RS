@@ -627,8 +627,7 @@ fn apply_interface_settings_inner(
 
     let cfg = config::get_algo_config(&policy.algorithm);
     let current_algorithm = sysctl::current_algorithm().ok();
-    let algorithm_changed =
-        current_algorithm.as_deref() != Some(policy.algorithm.as_str());
+    let algorithm_changed = current_algorithm.as_deref() != Some(policy.algorithm.as_str());
 
     if full_apply || algorithm_changed {
         logging::log_print(&format!("Selected {}: {}", policy.algorithm, cfg.desc));
