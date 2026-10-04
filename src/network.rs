@@ -506,20 +506,33 @@ fn parse_tc_size(value: &str) -> Option<u64> {
     Some((amount * multiplier) as u64)
 }
 
-fn qdisc_cache_path(iface: &str) -> PathBuf {
-    crate::config::module_dir()
-        .join("runtime")
-        .join(format!("qdisc-{iface}"))
+fn valid_iface_component(iface: &str) -> bool {
+    !iface.is_empty()
+        && iface.len() <= 32
+        && iface
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
+}
+
+fn qdisc_cache_path(iface: &str) -> Option<PathBuf> {
+    valid_iface_component(iface).then(|| {
+        crate::config::module_dir()
+            .join("runtime")
+            .join(format!("qdisc-{iface}"))
+    })
 }
 
 fn cached_qdisc(iface: &str) -> Option<String> {
-    let value = fs::read_to_string(qdisc_cache_path(iface)).ok()?;
+    let path = qdisc_cache_path(iface)?;
+    let value = fs::read_to_string(path).ok()?;
     let value = value.trim();
     crate::config::is_known_qdisc(value).then(|| value.to_string())
 }
 
 fn cache_qdisc(iface: &str, qdisc: &str) {
-    let path = qdisc_cache_path(iface);
+    let Some(path) = qdisc_cache_path(iface) else {
+        return;
+    };
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
