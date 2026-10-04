@@ -191,7 +191,7 @@ document.addEventListener('click', async event => {
 			await api.clearLogs();
 			await refreshLogs(pageToken);
 		}
-		else if (['load-qdiscs','apply-fast','apply-full','verify'].includes(action)) {
+		else if (['load-qdiscs','apply-fast','apply-full','refresh-profile','verify'].includes(action)) {
 			await handleSettingsAction(action);
 		}
 		else if (action === 'open-advanced') {
