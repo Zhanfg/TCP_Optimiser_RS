@@ -96,6 +96,20 @@ const app = read('webroot/js/v41/app.js');
 const api = read('webroot/js/v41/api.js');
 const views = read('webroot/js/v41/views.js');
 const css = read('webroot/css/v41.css');
+const ksuBridge = read('webroot/js/kernelsu.js');
+
+const sizeChecks = {
+	'webroot/index.html': 4096,
+	'webroot/css/v41.css': 16384,
+	'webroot/js/kernelsu.js': 6144,
+	'webroot/js/v41/app.js': 10240,
+	'webroot/js/v41/api.js': 16384,
+	'webroot/js/v41/views.js': 24576,
+};
+for (const [file, maxBytes] of Object.entries(sizeChecks)) {
+	const bytes = Buffer.byteLength(read(file), 'utf8');
+	if (bytes > maxBytes) fail(`${file} is ${bytes} bytes; v4.1 budget is ${maxBytes}`);
+}
 
 const architectureChecks = {
 	lightweight_shell: !index.includes('id="home-page"') && index.includes('id="app-outlet"'),
@@ -109,6 +123,14 @@ const architectureChecks = {
 	no_legacy_router_entry: !index.includes('js/router.js'),
 	no_heavy_motion_entry: !index.includes('js/motion.js'),
 	no_backdrop_filter: !css.includes('backdrop-filter'),
+	preview_mock_split: !ksuBridge.includes('function mockExec') && ksuBridge.includes("import('./mock-ksu.js')"),
+	production_bridge_small: Buffer.byteLength(ksuBridge, 'utf8') <= 6144,
+	no_legacy_frontend_files: [
+		'webroot/js/common.js','webroot/js/router.js','webroot/js/home.js',
+		'webroot/js/settings.js','webroot/js/stats.js','webroot/js/logs.js',
+		'webroot/js/motion.js','webroot/js/theme.js','webroot/js/debug.js',
+		'webroot/css/main.css',
+	].every(file => !fs.existsSync(path.join(root, file))),
 };
 for (const [name, ok] of Object.entries(architectureChecks)) if (!ok) fail(`v4.1 architecture invariant failed: ${name}`);
 
