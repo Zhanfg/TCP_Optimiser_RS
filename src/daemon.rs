@@ -255,21 +255,21 @@ pub fn run() -> io::Result<()> {
         }
 
         if wake.control && handle_control_requests(&control_server) {
-                // The control request already applied the policy. Refresh the
-                // cheap snapshot on the next pass without performing another
-                // expensive full policy application.
-                last_snapshot_persist = None;
-                if let Ok(iface) = network::fast_active_iface() {
-                    let mode = network::iface_mode(&iface);
-                    if mode != IfaceMode::Unknown {
-                        if iface != last_iface {
-                            network::record_active_iface(&iface);
-                        }
-                        last_iface = iface;
-                        last_mode = mode;
-                        last_qdisc_check = Some(Instant::now());
+            // The control request already applied the policy. Refresh the
+            // cheap snapshot on the next pass without performing another
+            // expensive full policy application.
+            last_snapshot_persist = None;
+            if let Ok(iface) = network::fast_active_iface() {
+                let mode = network::iface_mode(&iface);
+                if mode != IfaceMode::Unknown {
+                    if iface != last_iface {
+                        network::record_active_iface(&iface);
                     }
+                    last_iface = iface;
+                    last_mode = mode;
+                    last_qdisc_check = Some(Instant::now());
                 }
+            }
         }
 
         if wake.route {
