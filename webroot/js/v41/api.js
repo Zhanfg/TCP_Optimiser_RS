@@ -69,7 +69,7 @@ ${rust('status --runtime-only')}`, { timeoutMs: 2200 });
 function markerRead(prefix) {
 	return `for f in "$moddir"/${prefix}_*; do
   [ -f "$f" ] || continue
-  n=${f##*/}; n=${n#${prefix}_}
+  n=\${f##*/}; n=\${n#${prefix}_}
   case "$n" in bbr|bbr3|cubic|reno) printf '%s' "$n"; break ;; esac
 done`;
 }
