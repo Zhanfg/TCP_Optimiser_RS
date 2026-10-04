@@ -1,5 +1,5 @@
-import I18N from '../i18n.js';
 import { state, patch } from './store.js';
+import { initLocale, language, setLanguage, t } from './locale.js';
 import * as api from './api.js';
 import {
 	homeTemplate, renderHome, renderHomeDetails, renderHomeVerification,
@@ -15,7 +15,7 @@ let advancedModule = null;
 let interactionUntil = 0;
 
 function navLabel(page) {
-	const zh = I18N.currentLang === 'zh';
+	const zh = language() === 'zh';
 	return {
 		home: zh ? '首页' : 'Home',
 		stats: zh ? '统计' : 'Stats',
@@ -118,13 +118,13 @@ async function refreshHome(token, force) {
 		renderHome(runtime);
 		setStatus(
 			runtime.module_active === false
-				? (I18N.currentLang === 'zh' ? '未运行' : 'Stopped')
-				: (I18N.currentLang === 'zh' ? '正常' : 'Live'),
+				? t('未运行', 'Stopped')
+				: t('正常', 'Live'),
 			runtime.module_active !== false,
 		);
 	} catch (error) {
 		if (token !== pageToken) return;
-		setStatus(I18N.currentLang === 'zh' ? '读取失败' : 'Unavailable', false);
+		setStatus(t('读取失败', 'Unavailable'), false);
 	}
 }
 
@@ -167,6 +167,14 @@ document.addEventListener('click', async event => {
 	const choice = event.target.closest('.choice');
 	if (choice) {
 		selectChoice(choice);
+		return;
+	}
+
+	const languageButton = event.target.closest('[data-lang]');
+	if (languageButton) {
+		setLanguage(languageButton.dataset.lang);
+		syncNavLabels();
+		await mount(state.page);
 		return;
 	}
 
@@ -234,11 +242,11 @@ document.addEventListener('click', async event => {
 			try {
 				advancedModule ||= await import('./advanced.js');
 				await advancedModule.saveAdvanced(host);
-				actionEl.textContent = I18N.currentLang === 'zh' ? '已保存' : 'Saved';
+				actionEl.textContent = t('已保存', 'Saved');
 			} finally {
 				setTimeout(() => {
 					actionEl.disabled = false;
-					actionEl.textContent = I18N.currentLang === 'zh' ? '保存高级参数' : 'Save advanced controls';
+					actionEl.textContent = t('保存高级参数', 'Save advanced controls');
 				}, 700);
 			}
 		}
@@ -269,7 +277,7 @@ async function start() {
 	applyTheme(mode);
 	setBusy(true);
 	try {
-		await I18N.init();
+		initLocale();
 		syncNavLabels();
 		patch({ module: api.getModuleInfo() });
 		document.documentElement.classList.add('ready');
