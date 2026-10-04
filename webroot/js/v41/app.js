@@ -10,6 +10,7 @@ import {
 const outlet = () => document.getElementById('app-outlet');
 let timer = null;
 let pageToken = 0;
+let advancedModule = null;
 
 function navLabel(page) {
 	const zh = I18N.currentLang === 'zh';
@@ -164,6 +165,42 @@ document.addEventListener('click', async event => {
 		}
 		else if (['load-qdiscs','apply-fast','apply-full','verify'].includes(action)) {
 			await handleSettingsAction(action);
+		}
+		else if (action === 'open-advanced') {
+			const host = document.getElementById('advanced-host');
+			if (!host) return;
+			host.hidden = false;
+			actionEl.disabled = true;
+			try {
+				advancedModule ||= await import('./advanced.js');
+				await advancedModule.mountAdvanced(host);
+				host.scrollIntoView({ block: 'start', behavior: 'auto' });
+			} finally {
+				actionEl.disabled = false;
+			}
+		}
+		else if (action === 'close-advanced') {
+			const host = document.getElementById('advanced-host');
+			if (host) {
+				host.hidden = true;
+				host.replaceChildren();
+				delete host.dataset.loaded;
+			}
+		}
+		else if (action === 'save-advanced') {
+			const host = document.getElementById('advanced-host');
+			if (!host) return;
+			actionEl.disabled = true;
+			try {
+				advancedModule ||= await import('./advanced.js');
+				await advancedModule.saveAdvanced(host);
+				actionEl.textContent = I18N.currentLang === 'zh' ? '已保存' : 'Saved';
+			} finally {
+				setTimeout(() => {
+					actionEl.disabled = false;
+					actionEl.textContent = I18N.currentLang === 'zh' ? '保存高级参数' : 'Save advanced controls';
+				}, 700);
+			}
 		}
 	} catch (error) {
 		setStatus(error?.message || 'Error', false);
