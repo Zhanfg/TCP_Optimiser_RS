@@ -626,9 +626,15 @@ fn apply_interface_settings_inner(
     }
 
     let cfg = config::get_algo_config(&policy.algorithm);
-    logging::log_print(&format!("Selected {}: {}", policy.algorithm, cfg.desc));
-    if let Some(frequency) = policy.wifi_frequency_mhz {
-        logging::log_print(&format!("Wi-Fi band detected: {frequency} MHz"));
+    let current_algorithm = sysctl::current_algorithm().ok();
+    let algorithm_changed =
+        current_algorithm.as_deref() != Some(policy.algorithm.as_str());
+
+    if full_apply || algorithm_changed {
+        logging::log_print(&format!("Selected {}: {}", policy.algorithm, cfg.desc));
+        if let Some(frequency) = policy.wifi_frequency_mhz {
+            logging::log_print(&format!("Wi-Fi band detected: {frequency} MHz"));
+        }
     }
 
     if let Err(error) = sysctl::set_pacing(policy.pacing_ca, policy.pacing_ss) {
@@ -644,8 +650,8 @@ fn apply_interface_settings_inner(
         }
         match network::reconcile_qdisc_cached(iface, &policy.qdisc, !full_apply) {
             Ok(changed) => {
-                let _ = crate::kernel_module::clear_qdisc_unavailable(&policy.qdisc);
                 if changed {
+                    let _ = crate::kernel_module::clear_qdisc_unavailable(&policy.qdisc);
                     logging::log_print(&format!("Applied qdisc: {} ({iface})", policy.qdisc));
                 }
             }
@@ -690,31 +696,25 @@ fn apply_interface_settings_inner(
     }
 
     let algorithm_applied = match sysctl::algo_available(&policy.algorithm) {
-        Ok(true) => {
-            let changed = sysctl::current_algorithm()
-                .map(|current| current != policy.algorithm)
-                .unwrap_or(true);
-            match sysctl::set_congestion_control(&policy.algorithm) {
-                Ok(()) => {
-                    if changed {
-                        logging::log_print(&format!(
-                            "Applied congestion control: {} ({})",
-                            policy.algorithm,
-                            mode.as_str()
-                        ));
-                        update_description(mode, &policy.algorithm);
-                    }
-                    true
-                }
-                Err(error) => {
-                    failures.push(format!(
-                        "Congestion control {} failed: {error}",
-                        policy.algorithm
-                    ));
-                    false
-                }
+        Ok(true) if !algorithm_changed => true,
+        Ok(true) => match sysctl::set_congestion_control(&policy.algorithm) {
+            Ok(()) => {
+                logging::log_print(&format!(
+                    "Applied congestion control: {} ({})",
+                    policy.algorithm,
+                    mode.as_str()
+                ));
+                update_description(mode, &policy.algorithm);
+                true
             }
-        }
+            Err(error) => {
+                failures.push(format!(
+                    "Congestion control {} failed: {error}",
+                    policy.algorithm
+                ));
+                false
+            }
+        },
         Ok(false) => {
             failures.push(format!(
                 "Congestion control {} is unavailable",
