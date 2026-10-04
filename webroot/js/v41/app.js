@@ -24,6 +24,13 @@ function navLabel(page) {
 	}[page] || page;
 }
 
+function syncNavLabels() {
+	document.querySelectorAll('.nav-btn').forEach(btn => {
+		const label = btn.querySelector('small');
+		if (label) label.textContent = navLabel(btn.dataset.page);
+	});
+}
+
 function setBusy(value) {
 	document.documentElement.classList.toggle('busy', value);
 }
@@ -109,7 +116,12 @@ async function refreshHome(token, force) {
 		if (token !== pageToken) return;
 		patch({ runtime });
 		renderHome(runtime);
-		setStatus(runtime.module_active === false ? (I18N.currentLang === 'zh' ? '未运行' : 'Stopped') : 'Live', runtime.module_active !== false);
+		setStatus(
+			runtime.module_active === false
+				? (I18N.currentLang === 'zh' ? '未运行' : 'Stopped')
+				: (I18N.currentLang === 'zh' ? '正常' : 'Live'),
+			runtime.module_active !== false,
+		);
 	} catch (error) {
 		if (token !== pageToken) return;
 		setStatus(I18N.currentLang === 'zh' ? '读取失败' : 'Unavailable', false);
@@ -258,6 +270,7 @@ async function start() {
 	setBusy(true);
 	try {
 		await I18N.init();
+		syncNavLabels();
 		patch({ module: api.getModuleInfo() });
 		document.documentElement.classList.add('ready');
 		await mount(routeFromHash());
