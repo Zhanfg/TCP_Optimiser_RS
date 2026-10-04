@@ -249,8 +249,7 @@ async function initAutoProfile() {
 		const profile = await load(true, enabled);
 		if (!profile) toggle.checked = !enabled;
 		else {
-			const dir = router_state.moduleInformation.moduleDir;
-			await exec(`touch ${shellQuote(`${dir}/force_apply`)}`).catch(() => {});
+			await applyRuntimePolicyNow(true);
 			toast(I18N.t(enabled ? 'toast_auto_profile_on' : 'toast_auto_profile_off'));
 			haptic('selection');
 		}
@@ -261,8 +260,7 @@ async function initAutoProfile() {
 		refreshBtn.disabled = true;
 		try {
 			await load(true);
-			const dir = router_state.moduleInformation.moduleDir;
-			await exec(`touch ${shellQuote(`${dir}/force_apply`)}`).catch(() => {});
+			await applyRuntimePolicyNow(true);
 			toast(I18N.t('toast_auto_profile_refreshed'));
 			haptic('success');
 		} finally {
@@ -792,7 +790,7 @@ async function applyAdvancedSettings() {
 		const configPath = shellQuote(`${dir}/advanced.conf`);
 		const { stdout } = await exec(`# advanced-sysctl-apply
 ${writes}
-{ ${config}; } > ${configPath}.tmp && mv ${configPath}.tmp ${configPath}${dedicatedWrites ? ` && ${dedicatedWrites}` : ''} && touch ${shellQuote(`${dir}/force_apply`)}`);
+{ ${config}; } > ${configPath}.tmp && mv ${configPath}.tmp ${configPath}${dedicatedWrites ? ` && ${dedicatedWrites}` : ''}`);
 		const verified = parseKeyValueOutput(stdout);
 		for (const { item, input, value } of values) {
 			if (verified.get(item.key) !== String(value)) throw new Error(`Readback failed for ${item.key}`);
