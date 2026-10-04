@@ -2,6 +2,28 @@ name: OnePlus 13 PJZ110 Flashable
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - 'fix/coloros17-bbr3-abi-gate'
+    paths:
+      - 'src/**'
+      - 'webroot/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'module.prop'
+      - 'update.json'
+      - 'build.rs'
+      - 'customize.sh'
+      - 'service.sh'
+      - 'post-fs-data.sh'
+      - 'scripts/package-module.sh'
+      - 'scripts/validate-package.sh'
+      - 'scripts/build-oneplus13-kos.sh'
+      - 'scripts/bbr3-o13-runtime.h'
+      - 'scripts/verify-device-symvers.py'
+      - 'scripts/device-profiles/oneplus13-pjz110.json'
+      - 'scripts/device-profiles/oneplus13-pjz110.env'
+      - '.github/workflows/oneplus13-ko.yml'
   push:
     branches:
       - 'device/oneplus13-pjz110-ko'
