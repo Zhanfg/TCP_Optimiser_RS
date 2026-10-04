@@ -125,7 +125,6 @@ impl RouteMonitor {
         }
         Ok(())
     }
-
 }
 
 impl Drop for RouteMonitor {
