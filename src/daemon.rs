@@ -209,10 +209,8 @@ pub fn run() -> io::Result<()> {
                 || last_snapshot_persist
                     .map(|saved| saved.elapsed() >= Duration::from_secs(SLEEP_FAST))
                     .unwrap_or(true);
-            if snapshot_due {
-                if persist_runtime_snapshot(&last_iface).is_ok() {
-                    last_snapshot_persist = Some(Instant::now());
-                }
+            if snapshot_due && persist_runtime_snapshot(&last_iface).is_ok() {
+                last_snapshot_persist = Some(Instant::now());
             }
 
             let webui_active = webui_is_active();
@@ -256,8 +254,7 @@ pub fn run() -> io::Result<()> {
             network_dirty = true;
         }
 
-        if wake.control {
-            if handle_control_requests(&control_server) {
+        if wake.control && handle_control_requests(&control_server) {
                 // The control request already applied the policy. Refresh the
                 // cheap snapshot on the next pass without performing another
                 // expensive full policy application.
@@ -273,7 +270,6 @@ pub fn run() -> io::Result<()> {
                         last_qdisc_check = Some(Instant::now());
                     }
                 }
-            }
         }
 
         if wake.route {
@@ -343,7 +339,7 @@ fn wait_for_wake(
         if poll_fds[0].revents & bad != 0 {
             wake.route_broken = true;
         } else if poll_fds[0].revents & libc::POLLIN != 0 {
-            if let Some(monitor) = route_monitor.as_deref_mut() {
+            if let Some(monitor) = route_monitor {
                 monitor.drain_ready()?;
             }
             wake.route = true;
