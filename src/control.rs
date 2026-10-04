@@ -100,7 +100,6 @@ pub fn request_apply(full: bool) -> io::Result<String> {
     request(if full { "APPLY_FULL" } else { "APPLY_FAST" })
 }
 
-
 fn request(command: &str) -> io::Result<String> {
     let mut stream = UnixStream::connect(socket_path())?;
     stream.set_read_timeout(Some(Duration::from_millis(1500)))?;
@@ -124,7 +123,6 @@ pub fn socket_path() -> PathBuf {
         .join(RUNTIME_DIR)
         .join(CONTROL_SOCKET)
 }
-
 
 #[cfg(test)]
 mod tests {
