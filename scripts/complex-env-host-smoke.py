@@ -52,7 +52,11 @@ def source_audit(root: Path):
     kernel = (root / "src/kernel_module.rs").read_text()
     adaptive = (root / "src/adaptive.rs").read_text()
     assertions = {
-        "qdisc_on_demand": daemon.count("ensure_qdisc_for_policy(&policy.qdisc)") >= 2,
+        "qdisc_lazy_hot_path": "reconcile_qdisc_cached(iface, &policy.qdisc, !full_apply)" in daemon,
+        "qdisc_watchdog_verifies_kernel": (
+            daemon.count("ensure_qdisc_for_policy(&policy.qdisc)") == 1
+            and "network::reconcile_qdisc(iface, &policy.qdisc)" in daemon
+        ),
         "no_eager_qdisc_preflight": "preflight_bundled_qdiscs" not in install,
         "proxy_connection_protection": "proxy_state.transparent && !force_proxy_kill" in daemon,
         "exact_release_is_strict": "Some(expected) => expected == release" in kernel,
