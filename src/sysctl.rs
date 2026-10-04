@@ -228,6 +228,14 @@ pub fn set_congestion_control(algo: &str) -> io::Result<()> {
             format!("unsupported congestion algorithm: {algo}"),
         ));
     }
+
+    // Final hard gate at the actual sysctl write. This protects every caller,
+    // including future WebUI/CLI paths that might bypass daemon policy
+    // resolution.
+    if algo == "bbr3" {
+        crate::kernel_module::verify_bbr3_runtime_abi()?;
+    }
+
     write_sysctl("/proc/sys/net/ipv4/tcp_congestion_control", algo)
 }
 
