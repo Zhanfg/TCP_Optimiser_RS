@@ -160,6 +160,31 @@ done`, { timeoutMs: 4200 });
 	});
 }
 
+export async function runtimeDetails() {
+	return once('runtime-details', async () => {
+		const { stdout } = await exec(`# runtime-details-snapshot
+cat ${shellQuote(`${MOD}/runtime_details.json`)} 2>/dev/null`, { timeoutMs: 1400 });
+		try {
+			const snap = parseJson(stdout);
+			const age = Number.isFinite(snap.generated_epoch)
+				? Math.max(0, Date.now() / 1000 - snap.generated_epoch)
+				: 999;
+			if (age <= 40) return snap;
+		} catch (_) {}
+		const fallback = await exec(`# runtime-status-snapshot
+${rust('status --runtime-only --details')}`, { timeoutMs: 3600 });
+		return parseJson(fallback.stdout);
+	});
+}
+
+export async function runtimeVerification() {
+	return once('runtime-verify', async () => {
+		const { stdout } = await exec(`# runtime-status-snapshot
+${rust('status --runtime-only --verify')}`, { timeoutMs: 4500 });
+		return parseJson(stdout);
+	});
+}
+
 export async function sampleStats(details = false) {
 	return once(details ? 'stats-detail' : 'stats', async () => {
 		const { stdout } = await exec(`# runtime-stats-sample
