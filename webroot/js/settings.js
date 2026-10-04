@@ -1243,13 +1243,18 @@ async function applyPreset(preset) {
 			` && printf '%s\n' ${preset.pacing_ss} > ${shellQuote(`${dir}/pacing_ss`)}`;
 
 	try {
+		if (!ALL_QDISCS.includes(preset.qdisc)) throw new Error('qdisc rejected');
 		await exec(
 			algorithmMarkerCommand(dir, 'wlan', preset.wlanAlgo) +
 			` && ${algorithmMarkerCommand(dir, 'rmnet_data', preset.cellAlgo)}` +
-			killFiles + initcwndFiles + pacingFiles
+			killFiles + initcwndFiles + pacingFiles +
+			` && printf '%s\\n' ${shellQuote(preset.qdisc)} > ${shellQuote(`${dir}/qdisc`)}` +
+			` && printf '%s\\n' ${preset.tcp_fastopen} > /proc/sys/net/ipv4/tcp_fastopen` +
+			` && printf '%s\\n' ${preset.tcp_ecn} > /proc/sys/net/ipv4/tcp_ecn` +
+			` && printf '%s\\n' ${preset.tcp_fastopen} > ${shellQuote(`${dir}/tcp_fastopen`)}` +
+			` && printf '%s\\n' ${preset.tcp_ecn} > ${shellQuote(`${dir}/tcp_ecn`)}`
 		);
-		if (!await setDefaultQdisc(preset.qdisc)) throw new Error('qdisc rejected');
-		await exec(`printf '%s\n' ${preset.tcp_fastopen} > /proc/sys/net/ipv4/tcp_fastopen && printf '%s\n' ${preset.tcp_ecn} > /proc/sys/net/ipv4/tcp_ecn && printf '%s\n' ${preset.tcp_fastopen} > ${shellQuote(`${dir}/tcp_fastopen`)} && printf '%s\n' ${preset.tcp_ecn} > ${shellQuote(`${dir}/tcp_ecn`)} && touch ${shellQuote(`${dir}/force_apply`)}`);
+		await applyRuntimePolicyNow(false);
 	} catch (error) {
 		console.error('Failed to apply preset:', error);
 		toast(I18N.t('toast_error'));
