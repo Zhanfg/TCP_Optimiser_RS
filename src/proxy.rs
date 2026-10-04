@@ -322,73 +322,9 @@ pub fn detect_hosts() -> HostsStatus {
     }
 }
 
-/// Check VoWiFi state via dumpsys
-pub fn wifi_calling_active() -> io::Result<bool> {
-    // Try telephony.registry first
-    let output = Command::new("dumpsys")
-        .args(["telephony.registry"])
-        .output()?;
-
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let registrations = stdout.lines().filter_map(parse_ims_registration);
-        let mut found = false;
-        for registered in registrations {
-            found = true;
-            if registered {
-                return Ok(true);
-            }
-        }
-        if found {
-            return Ok(false);
-        }
-    }
-
-    // Fallback: check SystemUIService for vowifi
-    let output = Command::new("dumpsys")
-        .args(["activity", "service", "SystemUIService"])
-        .output()?;
-
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "dumpsys SystemUIService failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    Ok(systemui_has_vowifi(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
-}
-
-fn parse_ims_registration(line: &str) -> Option<bool> {
-    let marker = "mImsRegistered";
-    let value = line.split_once(marker)?.1.trim_start();
-    let value = value
-        .strip_prefix('=')
-        .or_else(|| value.strip_prefix(':'))?
-        .trim_start();
-    match value
-        .split(|character: char| !character.is_ascii_alphabetic())
-        .next()?
-    {
-        "true" => Some(true),
-        "false" => Some(false),
-        _ => None,
-    }
-}
-
-fn systemui_has_vowifi(output: &str) -> bool {
-    output
-        .lines()
-        .any(|line| line.contains("slot='vowifi'") && line.contains("visible user="))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        classify_proxy_mode, detect_proxy_from_text, parse_ims_registration, systemui_has_vowifi,
-        ProxyType,
-    };
+    use super::{classify_proxy_mode, detect_proxy_from_text, ProxyType};
 
     #[test]
     fn distinguishes_mihomo_and_reads_full_command_lines() {
@@ -407,19 +343,4 @@ mod tests {
         assert_eq!(classify_proxy_mode(&ProxyType::None, false, false), "none");
     }
 
-    #[test]
-    fn recognizes_visible_vowifi_slot() {
-        assert!(systemui_has_vowifi("slot='vowifi' visible user=0"));
-        assert!(!systemui_has_vowifi("slot='wifi' visible user=0"));
-    }
-
-    #[test]
-    fn parses_only_the_ims_registration_field() {
-        assert_eq!(parse_ims_registration("mImsRegistered=true"), Some(true));
-        assert_eq!(
-            parse_ims_registration("mImsRegistered=false other=true"),
-            Some(false)
-        );
-        assert_eq!(parse_ims_registration("mImsRegisteredState=true"), None);
-    }
 }
