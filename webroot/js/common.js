@@ -279,6 +279,24 @@ export async function loadBundledAlgorithm(algorithm) {
 	return result;
 }
 
+export async function applyRuntimePolicyNow(full = false) {
+	const args = full ? 'apply-now --full' : 'apply-now';
+	const { stdout } = await exec(
+		rustBinaryCommand('runtime-policy-apply-now', args),
+		{ timeoutMs: full ? 5000 : 2200 },
+	);
+	const result = JSON.parse(stdout.trim());
+	if (!result || typeof result.ok !== 'boolean') {
+		throw new Error('Invalid runtime apply response');
+	}
+	runtimeSnapshotCache.clear();
+	runtimeSnapshotCheckedAt.clear();
+	if (!result.ok) {
+		throw new Error(result.error || 'Runtime policy apply failed');
+	}
+	return result;
+}
+
 export async function repairRuntimePolicy() {
 	const { stdout } = await exec(rustBinaryCommand('runtime-policy-repair', 'repair'));
 	const record = JSON.parse(stdout.trim());
