@@ -287,8 +287,7 @@ pub fn run() -> io::Result<()> {
             // of sleeping so control-socket requests remain responsive during
             // the settle window. Repeated route events extend the window.
             network_dirty = true;
-            network_settle_until =
-                Some(Instant::now() + Duration::from_millis(NETWORK_SETTLE_MS));
+            network_settle_until = Some(Instant::now() + Duration::from_millis(NETWORK_SETTLE_MS));
         } else if route_monitor.is_none() {
             // Safety-net polling when rtnetlink is unavailable.
             network_dirty = true;
