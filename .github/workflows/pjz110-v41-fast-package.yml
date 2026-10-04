@@ -1,6 +1,25 @@
 name: PJZ110 v4.1 Fast Package
 
 on:
+  pull_request:
+    branches:
+      - 'rewrite/v4-fast-switch-coloros17'
+    paths:
+      - '.github/workflows/pjz110-v41-fast-package.yml'
+      - 'src/**'
+      - 'webroot/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'module.prop'
+      - 'update.json'
+      - 'build.rs'
+      - 'customize.sh'
+      - 'service.sh'
+      - 'post-fs-data.sh'
+      - 'uninstall.sh'
+      - 'scripts/package-module.sh'
+      - 'scripts/validate-package.sh'
+      - 'scripts/device-profiles/oneplus13-pjz110.env'
   push:
     branches:
       - 'rewrite/v4.1-webui-core'
