@@ -4,6 +4,7 @@ import { ALGORITHMS, QDISCS } from './catalog.js';
 const MOD = '/data/adb/modules/tcp_optimiser';
 const inflight = new Map();
 let qdiscCache = null;
+let activitySignalAt = 0;
 
 function once(key, task) {
 	if (inflight.has(key)) return inflight.get(key);
@@ -38,6 +39,28 @@ function parseJson(text) {
 	return value;
 }
 
+async function fetchPublished(name, maxAgeSeconds) {
+	const response = await fetch(`runtime-data/${name}?t=${Date.now()}`, {
+		cache: 'no-store',
+	});
+	if (!response.ok) throw new Error(`runtime snapshot HTTP ${response.status}`);
+	const value = await response.json();
+	if (!value || typeof value !== 'object' || !Number.isFinite(value.generated_epoch)) {
+		throw new Error('invalid published runtime snapshot');
+	}
+	const age = Math.max(0, Date.now() / 1000 - value.generated_epoch);
+	return { value, age, fresh: age <= maxAgeSeconds };
+}
+
+export async function signalActivity(force = false) {
+	const now = Date.now();
+	if (!force && now - activitySignalAt < 30000) return;
+	activitySignalAt = now;
+	try {
+		await exec(`touch ${shellQuote(`${MOD}/webui.active`)} 2>/dev/null`, { timeoutMs: 900 });
+	} catch (_) {}
+}
+
 export function getModuleInfo() {
 	try {
 		const raw = moduleInfo();
@@ -50,17 +73,20 @@ export function getModuleInfo() {
 
 export async function runtime(force = false) {
 	return once(force ? 'runtime-force' : 'runtime', async () => {
-		const { stdout } = await exec(`# runtime-status-snapshot
-touch ${shellQuote(`${MOD}/webui.active`)} 2>/dev/null || true
-cat ${shellQuote(`${MOD}/runtime_snapshot.json`)} 2>/dev/null`, { timeoutMs: 1200 });
-		try {
-			const snap = parseJson(stdout);
-			const age = Number.isFinite(snap.generated_epoch)
-				? Math.max(0, Date.now() / 1000 - snap.generated_epoch)
-				: 999;
-			if (!force && age <= 12) return snap;
-		} catch (_) {}
+		if (!force) {
+			try {
+				const published = await fetchPublished('snapshot.json', 8);
+				if (published.fresh) return published.value;
+				// Return a still-useful stale snapshot immediately, while waking
+				// the daemon asynchronously. Scrolling never waits on KSU bridge.
+				if (published.age <= 120) {
+					void signalActivity();
+					return published.value;
+				}
+			} catch (_) {}
+		}
 
+		await signalActivity(force);
 		const fallback = await exec(`# runtime-status-snapshot
 ${rust('status --runtime-only')}`, { timeoutMs: 2200 });
 		return parseJson(fallback.stdout);
@@ -175,15 +201,11 @@ done`, { timeoutMs: 4200 });
 
 export async function runtimeDetails() {
 	return once('runtime-details', async () => {
-		const { stdout } = await exec(`# runtime-details-snapshot
-cat ${shellQuote(`${MOD}/runtime_details.json`)} 2>/dev/null`, { timeoutMs: 1400 });
 		try {
-			const snap = parseJson(stdout);
-			const age = Number.isFinite(snap.generated_epoch)
-				? Math.max(0, Date.now() / 1000 - snap.generated_epoch)
-				: 999;
-			if (age <= 40) return snap;
+			const published = await fetchPublished('details.json', 35);
+			if (published.fresh) return published.value;
 		} catch (_) {}
+		await signalActivity(true);
 		const fallback = await exec(`# runtime-status-snapshot
 ${rust('status --runtime-only --details')}`, { timeoutMs: 3600 });
 		return parseJson(fallback.stdout);
@@ -200,6 +222,23 @@ ${rust('status --runtime-only --verify')}`, { timeoutMs: 4500 });
 
 export async function sampleStats(details = false) {
 	return once(details ? 'stats-detail' : 'stats', async () => {
+		if (!details) {
+			try {
+				const published = await fetchPublished('snapshot.json', 7);
+				if (published.fresh) return published.value;
+				if (published.age <= 60) {
+					void signalActivity();
+					return published.value;
+				}
+			} catch (_) {}
+		} else {
+			try {
+				const published = await fetchPublished('details.json', 35);
+				if (published.fresh) return published.value;
+			} catch (_) {}
+		}
+
+		await signalActivity(details);
 		const { stdout } = await exec(`# runtime-stats-sample
 ${rust(`sample${details ? ' --details' : ''}`)}`, { timeoutMs: details ? 3200 : 2200 });
 		return parseJson(stdout);
