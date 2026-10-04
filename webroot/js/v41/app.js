@@ -2,7 +2,8 @@ import I18N from '../i18n.js';
 import { state, patch } from './store.js';
 import * as api from './api.js';
 import {
-	homeTemplate, renderHome, settingsTemplate, handleSettingsAction,
+	homeTemplate, renderHome, renderHomeDetails, renderHomeVerification,
+	settingsTemplate, handleSettingsAction,
 	statsTemplate, renderStats, renderStatsDetails, logsTemplate, renderLogs,
 	selectChoice, applyTheme,
 } from './views.js';
@@ -156,6 +157,20 @@ document.addEventListener('click', async event => {
 
 	try {
 		if (action === 'refresh-home') await refreshHome(pageToken, true);
+		else if (action === 'home-details') {
+			actionEl.disabled = true;
+			try {
+				const details = await api.runtimeDetails();
+				renderHomeDetails(details);
+			} finally { actionEl.disabled = false; }
+		}
+		else if (action === 'home-verify') {
+			actionEl.disabled = true;
+			try {
+				const verified = await api.runtimeVerification();
+				renderHomeVerification(verified);
+			} finally { actionEl.disabled = false; }
+		}
 		else if (action === 'refresh-stats') await refreshStats(pageToken);
 		else if (action === 'stats-details') await refreshStats(pageToken, true);
 		else if (action === 'refresh-logs') await refreshLogs(pageToken);
