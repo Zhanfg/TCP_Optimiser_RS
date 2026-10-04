@@ -56,7 +56,7 @@ async function mount(page) {
 	if (page === 'home') {
 		outlet().innerHTML = homeTemplate();
 		renderHome();
-		await refreshHome(token, true);
+		await refreshHome(token, false);
 		schedule(4000, token, () => refreshHome(token, false));
 		return;
 	}
@@ -280,6 +280,7 @@ async function start() {
 		initLocale();
 		syncNavLabels();
 		patch({ module: api.getModuleInfo() });
+		void api.signalActivity();
 		document.documentElement.classList.add('ready');
 		await mount(routeFromHash());
 	} finally {
