@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - rewrite/v4-fast-switch-coloros17
+      - rewrite/v4.1-webui-core
   workflow_dispatch:
 
 permissions:
