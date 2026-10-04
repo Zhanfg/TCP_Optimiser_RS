@@ -241,9 +241,9 @@ export async function applyAdvanced(fields, values) {
 ${writes.join('\n')}
 tmp=${shellQuote(`${MOD}/advanced.conf.tmp`)}
 cfg=${shellQuote(`${MOD}/advanced.conf`)}
-: > "$tmp"
-${configLines.replaceAll("'$tmp'", '"$tmp"')}
-${configLines ? `{ ${configLines} } > "$tmp"` : ': > "$tmp"'}
+${configLines ? `{
+${configLines}
+} > "$tmp"` : ': > "$tmp"'}
 mv "$tmp" "$cfg"
 ${dedicated}`, { timeoutMs: 4200 });
 
