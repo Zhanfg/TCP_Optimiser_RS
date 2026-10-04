@@ -22,7 +22,7 @@ const QDISC_CHECK_WIFI: u64 = 60;
 const QDISC_CHECK_CELLULAR: u64 = 120;
 const ADAPTIVE_STATE_PERSIST: u64 = 30;
 const WEBUI_FAST_SLEEP: u64 = 2;
-const WEBUI_ACTIVE_WINDOW: u64 = 12;
+const WEBUI_ACTIVE_WINDOW: u64 = 45;
 const WEBUI_DETAILS_PERSIST: u64 = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -449,13 +449,36 @@ fn persist_runtime_details(iface: &str) -> io::Result<()> {
 
 fn persist_snapshot_file(iface: &str, include_details: bool, name: &str) -> io::Result<()> {
     let snapshot = crate::stats::network_snapshot(iface, true, include_details, false)?;
-    let module_dir = config::module_dir();
-    let path = module_dir.join(name);
-    let temporary = module_dir.join(format!("{name}.tmp"));
     let payload = serde_json::to_vec(&snapshot).map_err(io::Error::other)?;
-    fs::write(&temporary, payload)?;
-    fs::rename(temporary, path)?;
+    let module_dir = config::module_dir();
+
+    // Keep the historical module-root snapshot for CLI/compatibility users.
+    atomic_write(&module_dir.join(name), &payload)?;
+
+    // v4.1 publishes an unsigned, runtime-generated copy inside webroot.
+    // It is intentionally absent from the signed package manifest, so module
+    // integrity verification continues to cover immutable shipped assets while
+    // Android WebView can read live state with fetch() instead of a synchronous
+    // KernelSU JavaScript bridge round-trip.
+    let web_runtime = module_dir.join("webroot").join("runtime-data");
+    fs::create_dir_all(&web_runtime)?;
+    let web_name = if include_details {
+        "details.json"
+    } else {
+        "snapshot.json"
+    };
+    atomic_write(&web_runtime.join(web_name), &payload)?;
     Ok(())
+}
+
+fn atomic_write(path: &Path, payload: &[u8]) -> io::Result<()> {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid snapshot path"))?;
+    let temporary = path.with_file_name(format!(".{file_name}.tmp"));
+    fs::write(&temporary, payload)?;
+    fs::rename(temporary, path)
 }
 
 fn webui_is_active() -> bool {
