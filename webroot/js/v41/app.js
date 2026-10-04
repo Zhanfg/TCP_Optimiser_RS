@@ -1,0 +1,196 @@
+import I18N from '../i18n.js';
+import { state, patch } from './store.js';
+import * as api from './api.js';
+import {
+	homeTemplate, renderHome, settingsTemplate, handleSettingsAction,
+	statsTemplate, renderStats, renderStatsDetails, logsTemplate, renderLogs,
+	selectChoice, applyTheme,
+} from './views.js';
+
+const outlet = () => document.getElementById('app-outlet');
+let timer = null;
+let pageToken = 0;
+
+function navLabel(page) {
+	const zh = I18N.currentLang === 'zh';
+	return {
+		home: zh ? '首页' : 'Home',
+		stats: zh ? '统计' : 'Stats',
+		settings: zh ? '设置' : 'Settings',
+		logs: zh ? '日志' : 'Logs',
+	}[page] || page;
+}
+
+function setBusy(value) {
+	document.documentElement.classList.toggle('busy', value);
+}
+
+function setStatus(text, ok = true) {
+	const chip = document.getElementById('shell-status');
+	if (!chip) return;
+	chip.textContent = text;
+	chip.dataset.ok = String(ok);
+}
+
+async function mount(page) {
+	clearTimeout(timer);
+	timer = null;
+	state.page = page;
+	const token = ++pageToken;
+	document.querySelectorAll('.nav-btn').forEach(btn => {
+		btn.classList.toggle('active', btn.dataset.page === page);
+	});
+	const title = document.getElementById('shell-title');
+	if (title) title.textContent = navLabel(page);
+
+	if (page === 'home') {
+		outlet().innerHTML = homeTemplate();
+		renderHome();
+		await refreshHome(token, true);
+		schedule(4000, token, () => refreshHome(token, false));
+		return;
+	}
+
+	if (page === 'settings') {
+		setBusy(true);
+		try {
+			const [runtime, settings] = await Promise.all([
+				api.runtime(false),
+				api.readSettings(),
+			]);
+			if (token !== pageToken) return;
+			patch({ runtime, settings });
+			outlet().innerHTML = settingsTemplate();
+		} finally { setBusy(false); }
+		return;
+	}
+
+	if (page === 'stats') {
+		outlet().innerHTML = statsTemplate();
+		await refreshStats(token);
+		schedule(3000, token, () => refreshStats(token));
+		return;
+	}
+
+	if (page === 'logs') {
+		outlet().innerHTML = logsTemplate();
+		await refreshLogs(token);
+		return;
+	}
+}
+
+function schedule(ms, token, fn) {
+	clearTimeout(timer);
+	timer = setTimeout(async () => {
+		if (token !== pageToken || document.hidden) return;
+		try { await fn(); } catch (_) {}
+		if (token === pageToken && !document.hidden) schedule(ms, token, fn);
+	}, ms);
+}
+
+async function refreshHome(token, force) {
+	try {
+		const runtime = await api.runtime(force);
+		if (token !== pageToken) return;
+		patch({ runtime });
+		renderHome(runtime);
+		setStatus(runtime.module_active === false ? (I18N.currentLang === 'zh' ? '未运行' : 'Stopped') : 'Live', runtime.module_active !== false);
+	} catch (error) {
+		if (token !== pageToken) return;
+		setStatus(I18N.currentLang === 'zh' ? '读取失败' : 'Unavailable', false);
+	}
+}
+
+async function refreshStats(token, details = false) {
+	try {
+		const stats = await api.sampleStats(details);
+		if (token !== pageToken) return;
+		patch({ stats });
+		renderStats(stats);
+		if (details) renderStatsDetails(stats);
+	} catch (_) {}
+}
+
+async function refreshLogs(token) {
+	try {
+		const text = await api.readLogs();
+		if (token !== pageToken) return;
+		renderLogs(text);
+	} catch (_) {
+		if (token === pageToken) renderLogs('');
+	}
+}
+
+function routeFromHash() {
+	const value = location.hash.replace(/^#/, '');
+	return ['home','stats','settings','logs'].includes(value) ? value : 'home';
+}
+
+document.addEventListener('click', async event => {
+	const nav = event.target.closest('.nav-btn');
+	if (nav) {
+		const page = nav.dataset.page;
+		if (page && page !== state.page) {
+			history.pushState({ page }, '', `#${page}`);
+			await mount(page);
+		}
+		return;
+	}
+
+	const choice = event.target.closest('.choice');
+	if (choice) {
+		selectChoice(choice);
+		return;
+	}
+
+	const theme = event.target.closest('[data-theme]');
+	if (theme) {
+		applyTheme(theme.dataset.theme);
+		return;
+	}
+
+	const actionEl = event.target.closest('[data-action]');
+	if (!actionEl) return;
+	const action = actionEl.dataset.action;
+
+	try {
+		if (action === 'refresh-home') await refreshHome(pageToken, true);
+		else if (action === 'refresh-stats') await refreshStats(pageToken);
+		else if (action === 'stats-details') await refreshStats(pageToken, true);
+		else if (action === 'refresh-logs') await refreshLogs(pageToken);
+		else if (action === 'clear-logs') {
+			await api.clearLogs();
+			await refreshLogs(pageToken);
+		}
+		else if (['load-qdiscs','apply-fast','apply-full','verify'].includes(action)) {
+			await handleSettingsAction(action);
+		}
+	} catch (error) {
+		setStatus(error?.message || 'Error', false);
+	}
+});
+
+window.addEventListener('popstate', () => void mount(routeFromHash()));
+document.addEventListener('visibilitychange', () => {
+	if (!document.hidden) void mount(state.page);
+	else {
+		clearTimeout(timer);
+		timer = null;
+	}
+});
+
+async function start() {
+	const mode = localStorage.getItem('tcp_themeMode') || 'auto';
+	applyTheme(mode);
+	setBusy(true);
+	try {
+		await I18N.init();
+		patch({ module: api.getModuleInfo() });
+		document.documentElement.classList.add('ready');
+		await mount(routeFromHash());
+	} finally {
+		setBusy(false);
+	}
+}
+
+void start();
