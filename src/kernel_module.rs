@@ -587,6 +587,7 @@ fn bbr3_load_lock() -> io::Result<fs::File> {
         .create(true)
         .read(true)
         .write(true)
+        .truncate(false)
         .open(path)?;
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
     if rc != 0 {
