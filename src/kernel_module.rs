@@ -100,15 +100,20 @@ pub fn bundle_status() -> KernelBundleStatus {
 pub fn augment_algorithms(mut native: Vec<String>) -> Vec<String> {
     // Never expose BBRv3 as selectable merely because another component has
     // registered the name. It must match the exact audited ColorOS 17 ABI.
-    if verify_bbr3_runtime_abi().is_err() {
+    let bbr3_verified = verify_bbr3_runtime_abi().is_ok();
+    if !bbr3_verified {
         native.retain(|algorithm| algorithm != "bbr3");
     }
 
     // A previous insmod failure is diagnostic state, not a permanent
     // capability verdict. Keep bundled algorithms visible so the user can
     // retry after reboot/module replacement instead of turning one transient
-    // failure into a permanent UI "unsupported" state.
+    // failure into a permanent UI "unsupported" state. BBRv3 is the exception:
+    // it is hidden until its live module + BTF pair passes the ABI gate.
     for algorithm in bundled_algorithms() {
+        if algorithm == "bbr3" && !bbr3_verified {
+            continue;
+        }
         if !native.iter().any(|item| item == &algorithm) {
             native.push(algorithm);
         }
