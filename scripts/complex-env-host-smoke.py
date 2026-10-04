@@ -67,6 +67,10 @@ def source_audit(root: Path):
             "DEBOUNCE_TIME" not in daemon
             and "VOWIFI_CONNECT_TIME" not in daemon
         ),
+        "route_settle_is_nonblocking": (
+            "network_settle_until" in daemon
+            and "thread::sleep(Duration::from_millis(NETWORK_SETTLE_MS))" not in daemon
+        ),
         "fast_apply_skips_destructive_side_effects": (
             "algorithm_applied && full_apply" in daemon
             and 'if full_apply && config::module_dir().join("initcwnd_initrwnd").exists()' in daemon
