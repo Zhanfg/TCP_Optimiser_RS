@@ -184,3 +184,77 @@ export async function verifyInstall() {
 ${rust(`verify-module ${shellQuote(MOD)}`)}`, { timeoutMs: 5000 });
 	return true;
 }
+
+export async function readAdvanced(fields) {
+	return once('advanced-read', async () => {
+		const safe = fields.filter(field =>
+			/^[a-z0-9_]+$/.test(field.key)
+			&& /^\/proc\/sys\/[a-z0-9_\/-]+$/.test(field.path)
+		);
+		const body = safe.map(field =>
+			`if [ -r ${shellQuote(field.path)} ]; then printf '${field.key}='; cat ${shellQuote(field.path)}; fi`
+		).join('\n');
+		const { stdout } = await exec(`# advanced-sysctl-probe
+${body}`, { timeoutMs: 2200 });
+		const values = new Map();
+		for (const line of stdout.split(/\r?\n/)) {
+			const at = line.indexOf('=');
+			if (at < 1) continue;
+			const key = line.slice(0, at);
+			const value = line.slice(at + 1).trim();
+			if (/^-?\d+$/.test(value)) values.set(key, value);
+		}
+		return values;
+	});
+}
+
+export async function applyAdvanced(fields, values) {
+	const byKey = new Map(fields.map(field => [field.key, field]));
+	const writes = [];
+	const persisted = [];
+	let ecn = null;
+	let fastopen = null;
+
+	for (const [key, raw] of values) {
+		const field = byKey.get(key);
+		if (!field) continue;
+		if (!/^[a-z0-9_]+$/.test(field.key) || !/^\/proc\/sys\/[a-z0-9_\/-]+$/.test(field.path)) continue;
+		const value = Number(raw);
+		if (!Number.isInteger(value) || value < field.min || value > field.max) {
+			throw new Error(`Invalid ${key}`);
+		}
+		writes.push(
+			`[ -w ${shellQuote(field.path)} ] || exit 21; printf '%s\\n' ${value} > ${shellQuote(field.path)} || exit 22; actual=$(cat ${shellQuote(field.path)} 2>/dev/null); [ "$actual" = "${value}" ] || exit 23; printf '${field.key}=%s\\n' "$actual"`
+		);
+		if (key === 'tcp_ecn') ecn = value;
+		else if (key === 'tcp_fastopen') fastopen = value;
+		else persisted.push(`${field.key}=${value}`);
+	}
+
+	const configLines = persisted.map(line => `printf '%s\\n' ${shellQuote(line)}`).join('\n');
+	const dedicated = [
+		ecn == null ? '' : `printf '%s\\n' ${ecn} > ${shellQuote(`${MOD}/tcp_ecn`)}`,
+		fastopen == null ? '' : `printf '%s\\n' ${fastopen} > ${shellQuote(`${MOD}/tcp_fastopen`)}`,
+	].filter(Boolean).join('\n');
+
+	const { stdout } = await exec(`# advanced-sysctl-apply
+${writes.join('\n')}
+tmp=${shellQuote(`${MOD}/advanced.conf.tmp`)}
+cfg=${shellQuote(`${MOD}/advanced.conf`)}
+: > "$tmp"
+${configLines.replaceAll("'$tmp'", '"$tmp"')}
+${configLines ? `{ ${configLines} } > "$tmp"` : ': > "$tmp"'}
+mv "$tmp" "$cfg"
+${dedicated}`, { timeoutMs: 4200 });
+
+	const verified = new Map();
+	for (const line of stdout.split(/\r?\n/)) {
+		const at = line.indexOf('=');
+		if (at < 1) continue;
+		verified.set(line.slice(0, at), line.slice(at + 1).trim());
+	}
+	for (const [key, value] of values) {
+		if (verified.get(key) !== String(value)) throw new Error(`Readback failed for ${key}`);
+	}
+	return verified;
+}
