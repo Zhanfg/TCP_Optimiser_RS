@@ -728,10 +728,7 @@ fn apply_interface_settings_inner(
         }
     };
 
-    if algorithm_applied
-        && full_apply
-        && config::module_dir().join("kill_connections").exists()
-    {
+    if algorithm_applied && full_apply && config::module_dir().join("kill_connections").exists() {
         let proxy_state = proxy::detect_proxy_snapshot();
         let force_proxy_kill = config::module_dir().join("kill_connections_proxy").exists();
         if proxy_state.transparent && !force_proxy_kill {
