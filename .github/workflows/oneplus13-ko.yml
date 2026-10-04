@@ -5,6 +5,7 @@ on:
   pull_request:
     branches:
       - 'fix/coloros17-bbr3-abi-gate'
+      - 'rewrite/v4-fast-switch-coloros17'
     paths:
       - 'src/**'
       - 'webroot/**'
