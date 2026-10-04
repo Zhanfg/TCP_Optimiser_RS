@@ -1,11 +1,10 @@
-import I18N from '../i18n.js';
 import { state, patch } from './store.js';
 import * as api from './api.js';
+import { ALGORITHMS } from './catalog.js';
+import { t } from './locale.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const all = (selector, root = document) => [...root.querySelectorAll(selector)];
-const zh = () => I18N.currentLang === 'zh';
-const t = (cn, en) => zh() ? cn : en;
 const esc = (value) => String(value ?? '')
 	.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')
 	.replaceAll('"','&quot;').replaceAll("'","&#39;");
@@ -130,7 +129,7 @@ export function renderHomeVerification(snapshot) {
 }
 
 function algoButtons(name, selected, available) {
-	return ['bbr','bbr3','cubic','reno']
+	return ALGORITHMS
 		.filter(item => available.includes(item))
 		.map(item => `<button class="choice ${item === selected ? 'selected' : ''}" data-setting="${name}" data-value="${item}">${item.toUpperCase()}</button>`)
 		.join('');
@@ -172,6 +171,7 @@ export function settingsTemplate() {
 	  </div>
 
 	  <article class="panel compact">
+	    <div class="row"><span>${t('语言','Language')}</span><div class="mini-actions"><button class="text-btn" data-lang="zh">中文</button><button class="text-btn" data-lang="en">English</button></div></div>
 	    <div class="row"><span>${t('界面模式','Theme')}</span><div class="mini-actions"><button class="text-btn" data-theme="auto">${t('跟随系统','Auto')}</button><button class="text-btn" data-theme="dark">${t('深色','Dark')}</button><button class="text-btn" data-theme="light">${t('浅色','Light')}</button></div></div>
 	    <div class="row"><span>${t('自动配置','Auto profile')}</span><button class="text-btn" data-action="refresh-profile">${t('重新检测','Re-detect')}</button></div>
 	    <div class="row"><span>${t('安装完整性','Integrity')}</span><button class="text-btn" data-action="verify">${t('检查','Check')}</button></div>
