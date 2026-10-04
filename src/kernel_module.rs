@@ -98,6 +98,12 @@ pub fn bundle_status() -> KernelBundleStatus {
 }
 
 pub fn augment_algorithms(mut native: Vec<String>) -> Vec<String> {
+    // Never expose BBRv3 as selectable merely because another component has
+    // registered the name. It must match the exact audited ColorOS 17 ABI.
+    if verify_bbr3_runtime_abi().is_err() {
+        native.retain(|algorithm| algorithm != "bbr3");
+    }
+
     // A previous insmod failure is diagnostic state, not a permanent
     // capability verdict. Keep bundled algorithms visible so the user can
     // retry after reboot/module replacement instead of turning one transient
@@ -231,6 +237,15 @@ fn unavailable_qdiscs() -> HashSet<String> {
 }
 
 pub fn ensure_algorithm(algorithm: &str) -> io::Result<bool> {
+    if algorithm == "bbr3" {
+        // If the module is already loaded, verify the live pair before using
+        // it. If it is not loaded, try_load() may load it and the final sysctl
+        // write will re-run this gate through sysctl::set_congestion_control().
+        if module_present("tcp_bbr3") {
+            verify_bbr3_runtime_abi()?;
+        }
+    }
+
     let Some(module) = algorithm_module(algorithm) else {
         return Ok(false);
     };
@@ -277,6 +292,125 @@ struct ModuleIndex {
 }
 
 static MODULE_INDEX: OnceLock<Result<Option<ModuleIndex>, String>> = OnceLock::new();
+
+/*
+ * ColorOS 17 / PJZ110 BBRv3 safety gate.
+ *
+ * These values were captured from the user's recovered PJZ110 on
+ * PJZ110_17.0.0.101(SP02CN01) after the KPM incident.  The existing
+ * tcp_bbr3.ko was already live and idle (refcnt=0), and its DWARF layouts
+ * were checked against the running kernel's vmlinux BTF for every structure
+ * used by the BBRv3 data path.
+ *
+ * Never silently widen this allow-list. A firmware/kernel update must be
+ * re-audited from the live BTF before BBRv3 may be selected again.
+ */
+const PJZ110_COS17_OSRELEASE: &str =
+    "6.6.147-android15-8-gd4c13fc2e857-abogki500782043-4k";
+const PJZ110_COS17_BTF_SHA256: &str =
+    "6129a25e3908557498bc5fab2ced419f9a3751837b858efbaca5ff12263bf2a2";
+const PJZ110_BBR3_KO_SHA256: &str =
+    "2d46336c0e2957b145f670a9b9ebe394660fb3cf735210cd9abc42364563b27e";
+const PJZ110_BBR3_SRCVERSION: &str = "42AD107FAC3095653297A61";
+const PJZ110_BBR3_VERSION: &str = "3";
+
+/// Verify that the *running* ColorOS kernel and the installed BBRv3 KO are the
+/// exact pair that has been audited. This is intentionally strict: a mismatch
+/// blocks selecting bbr3 instead of gambling with kernel-internal ABI.
+pub fn verify_bbr3_runtime_abi() -> io::Result<()> {
+    let release = kernel_release()?;
+    if release != PJZ110_COS17_OSRELEASE {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "BBRv3 runtime ABI is not approved for kernel {release}; expected {PJZ110_COS17_OSRELEASE}"
+            ),
+        ));
+    }
+
+    let btf = Path::new("/sys/kernel/btf/vmlinux");
+    if !btf.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "BBRv3 runtime ABI cannot be verified: /sys/kernel/btf/vmlinux is unavailable",
+        ));
+    }
+    verify_sha256(btf, PJZ110_COS17_BTF_SHA256).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "BBRv3 runtime ABI blocked: running vmlinux BTF fingerprint is not audited",
+        )
+    })?;
+
+    let sys_module = Path::new("/sys/module/tcp_bbr3");
+    if !sys_module.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "BBRv3 runtime ABI verified, but tcp_bbr3 is not loaded",
+        ));
+    }
+
+    for (path, expected, label) in [
+        (sys_module.join("initstate"), "live", "initstate"),
+        (sys_module.join("version"), PJZ110_BBR3_VERSION, "version"),
+        (
+            sys_module.join("srcversion"),
+            PJZ110_BBR3_SRCVERSION,
+            "srcversion",
+        ),
+    ] {
+        let actual = fs::read_to_string(&path)
+            .map(|value| value.trim().to_string())
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("cannot read tcp_bbr3 {label}: {error}"),
+                )
+            })?;
+        if actual != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "BBRv3 runtime ABI blocked: tcp_bbr3 {label}={actual:?}, expected {expected:?}"
+                ),
+            ));
+        }
+    }
+
+    for parameter in ["bbr3_register_addr", "bbr3_unregister_addr"] {
+        if !sys_module.join("parameters").join(parameter).is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "BBRv3 runtime ABI blocked: tcp_bbr3 runtime bridge parameter {parameter} is missing"
+                ),
+            ));
+        }
+    }
+
+    let Some(index) = module_index()? else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "BBRv3 runtime ABI blocked: kernel module manifest is missing",
+        ));
+    };
+    let Some(entry) = index.entries.iter().find(|entry| entry.name == "tcp_bbr3") else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "BBRv3 runtime ABI blocked: tcp_bbr3 is not present in the matching manifest",
+        ));
+    };
+    let relative = safe_relative_path(&entry.file)?;
+    let ko = index.root.join(relative);
+    verify_sha256(&ko, PJZ110_BBR3_KO_SHA256).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "BBRv3 runtime ABI blocked: installed tcp_bbr3.ko does not match the audited binary",
+        )
+    })?;
+
+    Ok(())
+}
 
 fn build_module_index() -> Result<Option<ModuleIndex>, String> {
     let root = crate::config::module_dir().join("kernel_modules");
