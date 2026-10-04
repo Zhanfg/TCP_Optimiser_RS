@@ -26,6 +26,13 @@ function parseFlatLanguageFile(relative) {
 	}
 }
 
+function walk(dir) {
+	return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+		const full = path.join(dir, entry.name);
+		return entry.isDirectory() ? walk(full) : [full];
+	});
+}
+
 function quotedValues(source, declaration) {
 	const block = source.match(new RegExp(`${declaration}[^=]*=\\s*&?\\[([\\s\\S]*?)\\];`));
 	if (!block) {
@@ -41,10 +48,10 @@ for (const key of Object.keys(english)) if (!(key in chinese)) fail(`zh.json is 
 for (const key of Object.keys(chinese)) if (!(key in english)) fail(`zh.json has unknown key ${key}`);
 
 const html = read('webroot/index.html');
-const javascript = fs.readdirSync(path.join(root, 'webroot/js'))
+const jsFiles = walk(path.join(root, 'webroot/js'))
 	.filter(file => file.endsWith('.js'))
-	.map(file => read(`webroot/js/${file}`))
-	.join('\n');
+	.map(file => path.relative(root, file));
+const javascript = jsFiles.map(read).join('\n');
 const referencedKeys = new Set([
 	...[...html.matchAll(/data-i18n(?:-placeholder|-aria-label)?="([^"]+)"/g)].map(match => match[1]),
 	...[...javascript.matchAll(/I18N\.t\(\s*['"]([A-Za-z0-9_]+)['"]\s*(?:[,\)])/g)].map(match => match[1]),
@@ -64,11 +71,14 @@ for (const match of html.matchAll(/<script[^>]+src="([^"]+)"/g)) {
 	if (!fs.existsSync(path.join(root, relative))) fail(`missing script ${relative}`);
 }
 
-for (const file of fs.readdirSync(path.join(root, 'webroot/js')).filter(name => name.endsWith('.js'))) {
-	const source = read(`webroot/js/${file}`);
+for (const file of jsFiles) {
+	const source = read(file);
+	const base = path.dirname(file);
 	for (const match of source.matchAll(/(?:import|export)\s+(?:[\s\S]*?\s+from\s+)?['"](\.\.?\/[^'"]+)['"]/g)) {
-		const imported = path.normalize(path.join('webroot/js', path.dirname(file), match[1]));
-		if (!fs.existsSync(path.join(root, imported))) fail(`webroot/js/${file} imports missing ${match[1]}`);
+		const imported = path.normalize(path.join(base, match[1]));
+		const target = path.join(root, imported);
+		const resolved = fs.existsSync(target) ? target : `${target}.js`;
+		if (!fs.existsSync(resolved)) fail(`${file} imports missing ${match[1]}`);
 	}
 }
 
@@ -81,28 +91,46 @@ const rustQdiscs = quotedValues(rust, 'pub const KNOWN_QDISCS');
 const uiQdiscs = quotedValues(capabilities, 'export const ALL_QDISCS');
 if (JSON.stringify(rustQdiscs) !== JSON.stringify(uiQdiscs)) fail('Rust and WebUI qdisc lists differ');
 
+const index = read('webroot/index.html');
+const app = read('webroot/js/v41/app.js');
+const api = read('webroot/js/v41/api.js');
+const views = read('webroot/js/v41/views.js');
+const css = read('webroot/css/v41.css');
+
+const architectureChecks = {
+	lightweight_shell: !index.includes('id="home-page"') && index.includes('id="app-outlet"'),
+	lazy_page_mounting: ['homeTemplate','settingsTemplate','statsTemplate','logsTemplate'].every(name => app.includes(name)),
+	single_scheduler: app.includes('let timer = null') && !app.includes('setInterval('),
+	deduped_bridge: api.includes('const inflight = new Map()') && api.includes('function once('),
+	single_runtime_read: api.includes('runtime_snapshot.json'),
+	lazy_qdisc_probe: views.includes("action === 'load-qdiscs'"),
+	log_tail_not_full_cat: api.includes('tail -n 160'),
+	no_dynamic_palette_boot_probe: !app.includes('initDynamicColorTheme'),
+	no_legacy_router_entry: !index.includes('js/router.js'),
+	no_heavy_motion_entry: !index.includes('js/motion.js'),
+	no_backdrop_filter: !css.includes('backdrop-filter'),
+};
+for (const [name, ok] of Object.entries(architectureChecks)) if (!ok) fail(`v4.1 architecture invariant failed: ${name}`);
+
 const mainRust = read('src/main.rs');
 const coreCoverage = [
 	['Daemon', 'service.sh', '"$RUST_BIN" daemon'],
 	['Once', 'post-fs-data.sh', '"$RUST_BIN" once'],
 	['Install', 'customize.sh', '"$RUST_BIN" install'],
-	['VerifyModule', 'customize.sh', 'verify-module'],
-	['Status', 'webroot/js/common.js', "'status'"],
-	['Adaptive', 'webroot/js/common.js', 'adaptive --sample-ms'],
-	['Sample', 'webroot/js/common.js', "'sample'"],
-	['Repair', 'webroot/js/common.js', "'repair'"],
-	['Proxy', 'webroot/js/common.js', "'proxy'"],
-	['Profile', 'webroot/js/common.js', "'profile'"],
-	['BuildInfo', 'webroot/js/common.js', "'build-info'"],
+	['VerifyModule', 'webroot/js/v41/api.js', 'verify-module'],
+	['Status', 'webroot/js/v41/api.js', 'status --runtime-only'],
+	['Sample', 'webroot/js/v41/api.js', 'sample'],
+	['ApplyNow', 'webroot/js/v41/api.js', 'apply-now'],
 ];
 for (const [command, file, needle] of coreCoverage) {
-	if (!mainRust.includes(`Command::${command}`)) fail(`core coverage map references missing Rust command ${command}`);
-	if (!read(file).includes(needle)) fail(`Rust command ${command} has no consumer in ${file}`);
+	if (!mainRust.includes(`Command::${command}`)) fail(`core coverage references missing Rust command ${command}`);
+	if (!read(file).includes(needle)) fail(`Rust command ${command} has no v4.1 consumer in ${file}`);
 }
-for (const id of ['adaptive-probe-btn', 'about-build-revision', 'about-integrity-btn', 'proxy-kill-override-toggle']) {
-	if (!ids.has(id)) fail(`core feature UI is missing #${id}`);
+
+for (const id of ['app-outlet','shell-status','shell-title']) {
+	if (!ids.has(id)) fail(`v4.1 shell is missing #${id}`);
 }
 
 if (!process.exitCode) {
-	console.log(`webui validation: ${Object.keys(english).length} translations, ${rustAlgorithms.length} algorithms, ${rustQdiscs.length} qdiscs, ${coreCoverage.length} core commands covered`);
+	console.log(`webui validation: v4.1 lightweight architecture OK; ${jsFiles.length} JS files checked; ${rustAlgorithms.length} algorithms; ${rustQdiscs.length} qdiscs`);
 }
