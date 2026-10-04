@@ -96,6 +96,7 @@ pub fn run() -> io::Result<()> {
     let mut last_mode = IfaceMode::Unknown;
     let mut last_iface = String::new();
     let mut network_dirty = true;
+    let mut network_settle_until: Option<Instant> = None;
     let mut route_unavailable = false;
     let mut adaptive_count: u32 = 0;
     let mut last_qdisc_check: Option<Instant> = None;
@@ -110,7 +111,10 @@ pub fn run() -> io::Result<()> {
         let legacy_force = legacy_force_path.exists();
         let mut mode_changed = false;
 
-        if network_dirty || legacy_force || last_iface.is_empty() {
+        let network_settled = network_settle_until
+            .map(|deadline| Instant::now() >= deadline)
+            .unwrap_or(true);
+        if legacy_force || (network_settled && (network_dirty || last_iface.is_empty())) {
             if legacy_force {
                 if let Err(error) = profile::refresh_managed_profile() {
                     logging::log_print(&format!(
@@ -151,6 +155,7 @@ pub fn run() -> io::Result<()> {
                     last_mode = new_mode;
                     last_iface = iface;
                     network_dirty = false;
+                    network_settle_until = None;
                 }
                 Err(error) => {
                     if !route_unavailable {
@@ -167,6 +172,9 @@ pub fn run() -> io::Result<()> {
                     adaptive::clear_runtime_state();
                     last_adaptive_persist = None;
                     last_adaptive_state = adaptive::PathState::Unknown;
+                    if network_settled {
+                        network_settle_until = None;
+                    }
                 }
             }
         }
@@ -240,11 +248,13 @@ pub fn run() -> io::Result<()> {
             sleep_secs = sleep_secs.min(WEBUI_FAST_SLEEP);
         }
 
-        let wake = wait_for_wake(
-            route_monitor.as_mut(),
-            &control_server,
-            Duration::from_secs(sleep_secs),
-        )?;
+        let mut wait = Duration::from_secs(sleep_secs);
+        if let Some(deadline) = network_settle_until {
+            let until_settled = deadline.saturating_duration_since(Instant::now());
+            wait = wait.min(until_settled);
+        }
+
+        let wake = wait_for_wake(route_monitor.as_mut(), &control_server, wait)?;
 
         if wake.route_broken {
             logging::log_print(
@@ -273,11 +283,12 @@ pub fn run() -> io::Result<()> {
         }
 
         if wake.route {
-            // Netlink emits bursts for one transition. A short 180 ms settle
-            // absorbs the burst while remaining dramatically faster than the
-            // previous 10-second debounce.
-            thread::sleep(Duration::from_millis(NETWORK_SETTLE_MS));
+            // Netlink emits bursts for one transition. Use a deadline instead
+            // of sleeping so control-socket requests remain responsive during
+            // the settle window. Repeated route events extend the window.
             network_dirty = true;
+            network_settle_until =
+                Some(Instant::now() + Duration::from_millis(NETWORK_SETTLE_MS));
         } else if route_monitor.is_none() {
             // Safety-net polling when rtnetlink is unavailable.
             network_dirty = true;
