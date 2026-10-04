@@ -239,7 +239,9 @@ pub fn iface_mode(iface: &str) -> IfaceMode {
 }
 
 fn wifi_freq_cache_path() -> PathBuf {
-    crate::config::module_dir().join("runtime").join("wifi_freq")
+    crate::config::module_dir()
+        .join("runtime")
+        .join("wifi_freq")
 }
 
 pub fn cached_wifi_freq(iface: &str) -> Option<u32> {
