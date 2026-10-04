@@ -93,12 +93,43 @@ impl RouteMonitor {
         Ok(Self { fd })
     }
 
+    pub fn raw_fd(&self) -> RawFd {
+        self.fd
+    }
+
+    /// Drain a ready rtnetlink socket. This is split from poll() so the v4
+    /// daemon can wait on route and control-plane descriptors in one syscall.
+    pub fn drain_ready(&mut self) -> io::Result<()> {
+        let mut buffer = [0u8; 8192];
+        loop {
+            let received = unsafe {
+                libc::recv(
+                    self.fd,
+                    buffer.as_mut_ptr().cast::<libc::c_void>(),
+                    buffer.len(),
+                    libc::MSG_DONTWAIT,
+                )
+            };
+            if received > 0 {
+                continue;
+            }
+            if received == 0 {
+                break;
+            }
+
+            let error = io::Error::last_os_error();
+            match error.kind() {
+                io::ErrorKind::WouldBlock => break,
+                io::ErrorKind::Interrupted => continue,
+                _ => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
     /// Wait until a relevant network event arrives or the timeout expires.
-    /// Returns true when an event was received, false for a normal timeout.
-    ///
-    /// A single route change often arrives as several netlink datagrams. Drain
-    /// the entire ready queue here so the daemon coalesces the burst into one
-    /// policy pass instead of spinning once per datagram.
+    /// Kept for compatibility with one-shot callers; the main v4 daemon polls
+    /// this descriptor together with the runtime-control socket.
     pub fn wait(&mut self, timeout: Duration) -> io::Result<bool> {
         let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as libc::c_int;
         let mut poll_fd = libc::pollfd {
@@ -129,30 +160,7 @@ impl RouteMonitor {
             return Ok(false);
         }
 
-        let mut buffer = [0u8; 8192];
-        loop {
-            let received = unsafe {
-                libc::recv(
-                    self.fd,
-                    buffer.as_mut_ptr().cast::<libc::c_void>(),
-                    buffer.len(),
-                    libc::MSG_DONTWAIT,
-                )
-            };
-            if received > 0 {
-                continue;
-            }
-            if received == 0 {
-                break;
-            }
-
-            let error = io::Error::last_os_error();
-            match error.kind() {
-                io::ErrorKind::WouldBlock => break,
-                io::ErrorKind::Interrupted => continue,
-                _ => return Err(error),
-            }
-        }
+        self.drain_ready()?;
         Ok(true)
     }
 }
