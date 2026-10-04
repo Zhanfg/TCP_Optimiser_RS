@@ -1,4 +1,5 @@
 import { exec, moduleInfo, shellQuote } from '../kernelsu.js';
+import { ALGORITHMS, QDISCS } from './catalog.js';
 
 const MOD = '/data/adb/modules/tcp_optimiser';
 const inflight = new Map();
@@ -110,9 +111,10 @@ function markerWrite(prefix, algorithm) {
 }
 
 export async function applySettings(next, full = false) {
-	const wifi = ['bbr','bbr3','cubic','reno'].includes(next.wifi) ? next.wifi : 'bbr';
-	const cell = ['bbr','bbr3','cubic','reno'].includes(next.cell) ? next.cell : 'bbr';
+	const wifi = ALGORITHMS.includes(next.wifi) ? next.wifi : 'bbr';
+	const cell = ALGORITHMS.includes(next.cell) ? next.cell : 'bbr';
 	const qdisc = String(next.qdisc || '').trim();
+	if (qdisc && !QDISCS.includes(qdisc)) throw new Error('Unsupported qdisc');
 	const qdiscWrite = qdisc
 		? `printf '%s\\n' ${shellQuote(qdisc)} > ${shellQuote(`${MOD}/qdisc`)}`
 		: `rm -f ${shellQuote(`${MOD}/qdisc`)}`;
@@ -149,7 +151,7 @@ ${rust('apply-now --full')}`, { timeoutMs: 6500 });
 export async function probeQdiscs() {
 	if (qdiscCache) return qdiscCache;
 	return once('qdisc-probe', async () => {
-		const candidates = ['fq','fq_codel','codel','cake','pie','fq_pie','pfifo_fast'];
+		const candidates = [...QDISCS];
 		const { stdout } = await exec(`# qdisc-capability-probe
 current=$(cat /proc/sys/net/core/default_qdisc 2>/dev/null)
 for q in ${candidates.join(' ')}; do
