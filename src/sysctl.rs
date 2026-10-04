@@ -209,6 +209,18 @@ pub fn write_sysctl(path: impl AsRef<Path>, value: &str) -> io::Result<()> {
     fs::write(path, value)
 }
 
+/// Avoid redundant procfs writes in the hot policy-switch path.
+pub fn write_sysctl_if_changed(path: impl AsRef<Path>, value: &str) -> io::Result<bool> {
+    let path = path.as_ref();
+    if let Ok(current) = read_sysctl(path) {
+        if current == value.trim() {
+            return Ok(false);
+        }
+    }
+    fs::write(path, value)?;
+    Ok(true)
+}
+
 /// Read available congestion control algorithms
 pub fn available_algorithms() -> io::Result<Vec<String>> {
     let raw = read_sysctl("/proc/sys/net/ipv4/tcp_available_congestion_control")?;
@@ -236,7 +248,7 @@ pub fn set_congestion_control(algo: &str) -> io::Result<()> {
         crate::kernel_module::verify_bbr3_runtime_abi()?;
     }
 
-    write_sysctl("/proc/sys/net/ipv4/tcp_congestion_control", algo)
+    write_sysctl_if_changed("/proc/sys/net/ipv4/tcp_congestion_control", algo).map(|_| ())
 }
 
 /// Check if an algorithm is available
@@ -258,19 +270,16 @@ pub fn set_default_qdisc(qdisc: &str) -> io::Result<()> {
             format!("unsupported qdisc: {qdisc}"),
         ));
     }
-    write_sysctl("/proc/sys/net/core/default_qdisc", qdisc)
+    write_sysctl_if_changed("/proc/sys/net/core/default_qdisc", qdisc).map(|_| ())
 }
 
 /// Set TCP pacing ratios
 pub fn set_pacing(ca_ratio: u32, ss_ratio: u32) -> io::Result<()> {
-    write_sysctl(
-        "/proc/sys/net/ipv4/tcp_pacing_ca_ratio",
-        &ca_ratio.to_string(),
-    )?;
-    write_sysctl(
-        "/proc/sys/net/ipv4/tcp_pacing_ss_ratio",
-        &ss_ratio.to_string(),
-    )
+    let ca = ca_ratio.to_string();
+    let ss = ss_ratio.to_string();
+    write_sysctl_if_changed("/proc/sys/net/ipv4/tcp_pacing_ca_ratio", &ca)?;
+    write_sysctl_if_changed("/proc/sys/net/ipv4/tcp_pacing_ss_ratio", &ss)?;
+    Ok(())
 }
 
 /// Read TCP receive memory (min default max)
