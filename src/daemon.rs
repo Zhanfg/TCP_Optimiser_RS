@@ -830,11 +830,16 @@ fn update_description(mode: IfaceMode, algo: &str) {
 
     let mod_prop = config::module_dir().join("module.prop");
     if let Ok(content) = fs::read_to_string(&mod_prop) {
+        let desired = format!("description={desc}");
+        if content.lines().any(|line| line == desired) {
+            return;
+        }
+
         let updated = content
             .lines()
             .map(|line| {
                 if line.starts_with("description=") {
-                    format!("description={desc}")
+                    desired.clone()
                 } else {
                     line.to_string()
                 }
