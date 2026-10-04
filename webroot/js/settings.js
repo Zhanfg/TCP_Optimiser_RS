@@ -392,7 +392,7 @@ export async function initSettings() {
 			router_state.settingsPageParams.killConnections = settings.killOnChange;
 			router_state.settingsPageParams.initcwndInitrwnd = settings.setInitcwndInitrwndOnChange;
 			const applied = await applyRuntimePolicyNow(fullApply);
-			await addLog(`Settings: WiFi=${settings.wifiAlgorithm}, Cellular=${settings.cellularAlgorithm}, apply=${applied.mode}, ${applied.elapsed_ms}ms`);
+			void addLog(`Settings: WiFi=${settings.wifiAlgorithm}, Cellular=${settings.cellularAlgorithm}, apply=${applied.mode}, ${applied.elapsed_ms}ms`);
 			toast(I18N.t('toast_settings_applied'));
 			haptic('success');
 			return true;
