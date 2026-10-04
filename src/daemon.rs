@@ -293,7 +293,7 @@ struct WakeEvents {
 }
 
 fn wait_for_wake(
-    mut route_monitor: Option<&mut network::RouteMonitor>,
+    route_monitor: Option<&mut network::RouteMonitor>,
     control_server: &ControlServer,
     timeout: Duration,
 ) -> io::Result<WakeEvents> {
