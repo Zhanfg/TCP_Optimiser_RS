@@ -1,0 +1,167 @@
+name: PJZ110 v4.1 Fast Package
+
+on:
+  pull_request:
+    branches:
+      - 'rewrite/v4-fast-switch-coloros17'
+    paths:
+      - '.github/workflows/pjz110-v41-fast-package.yml'
+      - 'src/**'
+      - 'webroot/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'module.prop'
+      - 'update.json'
+      - 'build.rs'
+      - 'customize.sh'
+      - 'service.sh'
+      - 'post-fs-data.sh'
+      - 'uninstall.sh'
+      - 'scripts/package-module.sh'
+      - 'scripts/validate-package.sh'
+      - 'scripts/device-profiles/oneplus13-pjz110.env'
+  push:
+    branches:
+      - 'rewrite/v4.1-webui-core'
+    paths:
+      - '.github/workflows/pjz110-v41-fast-package.yml'
+      - 'src/**'
+      - 'webroot/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'module.prop'
+      - 'update.json'
+      - 'build.rs'
+      - 'customize.sh'
+      - 'service.sh'
+      - 'post-fs-data.sh'
+      - 'uninstall.sh'
+      - 'scripts/package-module.sh'
+      - 'scripts/validate-package.sh'
+      - 'scripts/device-profiles/oneplus13-pjz110.env'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: pjz110-v41-fast-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ANDROID_NDK_VERSION: 28.2.13676358
+  VERIFIED_KO_RUN_ID: '37188690617'
+  VERIFIED_KO_ARTIFACT: 'oneplus13-pjz110-kos'
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Reuse audited PJZ110 KO bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf oneplus13_kernel_modules
+          mkdir -p oneplus13_kernel_modules
+          gh run download "$VERIFIED_KO_RUN_ID"             --repo "$GITHUB_REPOSITORY"             --name "$VERIFIED_KO_ARTIFACT"             --dir oneplus13_kernel_modules
+          test -s oneplus13_kernel_modules/manifest.json
+          test -s oneplus13_kernel_modules/device_profile/abi-report.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path("oneplus13_kernel_modules")
+          report=json.loads((root/"device_profile/abi-report.json").read_text())
+          if not report.get("compatible") or report.get("matched") != 65:
+              raise SystemExit(f"cached live-device ABI gate failed: {report}")
+          manifest=json.loads((root/"manifest.json").read_text())
+          expected={"tcp_bbr3","sch_cake","sch_pie","sch_fq_pie"}
+          actual={m["name"] for m in manifest["modules"]}
+          if actual != expected:
+              raise SystemExit(f"unexpected cached module set: {actual}")
+          print("Reused audited PJZ110 KO bundle: 65/65")
+          PY
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+          components: clippy, rustfmt
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/aarch64-linux-android
+          key: ${{ runner.os }}-pjz110-v41-rust-${{ hashFiles('Cargo.lock') }}
+
+      - name: Select pinned Android NDK
+        run: |
+          set -euo pipefail
+          NDK_HOME="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          if [ ! -d "$NDK_HOME" ]; then
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION"
+          fi
+          echo "ANDROID_NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
+          echo "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Validate current v4.1 source
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --all-targets --locked
+          cargo clippy --all-targets --locked -- -D warnings
+          find webroot/js -name '*.js' -print0 | xargs -0 -n1 node --check
+          node scripts/validate-webui.mjs
+          node scripts/validate-release.mjs
+          bash -n customize.sh service.sh post-fs-data.sh uninstall.sh             scripts/package-module.sh scripts/validate-package.sh
+
+      - name: Build current PJZ110 arm64 runtime
+        env:
+          TCP_OPTIMISER_OFFICIAL_BUILD: '1'
+          TCP_OPTIMISER_BUILD_REPOSITORY: ${{ github.repository }}
+          TCP_OPTIMISER_BUILD_REVISION: ${{ github.sha }}
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/_/TCP_Optimiser_RS -C debuginfo=0
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target aarch64-linux-android
+          binary=target/aarch64-linux-android/release/tcp_optimiser
+          test -s "$binary"
+          llvm-strip --strip-all "$binary"
+          install -Dm755 "$binary" binary-input/bin/arm64-v8a/tcp_optimiser
+          readelf -h "$binary" | grep -F 'Machine:' | grep -F 'AArch64'
+
+      - id: meta
+        name: Resolve package name
+        run: |
+          version=$(sed -n 's/^version=//p' module.prop | head -n1)
+          test -n "$version"
+          echo "zip=TCP_Optimiser_RS-v${version}-PJZ110-WebUI-test.zip" >> "$GITHUB_OUTPUT"
+          echo "artifact=TCP_Optimiser_RS-v${version}-PJZ110-WebUI-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Build signed v4.1 flashable ZIP
+        env:
+          MODULE_SIGNING_KEY: ${{ secrets.MODULE_SIGNING_KEY }}
+          TCP_OPTIMISER_PACKAGE_ABIS: arm64-v8a
+          TCP_OPTIMISER_DEVICE_PROFILE_FILE: ${{ github.workspace }}/scripts/device-profiles/oneplus13-pjz110.env
+        run: |
+          set -euo pipefail
+          rm -rf kernel_modules dist
+          cp -a oneplus13_kernel_modules kernel_modules
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          bash scripts/package-module.sh "dist/${{ steps.meta.outputs.zip }}" binary-input/bin
+          bash scripts/validate-package.sh "dist/${{ steps.meta.outputs.zip }}"
+          (cd dist && sha256sum "${{ steps.meta.outputs.zip }}" > "${{ steps.meta.outputs.zip }}.sha256")
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.meta.outputs.artifact }}
+          path: |
+            dist/${{ steps.meta.outputs.zip }}
+            dist/${{ steps.meta.outputs.zip }}.sha256
+          if-no-files-found: error
+          retention-days: 30

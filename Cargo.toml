@@ -1,6 +1,6 @@
 [package]
 name = "tcp_optimiser"
-version = "4.0.0"
+version = "4.1.0"
 edition = "2021"
 description = "TCP Optimiser - Magisk/KSU module rewritten in Rust"
 authors = ["fatalcoder524"]
